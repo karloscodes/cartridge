@@ -1,0 +1,256 @@
+package cartridge
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/csrf"
+	"github.com/gofiber/fiber/v2/middleware/helmet"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
+	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/gofiber/fiber/v2/middleware/requestid"
+)
+
+// RequestID generates a unique request ID for tracing
+func RequestID() fiber.Handler {
+	return requestid.New()
+}
+
+// Recovery provides panic recovery with stack traces
+func Recovery(logger Logger) fiber.Handler {
+	return recover.New(recover.Config{
+		EnableStackTrace: true,
+	})
+}
+
+// LoggerMiddleware provides HTTP request/response logging
+func LoggerMiddleware(appLogger Logger) fiber.Handler {
+	return logger.New(logger.Config{
+		Format: "${time} ${status} - ${method} ${path} - ${latency}\n",
+	})
+}
+
+// Helmet provides security headers
+func Helmet(referrerPolicy string) fiber.Handler {
+	return helmet.New(helmet.Config{
+		ReferrerPolicy: referrerPolicy,
+	})
+}
+
+// DatabaseInjection adds database connections to context
+func DatabaseInjection(database Database) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		c.Locals("db", database)
+		return c.Next()
+	}
+}
+
+// MethodOverride supports _method form field for PUT/DELETE via POST
+func MethodOverride() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		// Check for _method in forms
+		if method := c.FormValue("_method"); method != "" {
+			c.Method(strings.ToUpper(method))
+		}
+		return c.Next()
+	}
+}
+
+// CSRFConfig holds CSRF protection configuration
+type CSRFConfig struct {
+	ExcludedPaths  []string
+	CookieName     string
+	CookieSameSite string
+	CookieSecure   bool
+	Expiration     time.Duration
+	ContextKey     string
+}
+
+// DefaultCSRFConfig returns default CSRF configuration
+func DefaultCSRFConfig() CSRFConfig {
+	return CSRFConfig{
+		ExcludedPaths:  []string{"/api/", "/static/"},
+		CookieName:     "_csrf_token",
+		CookieSameSite: "Lax",
+		CookieSecure:   false, // Will be set based on environment
+		Expiration:     2 * time.Hour,
+		ContextKey:     "csrf",
+	}
+}
+
+// CSRF provides CSRF protection
+func CSRF(logger Logger, config CSRFConfig) fiber.Handler {
+	return csrf.New(csrf.Config{
+		KeyLookup:      "header:X-CSRF-Token",
+		CookieName:     config.CookieName,
+		CookieSameSite: config.CookieSameSite,
+		CookieSecure:   config.CookieSecure,
+		Expiration:     config.Expiration,
+	})
+}
+
+// RateLimiterConfig holds rate limiting configuration
+type RateLimiterConfig struct {
+	Max      int
+	Duration time.Duration
+}
+
+// DefaultRateLimiterConfig returns default rate limiting configuration
+func DefaultRateLimiterConfig() RateLimiterConfig {
+	return RateLimiterConfig{
+		Max:      50,
+		Duration: 1 * time.Second,
+	}
+}
+
+// RateLimiter provides IP-based rate limiting
+func RateLimiter(config RateLimiterConfig) fiber.Handler {
+	return limiter.New(limiter.Config{
+		Max:        config.Max,
+		Expiration: config.Duration,
+	})
+}
+
+// CORSConfig holds CORS configuration
+type CORSConfig struct {
+	AllowOrigins     []string
+	AllowMethods     []string
+	AllowHeaders     []string
+	AllowCredentials bool
+	MaxAge           int
+}
+
+// DefaultCORSConfig returns default CORS configuration
+func DefaultCORSConfig() CORSConfig {
+	return CORSConfig{
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		AllowCredentials: false,
+		MaxAge:           0,
+	}
+}
+
+// ProductionCORSConfig returns CORS configuration suitable for production
+func ProductionCORSConfig(allowedOrigins []string) CORSConfig {
+	if len(allowedOrigins) == 0 {
+		allowedOrigins = []string{"https://localhost:3000"} // Default safe origin
+	}
+	
+	return CORSConfig{
+		AllowOrigins:     allowedOrigins,
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		AllowCredentials: true,
+		MaxAge:           86400, // 24 hours
+	}
+}
+
+// CORS provides Cross-Origin Resource Sharing support
+func CORS(config CORSConfig) fiber.Handler {
+	return cors.New(cors.Config{
+		AllowOrigins:     strings.Join(config.AllowOrigins, ","),
+		AllowMethods:     strings.Join(config.AllowMethods, ","),
+		AllowHeaders:     strings.Join(config.AllowHeaders, ","),
+		AllowCredentials: config.AllowCredentials,
+		MaxAge:           config.MaxAge,
+	})
+}
+
+// ConcurrencyLimiter manages read/write concurrency
+type ConcurrencyLimiter struct {
+	readSemaphore  chan struct{}
+	writeSemaphore chan struct{}
+	timeout        time.Duration
+}
+
+// NewConcurrencyLimiter creates a new concurrency limiter
+func NewConcurrencyLimiter(readLimit, writeLimit int, timeout time.Duration) *ConcurrencyLimiter {
+	return &ConcurrencyLimiter{
+		readSemaphore:  make(chan struct{}, readLimit),
+		writeSemaphore: make(chan struct{}, writeLimit),
+		timeout:        timeout,
+	}
+}
+
+// WriteConcurrencyLimitMiddleware limits concurrent write operations
+func WriteConcurrencyLimitMiddleware(limiter *ConcurrencyLimiter) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		select {
+		case limiter.writeSemaphore <- struct{}{}:
+			defer func() { <-limiter.writeSemaphore }()
+			return c.Next()
+		case <-time.After(limiter.timeout):
+			return c.Status(503).JSON(fiber.Map{"error": "Service temporarily unavailable"})
+		}
+	}
+}
+
+// RequestLogger provides structured HTTP request logging
+type RequestLogger struct {
+	logger Logger
+}
+
+// NewRequestLogger creates a new request logger
+func NewRequestLogger(logger Logger) *RequestLogger {
+	return &RequestLogger{
+		logger: logger,
+	}
+}
+
+// LogRequest logs HTTP request details using slog directly
+func (rl *RequestLogger) LogRequest(method, path, ip, userAgent string, status int, duration time.Duration, size int64) {
+	message := fmt.Sprintf("%s %s", method, path)
+	
+	args := []any{
+		"method", method,
+		"path", path,
+		"status", status,
+		"duration_ms", float64(duration.Nanoseconds())/1e6,
+		"ip", ip,
+		"user_agent", userAgent,
+		"response_size", size,
+	}
+
+	if status >= 500 {
+		rl.logger.Error(message, args...)
+	} else if status >= 400 {
+		rl.logger.Warn(message, args...)
+	} else {
+		rl.logger.Info(message, args...)
+	}
+}
+
+// IsExcludedPath checks if a path should be excluded from middleware
+func IsExcludedPath(path string, excludedPaths []string) bool {
+	for _, excluded := range excludedPaths {
+		if strings.HasPrefix(path, excluded) {
+			return true
+		}
+	}
+	return false
+}
+
+// SecurityHeaders represents common security headers
+type SecurityHeaders struct {
+	ContentTypeOptions    string
+	FrameOptions          string
+	XSSProtection         string
+	ReferrerPolicy        string
+	ContentSecurityPolicy string
+}
+
+// DefaultSecurityHeaders returns default security headers
+func DefaultSecurityHeaders() SecurityHeaders {
+	return SecurityHeaders{
+		ContentTypeOptions:    "nosniff",
+		FrameOptions:          "DENY",
+		XSSProtection:         "1; mode=block",
+		ReferrerPolicy:        "strict-origin-when-cross-origin",
+		ContentSecurityPolicy: "default-src 'self'",
+	}
+}
