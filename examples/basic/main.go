@@ -4,32 +4,38 @@ import (
 	"log"
 
 	"github.com/karloscodes/cartridge/app"
-	"github.com/karloscodes/cartridge/logging"
 )
 
 func main() {
-	// Create application dependencies
-	deps, err := app.CreateAppDependencies()
+	// Create a new Cartridge application with functional options
+	// Defaults: port 8080, development environment, CSRF enabled, CORS disabled, rate limiting disabled
+	cartridgeApp, err := app.New(
+		app.WithPort("3000"),                    // Override default port (8080)
+		app.WithEnvironment(app.EnvDevelopment), // Explicit environment (default)
+		app.WithCORS(true),                      // Enable CORS (default is false)
+		// CSRF is enabled by default
+		// Rate limiting is disabled by default
+	)
 	if err != nil {
-		log.Fatalf("Failed to create application dependencies: %v", err)
+		log.Fatal("Failed to create Cartridge application:", err)
 	}
 
-	// Create Fiber app configuration
-	fiberConfig := app.FiberConfig{
-		Environment: deps.Config.Environment,
-		Port:       deps.Config.Port,
+	// Or use with all defaults:
+	// cartridgeApp, err := app.New()
+
+	// Get the underlying Fiber app if needed
+	// fiberApp := cartridgeApp.GetFiberApp().(*fiber.App)
+
+	// Add your routes here
+	// fiberApp.Get("/", func(c *fiber.Ctx) error {
+	//     return c.SendString("Hello from Cartridge!")
+	// })
+
+	// Start the application
+	if err := cartridgeApp.Start(); err != nil {
+		log.Fatal("Failed to start application:", err)
 	}
 
-	// Create the application
-	application := app.NewFiberApp(fiberConfig, deps)
-
-	deps.Logger.Info("Starting Cartridge application example")
-
-	// Start the application (this would actually start a server when Fiber is available)
-	if err := application.(*app.Application).Start(); err != nil {
-		deps.Logger.Fatal("Failed to start application", 
-			logging.Field{Key: "error", Value: err})
-	}
-
-	deps.Logger.Info("Application example completed successfully")
+	// Graceful shutdown would be handled here
+	defer cartridgeApp.Stop()
 }

@@ -38,7 +38,7 @@ func Helmet(referrerPolicy string) interface{} {
 }
 
 // DatabaseInjection adds database connections to context
-func DatabaseInjection(dbManager interface{}) interface{} {
+func DatabaseInjection(database interface{}) interface{} {
 	return func() {
 		// Placeholder implementation for database injection
 	}
@@ -172,7 +172,7 @@ func (rl *RequestLogger) LogRequest(method, path, ip, userAgent string, status i
 	}
 
 	message := fmt.Sprintf("%s %s", method, path)
-	
+
 	if status >= 500 {
 		rl.logger.Error(message, fields...)
 	} else if status >= 400 {
@@ -195,9 +195,9 @@ func IsExcludedPath(path string, excludedPaths []string) bool {
 // SecurityHeaders represents common security headers
 type SecurityHeaders struct {
 	ContentTypeOptions    string
-	FrameOptions         string
-	XSSProtection        string
-	ReferrerPolicy       string
+	FrameOptions          string
+	XSSProtection         string
+	ReferrerPolicy        string
 	ContentSecurityPolicy string
 }
 
@@ -205,9 +205,9 @@ type SecurityHeaders struct {
 func DefaultSecurityHeaders() SecurityHeaders {
 	return SecurityHeaders{
 		ContentTypeOptions:    "nosniff",
-		FrameOptions:         "DENY",
-		XSSProtection:        "1; mode=block",
-		ReferrerPolicy:       "strict-origin-when-cross-origin",
+		FrameOptions:          "DENY",
+		XSSProtection:         "1; mode=block",
+		ReferrerPolicy:        "strict-origin-when-cross-origin",
 		ContentSecurityPolicy: "default-src 'self'",
 	}
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/karloscodes/cartridge/logging"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 // DatabaseConfig holds database configuration
@@ -27,8 +26,8 @@ type DatabaseConfig struct {
 	TempStore       string
 }
 
-// DBManager interface for database operations
-type DBManager interface {
+// Database interface for database operations
+type Database interface {
 	GetGenericConnection() *gorm.DB
 	LockDatabases() func()
 	CheckpointWAL(mode string) error
@@ -37,7 +36,7 @@ type DBManager interface {
 	Init() error
 }
 
-// sqliteDBManager implements DBManager for SQLite
+// sqliteDBManager implements Database for SQLite
 type sqliteDBManager struct {
 	db     *gorm.DB
 	config *config.Config
@@ -50,8 +49,8 @@ var (
 	once     sync.Once
 )
 
-// NewDBManager creates a new database manager instance
-func NewDBManager(cfg *config.Config, logger logging.Logger) DBManager {
+// NewDatabase creates a new database manager instance
+func NewDatabase(cfg *config.Config, logger logging.Logger) Database {
 	once.Do(func() {
 		instance = &sqliteDBManager{
 			config: cfg,
@@ -62,9 +61,9 @@ func NewDBManager(cfg *config.Config, logger logging.Logger) DBManager {
 }
 
 // GetInstance returns the singleton database manager instance
-func GetInstance() DBManager {
+func GetInstance() Database {
 	if instance == nil {
-		panic("Database manager not initialized. Call NewDBManager first.")
+		panic("Database manager not initialized. Call NewDatabase first.")
 	}
 	return instance
 }
@@ -168,7 +167,7 @@ func (dm *sqliteDBManager) CheckpointWAL(mode string) error {
 
 	validModes := []string{"PASSIVE", "NORMAL", "FULL", "RESTART", "TRUNCATE"}
 	mode = strings.ToUpper(mode)
-	
+
 	valid := false
 	for _, validMode := range validModes {
 		if mode == validMode {
@@ -176,7 +175,7 @@ func (dm *sqliteDBManager) CheckpointWAL(mode string) error {
 			break
 		}
 	}
-	
+
 	if !valid {
 		mode = "NORMAL"
 	}
@@ -248,23 +247,23 @@ func PerformWrite(logger logging.Logger, db *gorm.DB, operation func(tx *gorm.DB
 		err := operation(tx)
 		if err != nil {
 			tx.Rollback()
-			
+
 			// Check if it's a database lock error
 			if isDatabaseLockError(err) {
 				lastErr = err
-				
+
 				if attempt < maxRetries {
 					delay := calculateBackoffDelay(attempt, baseDelay, maxDelay)
 					logger.Debug("Database lock detected, retrying",
 						logging.Field{Key: "attempt", Value: attempt + 1},
 						logging.Field{Key: "delay_ms", Value: delay.Milliseconds()},
 						logging.Field{Key: "error", Value: err.Error()})
-					
+
 					time.Sleep(delay)
 					continue
 				}
 			}
-			
+
 			return err
 		}
 
@@ -272,18 +271,18 @@ func PerformWrite(logger logging.Logger, db *gorm.DB, operation func(tx *gorm.DB
 		if err := tx.Commit().Error; err != nil {
 			if isDatabaseLockError(err) {
 				lastErr = err
-				
+
 				if attempt < maxRetries {
 					delay := calculateBackoffDelay(attempt, baseDelay, maxDelay)
 					logger.Debug("Database lock during commit, retrying",
 						logging.Field{Key: "attempt", Value: attempt + 1},
 						logging.Field{Key: "delay_ms", Value: delay.Milliseconds()})
-					
+
 					time.Sleep(delay)
 					continue
 				}
 			}
-			
+
 			return err
 		}
 
@@ -292,7 +291,7 @@ func PerformWrite(logger logging.Logger, db *gorm.DB, operation func(tx *gorm.DB
 			logger.Debug("Write operation succeeded after retries",
 				logging.Field{Key: "attempts", Value: attempt + 1})
 		}
-		
+
 		return nil
 	}
 
@@ -304,7 +303,7 @@ func isDatabaseLockError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	errorMsg := strings.ToLower(err.Error())
 	lockErrors := []string{
 		"database is locked",
@@ -312,13 +311,13 @@ func isDatabaseLockError(err error) bool {
 		"locked",
 		"busy",
 	}
-	
+
 	for _, lockError := range lockErrors {
 		if strings.Contains(errorMsg, lockError) {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -326,20 +325,20 @@ func isDatabaseLockError(err error) bool {
 func calculateBackoffDelay(attempt int, baseDelay, maxDelay time.Duration) time.Duration {
 	// Exponential backoff: baseDelay * 2^attempt
 	delay := baseDelay * time.Duration(1<<uint(attempt))
-	
+
 	// Cap at maxDelay
 	if delay > maxDelay {
 		delay = maxDelay
 	}
-	
+
 	// Add jitter (±25%)
 	jitter := float64(delay) * 0.25 * (rand.Float64()*2 - 1)
 	delay += time.Duration(jitter)
-	
+
 	// Ensure minimum delay
 	if delay < baseDelay {
 		delay = baseDelay
 	}
-	
+
 	return delay
 }

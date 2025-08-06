@@ -25,44 +25,44 @@ type TestConfig struct {
 func DefaultTestConfig() *config.Config {
 	return &config.Config{
 		Environment:      "test",
-		Port:            "3000",
-		DatabaseURL:     ":memory:",
-		PrivateKey:      "test-secret-key-32-characters-long",
-		Debug:           true,
-		LogLevel:        config.LogLevelError, // Minimal logging for tests
-		LogsDirectory:   "",                   // No file logging for tests
-		LogsMaxSizeInMb: 20,
-		LogsMaxBackups:  10,
+		Port:             "3000",
+		DatabaseURL:      ":memory:",
+		PrivateKey:       "test-secret-key-32-characters-long",
+		Debug:            true,
+		LogLevel:         config.LogLevelError, // Minimal logging for tests
+		LogsDirectory:    "",                   // No file logging for tests
+		LogsMaxSizeInMb:  20,
+		LogsMaxBackups:   10,
 		LogsMaxAgeInDays: 30,
-		CSRFContextKey:  "csrf",
+		CSRFContextKey:   "csrf",
 	}
 }
 
 // SetupTestDB creates an in-memory SQLite database for testing
 func SetupTestDB(t *testing.T) interface{} {
 	t.Helper()
-	
+
 	cfg := DefaultTestConfig()
 	logger := logging.NewLogger(logging.LogConfig{
 		Level:         logging.LogLevel(cfg.LogLevel),
 		EnableConsole: false, // Disable console output for tests
 		UseJSON:       false,
 	})
-	
-	dbManager := database.NewDBManager(cfg, logger)
-	err := dbManager.Init()
+
+	dbInstance := database.NewDatabase(cfg, logger)
+	err := dbInstance.Init()
 	if err != nil {
 		t.Fatalf("Failed to setup test database: %v", err)
 	}
-	
+
 	// Register cleanup
 	t.Cleanup(func() {
-		if err := dbManager.Close(); err != nil {
+		if err := dbInstance.Close(); err != nil {
 			t.Logf("Failed to close test database: %v", err)
 		}
 	})
-	
-	return dbManager.GetGenericConnection()
+
+	return dbInstance.GetGenericConnection()
 }
 
 // CleanupTestDB cleans all tables in the test database
@@ -75,38 +75,32 @@ func CleanupTestDB(db interface{}) error {
 // SetupTestApp creates a complete test application with database
 func SetupTestApp(t *testing.T) (interface{}, interface{}, func()) {
 	t.Helper()
-	
-	// Create test dependencies
-	deps, err := app.CreateAppDependencies()
+
+	// Create test app with default configuration
+	testApp, err := app.New(
+		app.WithEnvironment(app.EnvTest),
+		app.WithPort("0"), // Use random available port for testing
+	)
 	if err != nil {
-		t.Fatalf("Failed to create test dependencies: %v", err)
+		t.Fatalf("Failed to create test app: %v", err)
 	}
-	
-	// Override config for testing
-	deps.Config = DefaultTestConfig()
-	
-	// Create Fiber app
-	fiberConfig := app.FiberConfig{
-		Environment: deps.Config.Environment,
-		Port:       deps.Config.Port,
-	}
-	
-	testApp := app.NewFiberApp(fiberConfig, deps)
-	testDB := deps.DBManager.GetGenericConnection()
-	
+
+	// Get test database connection
+	testDB := testApp.GetDatabase().GetGenericConnection()
+
 	cleanup := func() {
-		if err := deps.DBManager.Close(); err != nil {
-			t.Logf("Failed to close test database: %v", err)
+		if err := testApp.Stop(); err != nil {
+			t.Logf("Failed to stop test app: %v", err)
 		}
 	}
-	
+
 	return testApp, testDB, cleanup
 }
 
 // LoginTestUser simulates user login and returns session cookie and CSRF tokens
 func LoginTestUser(t *testing.T, app interface{}, email, password string) (sessionCookie, csrfToken, csrfCookie string) {
 	t.Helper()
-	
+
 	// This would be implemented when Fiber test utilities are available
 	// For now, return mock values
 	return "mock-session-cookie", "mock-csrf-token", "mock-csrf-cookie"
@@ -119,19 +113,19 @@ func ExtractCSRFToken(body string) string {
 	if matches := metaRegex.FindStringSubmatch(body); len(matches) > 1 {
 		return matches[1]
 	}
-	
+
 	// Look for CSRF token in hidden input field
 	inputRegex := regexp.MustCompile(`<input[^>]*name="_csrf"[^>]*value="([^"]+)"`)
 	if matches := inputRegex.FindStringSubmatch(body); len(matches) > 1 {
 		return matches[1]
 	}
-	
+
 	// Look for CSRF token in form field
 	fieldRegex := regexp.MustCompile(`name="_csrf" value="([^"]+)"`)
 	if matches := fieldRegex.FindStringSubmatch(body); len(matches) > 1 {
 		return matches[1]
 	}
-	
+
 	return ""
 }
 
@@ -151,15 +145,15 @@ func CreateTestRequest(method, path string, body io.Reader, headers map[string]s
 	if err != nil {
 		panic(fmt.Sprintf("Failed to create test request: %v", err))
 	}
-	
+
 	// Set default headers
 	req.Header.Set("User-Agent", "cartridge-test-client/1.0")
-	
+
 	// Set custom headers
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	
+
 	return req
 }
 
@@ -175,12 +169,12 @@ func ExtractCookies(resp *http.Response) map[string]string {
 // AssertRedirect checks if the response is a redirect to the expected path
 func AssertRedirect(t *testing.T, resp *http.Response, expectedPath string) {
 	t.Helper()
-	
+
 	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
 		t.Errorf("Expected redirect status code (3xx), got %d", resp.StatusCode)
 		return
 	}
-	
+
 	location := resp.Header.Get("Location")
 	if location != expectedPath {
 		t.Errorf("Expected redirect to %s, got %s", expectedPath, location)
@@ -190,7 +184,7 @@ func AssertRedirect(t *testing.T, resp *http.Response, expectedPath string) {
 // AssertStatus checks if the response has the expected status code
 func AssertStatus(t *testing.T, resp *http.Response, expectedStatus int) {
 	t.Helper()
-	
+
 	if resp.StatusCode != expectedStatus {
 		t.Errorf("Expected status code %d, got %d", expectedStatus, resp.StatusCode)
 	}
@@ -199,7 +193,7 @@ func AssertStatus(t *testing.T, resp *http.Response, expectedStatus int) {
 // AssertContains checks if the response body contains the expected content
 func AssertContains(t *testing.T, body, expected string) {
 	t.Helper()
-	
+
 	if !strings.Contains(body, expected) {
 		t.Errorf("Expected response body to contain %q", expected)
 	}
@@ -208,7 +202,7 @@ func AssertContains(t *testing.T, body, expected string) {
 // AssertNotContains checks if the response body does not contain the content
 func AssertNotContains(t *testing.T, body, unexpected string) {
 	t.Helper()
-	
+
 	if strings.Contains(body, unexpected) {
 		t.Errorf("Expected response body not to contain %q", unexpected)
 	}
@@ -217,7 +211,7 @@ func AssertNotContains(t *testing.T, body, unexpected string) {
 // AssertJSONField checks if a JSON response contains a specific field with expected value
 func AssertJSONField(t *testing.T, body, field string, expected interface{}) {
 	t.Helper()
-	
+
 	// This would be implemented with proper JSON parsing
 	// For now, just check if the field exists in the response
 	if !strings.Contains(body, fmt.Sprintf(`"%s"`, field)) {
@@ -259,31 +253,31 @@ func NewTestClient(t *testing.T, app interface{}) *TestClient {
 // Get performs a GET request
 func (tc *TestClient) Get(path string, headers ...map[string]string) *MockResponse {
 	tc.t.Helper()
-	
+
 	var h map[string]string
 	if len(headers) > 0 {
 		h = headers[0]
 	}
-	
+
 	return tc.Request("GET", path, "", h)
 }
 
 // Post performs a POST request
 func (tc *TestClient) Post(path, body string, headers ...map[string]string) *MockResponse {
 	tc.t.Helper()
-	
+
 	var h map[string]string
 	if len(headers) > 0 {
 		h = headers[0]
 	}
-	
+
 	return tc.Request("POST", path, body, h)
 }
 
 // Request performs an HTTP request
 func (tc *TestClient) Request(method, path, body string, headers map[string]string) *MockResponse {
 	tc.t.Helper()
-	
+
 	// This would be implemented when Fiber test utilities are available
 	// For now, return a mock response
 	return &MockResponse{
