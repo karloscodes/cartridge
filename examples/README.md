@@ -24,6 +24,49 @@ go run main.go
 
 ## Usage Examples
 
+### Ultimate Functional Pattern - One Parameter Only!
+
+```go
+// Just write functions - ultimate simplicity!
+func ListProducts(ctx *cartridge.Context) error {
+    // Easy database access
+    db := ctx.DB()
+    
+    // Easy parameter access with defaults
+    limit := ctx.QueryInt("limit", 10)
+    search := ctx.Query("search", "")
+    featured := ctx.QueryBool("featured", false)
+    id := ctx.Params("id")
+    
+    // Clear parsing methods
+    err := ctx.ParseJSON(&jsonData)  // For JSON APIs
+    err := ctx.ParseForm(&formData)  // For HTML forms
+    category := ctx.FormValue("category", "general")
+    
+    return ctx.JSON(data)         // Clean API responses
+    // OR
+    return ctx.Render(data)       // Forms/HTML with CSRF + metadata
+}
+
+// Register routes - super clean!
+app.Get("/products", ListProducts)
+app.Post("/products", CreateProduct)          // JSON API
+app.Post("/products/form", CreateProductForm) // Form handling
+```
+
+### Smart CSRF Token Handling
+
+```go
+// For APIs - clean JSON, no CSRF tokens
+return ctx.JSON(data)
+
+// For forms/HTML - includes CSRF tokens + metadata  
+return ctx.Render(data)
+// Response: { "data": {...}, "csrf_token": "abc123", "meta": {...} }
+
+// Framework automatically handles CSRF validation via middleware
+```
+
 ### Configurable CORS Origins
 
 ```go
@@ -88,51 +131,58 @@ db := app.GetDatabase().GetGenericConnection().(*gorm.DB)
 
 ### Custom Endpoints
 - `GET /` - Welcome message with feature list
-- `GET /products` - List all products (CRUD)
-- `POST /products` - Create product (CRUD)  
-- `GET /products/:id` - Get product (CRUD)
-- `PUT /products/:id` - Update product (CRUD)
-- `DELETE /products/:id` - Delete product (CRUD)
-- `GET /health` - Custom health check with middleware config
-- `GET /config` - App and middleware configuration
+- `GET /products?search=...&limit=...` - List products with search and pagination
+- `GET /products/:id` - Get product by ID
+- `POST /products` - Create product (JSON API)
+- `POST /products/form` - Create product (HTML form)
+- `PUT /products/:id` - Update product by ID
+- `DELETE /products/:id?confirm=true` - Delete product with confirmation
 
 ### Default Health Endpoints (Automatic)
 - `GET /_health` - Comprehensive health check (database, config, status)
 - `GET /_ready` - Readiness probe (for Kubernetes)
 - `GET /_live` - Liveness probe (basic ping)
 
-## Controller Pattern
+## Ultimate Functional Handler Pattern
 
 ```go
-type ProductController struct {
-    *cartridge.Context  // Gets DB, Logger, Config, Auth, Middleware
-}
-
-func NewProductController(ctx *cartridge.Context) cartridge.CrudController {
-    return &ProductController{Context: ctx}
-}
-
-func (pc *ProductController) Index(c *fiber.Ctx) error {
+// Just write pure functions - ultimate simplicity!
+func ListProducts(ctx *cartridge.Context) error {
     // Direct slog usage - simple and clean
-    pc.Logger.Info("Fetching products", "endpoint", "index")
+    ctx.Logger.Info("Fetching products", "endpoint", "list")
     
-    // Database access
-    products := pc.DB.Query("SELECT * FROM products")
+    // Easy query parameters with defaults
+    limit := ctx.QueryInt("limit", 10)
+    search := ctx.Query("search", "")
     
-    // Config access
-    env := pc.Context.Config.Environment
+    // Clean database access
+    db := ctx.DB()
+    var products []map[string]interface{}
     
-    // Middleware config access
-    corsOrigins := pc.Middleware.CORS.AllowOrigins
+    // Build dynamic query
+    query := "SELECT * FROM products"
+    if search != "" {
+        query += " WHERE name LIKE ?"
+        db.Raw(query+" LIMIT ?", "%"+search+"%", limit).Scan(&products)
+    } else {
+        db.Raw(query+" LIMIT ?", limit).Scan(&products)
+    }
     
-    return c.JSON(products)
+    // Smart response - CSRF only when needed
+    return ctx.JSON(products)      // Clean API
+    // OR ctx.Render(products)     // HTML with CSRF + metadata
 }
+
+// Register the function - one parameter only!
+app.Get("/products", ListProducts)
 ```
 
 ## Key Benefits
 
-- **Minimal Boilerplate**: Just embed `*cartridge.Context`
-- **Full Access**: DB, Logger, Config, Auth, Middleware all available
+- **Zero Boilerplate**: No controllers, no factories, just pure functions
+- **Automatic Context Injection**: Framework handles dependency injection
+- **Full Access**: DB, Logger, Config, Auth, Middleware all available via context
 - **Structured Logging**: Modern slog with key-value pairs
 - **Graceful Operations**: Proper shutdown and cleanup
 - **Type Safety**: All configs strongly typed and accessible
+- **Clean Syntax**: Separate lines, easy to read and maintain

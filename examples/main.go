@@ -6,163 +6,165 @@ import (
 	"gorm.io/gorm"
 )
 
-// ProductController demonstrates clean controller pattern
-type ProductController struct {
-	*cartridge.Context // Gets DB, Logger, Config, Auth, Middleware
-}
+// Functional handlers with clean error handling pattern
 
-func NewProductController(ctx *cartridge.Context) cartridge.CrudController {
-	return &ProductController{Context: ctx}
-}
-
-func (pc *ProductController) Index(c *fiber.Ctx) error {
+func ListProducts(ctx *cartridge.Context) error {
 	// Use structured logging with slog
-	pc.Logger.Info("Fetching products", "endpoint", "index")
+	ctx.Logger.Info("Fetching products", "endpoint", "list")
 
-	// Get GORM database connection directly
-	db := pc.DB.GetGenericConnection().(*gorm.DB)
+	// Query string parameters made easy!
+	limit := ctx.QueryInt("limit", 10)    // Default to 10
+	search := ctx.Query("search", "")     // Default to empty string
+	
+	// Get database connection - clean and simple!
+	db := ctx.DB()
 	
 	// Use GORM for database operations
 	var products []map[string]interface{}
-	result := db.Raw("SELECT id, name, price FROM products LIMIT 10").Scan(&products)
+	query := "SELECT id, name, price FROM products"
+	args := []interface{}{}
+	
+	if search != "" {
+		query += " WHERE name LIKE ? OR description LIKE ?"
+		args = append(args, "%"+search+"%", "%"+search+"%")
+	}
+	
+	query += " LIMIT ?"
+	args = append(args, limit)
+	
+	result := db.Raw(query, args...).Scan(&products)
 	if result.Error != nil {
-		pc.Logger.Error("Failed to fetch products", "error", result.Error)
-		return c.Status(500).JSON(fiber.Map{"error": "Database error"})
+		ctx.Logger.Error("Failed to fetch products", "error", result.Error)
+		return ctx.Status(500).JSON(fiber.Map{"error": "Database error"})
 	}
 
-	pc.Logger.Info("Products fetched successfully", "count", len(products))
-	return c.JSON(map[string]interface{}{
+	ctx.Logger.Info("Products fetched successfully", "count", len(products), "search", search, "limit", limit)
+	// Use Render for forms/HTML (includes CSRF + metadata) or JSON for APIs (clean)
+	return ctx.Render(map[string]interface{}{
 		"products": products,
-		"env":      pc.Context.Config.Environment,
+		"count":    len(products),
+		"search":   search,
+		"limit":    limit,
 	})
 }
 
-func (pc *ProductController) Show(c *fiber.Ctx) error {
-	id := c.Params("id")
-	pc.Logger.Info("Fetching product", "id", id)
+func GetProduct(ctx *cartridge.Context) error {
+	id := ctx.Params("id")
+	ctx.Logger.Info("Fetching product", "id", id)
 	
-	db := pc.DB.GetGenericConnection().(*gorm.DB)
+	// Query database using DBQuery() - ultra clean!
 	var product map[string]interface{}
-	result := db.Raw("SELECT * FROM products WHERE id = ?", id).Scan(&product)
-	if result.Error != nil {
-		pc.Logger.Error("Failed to fetch product", "error", result.Error, "id", id)
-		return c.Status(404).JSON(fiber.Map{"error": "Product not found"})
+	result := ctx.DBQuery("SELECT * FROM products WHERE id = ?", &product, id)
+	_ = result // result contains the *gorm.DB with RowsAffected, etc.
+	
+	// Check if product exists
+	if len(product) == 0 {
+		return ctx.NotFound("Product not found")
 	}
 	
-	return c.JSON(product)
+	// Use JSON for clean API responses (no CSRF tokens)
+	return ctx.JSON(product)
 }
 
-func (pc *ProductController) Create(c *fiber.Ctx) error {
-	// Access middleware config if needed
-	csrfEnabled := pc.Context.Config.EnableCSRF
-	pc.Logger.Info("Creating product", "csrf_enabled", csrfEnabled)
+func CreateProduct(ctx *cartridge.Context) error {
+	ctx.Logger.Info("Creating product")
 
+	// Parse JSON body
 	var data map[string]interface{}
-	if err := c.BodyParser(&data); err != nil {
-		pc.Logger.Error("Failed to parse request body", "error", err)
-		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	if err := ctx.ParseJSON(&data); err != nil {
+		return ctx.BadRequest(err, "Invalid JSON body")
 	}
 	
-	db := pc.DB.GetGenericConnection().(*gorm.DB)
-	result := db.Exec("INSERT INTO products (name, price) VALUES (?, ?)", data["name"], data["price"])
-	if result.Error != nil {
-		pc.Logger.Error("Failed to create product", "error", result.Error)
-		return c.Status(500).JSON(fiber.Map{"error": "Database error"})
+	// Validate the data
+	if data["name"] == nil || data["price"] == nil {
+		return ctx.BadRequest(nil, "Name and price are required")
 	}
 	
-	return c.Status(201).JSON(fiber.Map{"message": "Product created", "data": data})
+	// Insert into database using DBExec() - ultra clean!
+	ctx.DBExec("INSERT INTO products (name, price) VALUES (?, ?)", data["name"], data["price"])
+	
+	// Use JSON for clean API responses
+	return ctx.Status(201).JSON(fiber.Map{"message": "Product created", "product": data})
 }
 
-func (pc *ProductController) Update(c *fiber.Ctx) error {
-	id := c.Params("id")
+func UpdateProduct(ctx *cartridge.Context) error {
+	id := ctx.Params("id")
+	
+	// Parse JSON body
 	var data map[string]interface{}
-	if err := c.BodyParser(&data); err != nil {
-		pc.Logger.Error("Failed to parse request body", "error", err)
-		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	if err := ctx.ParseJSON(&data); err != nil {
+		return ctx.BadRequest(err, "Invalid JSON body")
 	}
 	
-	db := pc.DB.GetGenericConnection().(*gorm.DB)
-	result := db.Exec("UPDATE products SET name = ?, price = ? WHERE id = ?", data["name"], data["price"], id)
-	if result.Error != nil {
-		pc.Logger.Error("Failed to update product", "error", result.Error, "id", id)
-		return c.Status(500).JSON(fiber.Map{"error": "Database error"})
+	// Custom validation with specific error codes
+	if data["price"] != nil {
+		if price, ok := data["price"].(float64); ok && price < 0 {
+			return ctx.UnprocessableEntity("Price cannot be negative")
+		}
 	}
 	
-	return c.JSON(fiber.Map{"message": "Product updated", "data": data})
+	// Update in database using DBExec() - ultra clean!
+	ctx.DBExec("UPDATE products SET name = ?, price = ? WHERE id = ?", data["name"], data["price"], id)
+	
+	// Use JSON for clean API responses
+	return ctx.JSON(fiber.Map{"message": "Product updated", "product": data, "id": id})
 }
 
-func (pc *ProductController) Delete(c *fiber.Ctx) error {
-	id := c.Params("id")
-	pc.Logger.Info("Deleting product", "id", id)
+func DeleteProduct(ctx *cartridge.Context) error {
+	id := ctx.Params("id")
 	
-	db := pc.DB.GetGenericConnection().(*gorm.DB)
-	result := db.Exec("DELETE FROM products WHERE id = ?", id)
-	if result.Error != nil {
-		pc.Logger.Error("Failed to delete product", "error", result.Error, "id", id)
-		return c.Status(500).JSON(fiber.Map{"error": "Database error"})
+	// Check for confirmation
+	confirm := ctx.QueryBool("confirm", false)
+	if !confirm {
+		return ctx.BadRequest(nil, "Deletion requires confirmation. Add ?confirm=true")
 	}
 	
-	return c.JSON(fiber.Map{"message": "Product deleted", "id": id})
-}
-
-func (pc *ProductController) New(c *fiber.Ctx) error {
-	return c.JSON(map[string]string{"form": "new_product"})
-}
-
-func (pc *ProductController) Edit(c *fiber.Ctx) error {
-	return c.JSON(map[string]string{"form": "edit_product"})
-}
-
-// APIHandlers for individual endpoints
-type APIHandlers struct {
-	*cartridge.Context
-}
-
-func NewAPIHandlers(ctx *cartridge.Context) *APIHandlers {
-	return &APIHandlers{Context: ctx}
-}
-
-func (h *APIHandlers) Health(c *fiber.Ctx) error {
-	h.Logger.Info("Health check requested")
-
-	// Check database health
-	dbHealthy := h.DB.Ping() == nil
-
-	// Access middleware configurations
-	security := h.Middleware.Security
+	ctx.Logger.Info("Deleting product", "id", id, "confirmed", confirm)
 	
-	return c.JSON(map[string]interface{}{
-		"status":            "healthy",
-		"database":          dbHealthy,
-		"environment":       h.Context.Config.Environment,
-		"security_headers":  security.ContentTypeOptions == "nosniff",
-		"rate_limit_max":    h.Middleware.RateLimit.Max,
-	})
+	// Delete from database using DBExec() - ultra clean!
+	ctx.DBExec("DELETE FROM products WHERE id = ?", id)
+	
+	return ctx.JSON(fiber.Map{"message": "Product deleted", "id": id})
 }
 
-func (h *APIHandlers) Config(c *fiber.Ctx) error {
-	h.Logger.Info("Configuration requested")
-
-	return c.JSON(map[string]interface{}{
-		"app": map[string]interface{}{
-			"environment": h.Context.Config.Environment,
-			"port":        h.Context.Config.Port,
-		},
-		"middleware": map[string]interface{}{
-			"csrf_enabled":     h.Context.Config.EnableCSRF,
-			"cors_enabled":     h.Context.Config.EnableCORS,
-			"rate_limit_max":   h.Middleware.RateLimit.Max,
-			"security_headers": h.Middleware.Security.ContentTypeOptions,
-		},
+// Example form-based handler showing ParseForm usage
+func CreateProductForm(ctx *cartridge.Context) error {
+	ctx.Logger.Info("Creating product via form")
+	
+	// Parse form data with Must() for regular errors
+	type ProductForm struct {
+		Name        string  `form:"name"`
+		Price       float64 `form:"price"`
+		Description string  `form:"description"`
+	}
+	
+	var form ProductForm
+	ctx.Must(ctx.ParseForm(&form))
+	
+	// Get additional form values
+	category := ctx.FormValue("category", "general")  // With default
+	featured := ctx.QueryBool("featured", false)     // From query string
+	
+	// Insert into database with DBExec() - ultra clean!
+	ctx.DBExec("INSERT INTO products (name, price, description, category, featured) VALUES (?, ?, ?, ?, ?)", 
+		form.Name, form.Price, form.Description, category, featured)
+	
+	// For forms, use Render to include CSRF token for the next form
+	return ctx.Render(fiber.Map{
+		"message": "Product created successfully", 
+		"product": form,
+		"category": category,
+		"featured": featured,
 	})
 }
 
 func main() {
-	// Create app with structured logging and configurable CORS
-	app := cartridge.NewAPIOnly(
+	// Create app with structured logging, CORS, and CSRF protection
+	app := cartridge.NewFullStack(
 		cartridge.WithPort("8080"),
 		cartridge.WithEnvironment("development"),
 		cartridge.WithCORS(true),
+		cartridge.WithCSRF(true),
 		cartridge.WithCORSOrigins([]string{"http://localhost:3000", "http://localhost:5173"}),
 	)
 
@@ -170,16 +172,13 @@ func main() {
 	logger := app.Logger().With("service", "cartridge-example")
 	logger.Info("Starting Cartridge application")
 
-	// Controller factory
-	factory := app.NewController()
-
-	// CRUD resource - creates 7 REST endpoints
-	app.Resource("products", factory.Controller(NewProductController))
-
-	// Individual handlers
-	api := NewAPIHandlers(app.Ctx())
-	app.Get("/health", api.Health)
-	app.Get("/config", api.Config)
+	// Product routes - clean functional approach, no boilerplate!
+	app.Get("/products", ListProducts)
+	app.Get("/products/:id", GetProduct)  
+	app.Post("/products", CreateProduct)          // JSON API
+	app.Post("/products/form", CreateProductForm) // Form example
+	app.Put("/products/:id", UpdateProduct)
+	app.Delete("/products/:id", DeleteProduct)
 
 	// Root endpoint
 	app.Get("/", func(c *fiber.Ctx) error {
@@ -187,19 +186,29 @@ func main() {
 			"message": "Cartridge API with improved features",
 			"features": []string{
 				"Structured logging with slog",
-				"Graceful shutdown",
+				"Graceful shutdown", 
 				"Database connection management",
-				"Middleware configuration access",
-				"Clean controller pattern",
+				"Ultimate functional handlers - one parameter only!",
+				"Fiber context embedded in Cartridge context",
+				"ctx.DB() - clean database access",
+				"ctx.Query(), ctx.QueryInt(), ctx.QueryBool() - easy params",
+				"ctx.ParseJSON() and ctx.ParseForm() - clear parsing",
+				"ctx.Must(), ctx.DBExec(), ctx.DBQuery() - clean error handling",
+				"ctx.BadRequest(), ctx.NotFound(), ctx.Fail() - status helpers",
+				"ctx.Unauthorized(), ctx.Forbidden() - auth helpers",
+				"Smart CSRF: only in Render(), not JSON()",
 			},
 		})
 	})
 
 	logger.Info("Server configuration complete")
 	logger.Info("Available routes",
-		"crud", "/products (7 routes)",
-		"custom_health", "/health",
-		"config", "/config", 
+		"products_list", "GET /products?search=...&limit=...",
+		"products_get", "GET /products/:id",
+		"products_create_json", "POST /products (JSON)",
+		"products_create_form", "POST /products/form (Form)",
+		"products_update", "PUT /products/:id",
+		"products_delete", "DELETE /products/:id?confirm=true",
 		"root", "/",
 		"default_health", "/_health",
 		"readiness", "/_ready",

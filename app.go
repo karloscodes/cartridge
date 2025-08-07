@@ -4,12 +4,14 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"mime/multipart"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
 
 // Environment constants
@@ -32,6 +34,30 @@ type RequestContext = *fiber.Ctx
 // Handler represents a route handler function
 type Handler = fiber.Handler
 
+// ContextHandler represents a handler function that receives the app context
+type ContextHandler func(*Context) error
+
+// HandlerFunc wraps a ContextHandler to automatically inject the app context with Fiber embedded
+func (app *App) HandlerFunc(handler ContextHandler) Handler {
+	return func(c *fiber.Ctx) error {
+		// Create a copy of the context with Fiber embedded
+		ctx := app.createRequestContext(c)
+		return handler(ctx)
+	}
+}
+
+// createRequestContext creates a new Context instance with Fiber embedded for the request
+func (app *App) createRequestContext(c *fiber.Ctx) *Context {
+	return &Context{
+		Database:   app.ctx.Database,
+		Logger:     app.ctx.Logger,
+		Config:     app.ctx.Config,
+		Auth:       app.ctx.Auth,
+		Middleware: app.ctx.Middleware,
+		Fiber:      c,
+	}
+}
+
 // Route represents a registered route
 type Route struct {
 	Method  string
@@ -39,35 +65,6 @@ type Route struct {
 	Handler Handler
 }
 
-// CrudController defines the interface for CRUD operations
-// Implement this interface to use with app.CrudRoute() or app.Resource()
-type CrudController interface {
-	// Index displays a listing of the resource (GET /resource)
-	Index(*fiber.Ctx) error
-
-	// Show displays the specified resource (GET /resource/:id)
-	Show(*fiber.Ctx) error
-
-	// New shows the form for creating a new resource (GET /resource/new)
-	// Only used in full-stack applications with forms
-	New(*fiber.Ctx) error
-
-	// Create stores a newly created resource (POST /resource)
-	Create(*fiber.Ctx) error
-
-	// Edit shows the form for editing the specified resource (GET /resource/:id/edit)
-	// Only used in full-stack applications with forms
-	Edit(*fiber.Ctx) error
-
-	// Update updates the specified resource (PUT /resource/:id)
-	Update(*fiber.Ctx) error
-
-	// Delete removes the specified resource (DELETE /resource/:id)
-	Delete(*fiber.Ctx) error
-}
-
-// Controller is an alias for CrudController for backward compatibility
-type Controller = CrudController
 
 // AppAware is an optional interface that controllers can implement
 // to receive the app instance for dependency injection
@@ -93,11 +90,6 @@ func (app *App) NewController() *ControllerFactory {
 	return &ControllerFactory{app: app}
 }
 
-// Create creates a new controller instance with app injection
-func (cf *ControllerFactory) Create(controllerFunc func(*App) CrudController) CrudController {
-	return controllerFunc(cf.app)
-}
-
 // Handler creates individual handlers with app access
 func (cf *ControllerFactory) Handler(handlerFunc func(*App) Handler) Handler {
 	return handlerFunc(cf.app)
@@ -107,11 +99,301 @@ func (cf *ControllerFactory) Handler(handlerFunc func(*App) Handler) Handler {
 // This is different from Go's context.Context - this holds app-level services
 // while Go context.Context is for request-scoped data and cancellation
 type Context struct {
-	DB         Database
+	Database   Database
 	Logger     Logger
 	Config     CartridgeConfig
 	Auth       AuthConfig
 	Middleware MiddlewareConfig
+	Fiber      RequestContext // Embedded Fiber context for request access
+}
+
+// DB returns the GORM database instance, abstracting the type assertion
+func (ctx *Context) DB() *gorm.DB {
+	if ctx.Database == nil {
+		return nil
+	}
+	return ctx.Database.GetGenericConnection().(*gorm.DB)
+}
+
+// RenderData provides common data for template rendering including CSRF tokens
+type RenderData struct {
+	Data      interface{} `json:"data"`
+	CSRFToken string      `json:"csrf_token,omitempty"`
+	Meta      Meta        `json:"meta,omitempty"`
+}
+
+// Meta provides metadata for API responses
+type Meta struct {
+	Environment string `json:"environment,omitempty"`
+	Timestamp   string `json:"timestamp,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
+}
+
+// Render creates a response with CSRF token and metadata automatically included (for HTML/forms)
+func (ctx *Context) Render(data interface{}) error {
+	renderData := RenderData{
+		Data:      data,
+		CSRFToken: ctx.getCSRFToken(),
+		Meta: Meta{
+			Environment: ctx.Config.Environment,
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+			RequestID:   ctx.Fiber.Get("X-Request-ID"),
+		},
+	}
+	return ctx.Fiber.JSON(renderData)
+}
+
+// JSON creates a clean JSON response without CSRF tokens (for APIs)
+func (ctx *Context) JSON(data interface{}) error {
+	return ctx.Fiber.JSON(data)
+}
+
+// RenderJSON creates a JSON response with CSRF token for API endpoints (deprecated - use JSON for clean APIs)
+func (ctx *Context) RenderJSON(data interface{}) error {
+	renderData := RenderData{
+		Data:      data,
+		CSRFToken: ctx.getCSRFToken(),
+	}
+	return ctx.Fiber.JSON(renderData)
+}
+
+// Convenient methods for accessing Fiber functionality
+
+// Params returns the route parameter
+func (ctx *Context) Params(key string) string {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.Params(key)
+	}
+	return ""
+}
+
+// Query returns the query string parameter
+func (ctx *Context) Query(key string, defaultValue ...string) string {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.Query(key, defaultValue...)
+	}
+	if len(defaultValue) > 0 {
+		return defaultValue[0]
+	}
+	return ""
+}
+
+// QueryInt returns the query string parameter as int
+func (ctx *Context) QueryInt(key string, defaultValue ...int) int {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.QueryInt(key, defaultValue...)
+	}
+	if len(defaultValue) > 0 {
+		return defaultValue[0]
+	}
+	return 0
+}
+
+// QueryBool returns the query string parameter as bool
+func (ctx *Context) QueryBool(key string, defaultValue ...bool) bool {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.QueryBool(key, defaultValue...)
+	}
+	if len(defaultValue) > 0 {
+		return defaultValue[0]
+	}
+	return false
+}
+
+// ParseJSON parses JSON request body into the provided struct
+func (ctx *Context) ParseJSON(out interface{}) error {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.BodyParser(out)
+	}
+	return fmt.Errorf("fiber context not available")
+}
+
+// ParseForm parses form data into the provided struct
+func (ctx *Context) ParseForm(out interface{}) error {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.BodyParser(out)
+	}
+	return fmt.Errorf("fiber context not available")
+}
+
+// FormValue returns form field value
+func (ctx *Context) FormValue(key string, defaultValue ...string) string {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.FormValue(key, defaultValue...)
+	}
+	if len(defaultValue) > 0 {
+		return defaultValue[0]
+	}
+	return ""
+}
+
+// FormFile returns uploaded file from form
+func (ctx *Context) FormFile(key string) (*multipart.FileHeader, error) {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.FormFile(key)
+	}
+	return nil, fmt.Errorf("fiber context not available")
+}
+
+// BodyParser parses the request body (generic - deprecated, use ParseJSON/ParseForm)
+func (ctx *Context) BodyParser(out interface{}) error {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.BodyParser(out)
+	}
+	return fmt.Errorf("fiber context not available")
+}
+
+// Status sets the response status code
+func (ctx *Context) Status(status int) *Context {
+	if ctx.Fiber != nil {
+		ctx.Fiber.Status(status)
+	}
+	return ctx
+}
+
+// Error handling helpers - better than Must()!
+
+// Fail returns a 500 Internal Server Error with the given message
+func (ctx *Context) Fail(err error, message ...string) error {
+	msg := "Internal server error"
+	if len(message) > 0 {
+		msg = message[0]
+	}
+	
+	ctx.Logger.Error("Handler failed", "error", err, "message", msg)
+	return ctx.Status(500).JSON(fiber.Map{"error": msg})
+}
+
+// BadRequest returns a 400 Bad Request with the given message
+func (ctx *Context) BadRequest(err error, message ...string) error {
+	msg := "Bad request"
+	if len(message) > 0 {
+		msg = message[0]
+	}
+	
+	ctx.Logger.Warn("Bad request", "error", err, "message", msg)
+	return ctx.Status(400).JSON(fiber.Map{"error": msg})
+}
+
+// NotFound returns a 404 Not Found with the given message
+func (ctx *Context) NotFound(message ...string) error {
+	msg := "Not found"
+	if len(message) > 0 {
+		msg = message[0]
+	}
+	
+	ctx.Logger.Info("Resource not found", "message", msg)
+	return ctx.Status(404).JSON(fiber.Map{"error": msg})
+}
+
+// Unauthorized returns a 401 Unauthorized with the given message
+func (ctx *Context) Unauthorized(message ...string) error {
+	msg := "Unauthorized"
+	if len(message) > 0 {
+		msg = message[0]
+	}
+	
+	ctx.Logger.Warn("Unauthorized access", "message", msg)
+	return ctx.Status(401).JSON(fiber.Map{"error": msg})
+}
+
+// Must handles regular errors - panics with Fail() if error occurs
+// Usage: ctx.Must(someFunction()) - no error checking needed
+func (ctx *Context) Must(err error) {
+	if err != nil {
+		panic(ctx.Fail(err))
+	}
+}
+
+// DBExec executes database commands (INSERT, UPDATE, DELETE) directly
+// Usage: ctx.DBExec("INSERT INTO products (name) VALUES (?)", name)
+func (ctx *Context) DBExec(query string, args ...interface{}) *gorm.DB {
+	result := ctx.DB().Exec(query, args...)
+	if result.Error != nil {
+		panic(ctx.Fail(result.Error))
+	}
+	return result
+}
+
+// DBQuery executes database SELECT queries and scans into destination
+// Usage: ctx.DBQuery("SELECT * FROM products WHERE id = ?", &product, id)
+func (ctx *Context) DBQuery(query string, dest interface{}, args ...interface{}) *gorm.DB {
+	result := ctx.DB().Raw(query, args...).Scan(dest)
+	if result.Error != nil {
+		panic(ctx.Fail(result.Error))
+	}
+	return result
+}
+
+// Exec handles database operations and returns the *gorm.DB result (legacy)
+// Usage: result := ctx.Exec(db.Exec("query")) - use DBExec instead
+func (ctx *Context) Exec(result *gorm.DB) *gorm.DB {
+	if result.Error != nil {
+		panic(ctx.Fail(result.Error))
+	}
+	return result
+}
+
+// Forbidden returns a 403 Forbidden with the given message
+func (ctx *Context) Forbidden(message ...string) error {
+	msg := "Forbidden"
+	if len(message) > 0 {
+		msg = message[0]
+	}
+	
+	ctx.Logger.Warn("Forbidden access", "message", msg)
+	return ctx.Status(403).JSON(fiber.Map{"error": msg})
+}
+
+// Conflict returns a 409 Conflict with the given message
+func (ctx *Context) Conflict(message ...string) error {
+	msg := "Conflict"
+	if len(message) > 0 {
+		msg = message[0]
+	}
+	
+	ctx.Logger.Warn("Resource conflict", "message", msg)
+	return ctx.Status(409).JSON(fiber.Map{"error": msg})
+}
+
+// UnprocessableEntity returns a 422 Unprocessable Entity with the given message
+func (ctx *Context) UnprocessableEntity(message ...string) error {
+	msg := "Unprocessable entity"
+	if len(message) > 0 {
+		msg = message[0]
+	}
+	
+	ctx.Logger.Warn("Unprocessable entity", "message", msg)
+	return ctx.Status(422).JSON(fiber.Map{"error": msg})
+}
+
+// TooManyRequests returns a 429 Too Many Requests with the given message
+func (ctx *Context) TooManyRequests(message ...string) error {
+	msg := "Too many requests"
+	if len(message) > 0 {
+		msg = message[0]
+	}
+	
+	ctx.Logger.Warn("Rate limit exceeded", "message", msg)
+	return ctx.Status(429).JSON(fiber.Map{"error": msg})
+}
+
+// getCSRFToken extracts CSRF token from fiber context
+func (ctx *Context) getCSRFToken() string {
+	// Use the CSRF context key from middleware config
+	contextKey := ctx.Middleware.CSRF.ContextKey
+	if contextKey == "" {
+		contextKey = "csrf" // fallback to default
+	}
+	
+	if ctx.Fiber != nil {
+		if token := ctx.Fiber.Locals(contextKey); token != nil {
+			if tokenStr, ok := token.(string); ok {
+				return tokenStr
+			}
+		}
+	}
+	return ""
 }
 
 // WithGoContext creates a new request context with Go context support
@@ -166,14 +448,14 @@ func (app *App) NewServices() *Context {
 	return app.ctx
 }
 
-// Controller creates a controller with pre-injected app context
-func (cf *ControllerFactory) Controller(controllerFunc func(*Context) CrudController) CrudController {
-	return controllerFunc(cf.app.ctx)
+// Context creates a handler with pre-injected app context
+func (cf *ControllerFactory) Context(handlerFunc func(*Context) Handler) Handler {
+	return handlerFunc(cf.app.ctx)
 }
 
-// App creates a controller with direct app access (even cleaner)
-func (cf *ControllerFactory) App(controllerFunc func(*App) CrudController) CrudController {
-	return controllerFunc(cf.app)
+// App creates a handler with direct app access
+func (cf *ControllerFactory) App(handlerFunc func(*App) Handler) Handler {
+	return handlerFunc(cf.app)
 }
 
 // BaseController provides a convenient base for controllers that need app access
@@ -193,6 +475,14 @@ func (bc *BaseController) SetApp(app *App) {
 func (bc *BaseController) DB() Database {
 	if bc.App != nil {
 		return bc.App.database
+	}
+	return nil
+}
+
+// GORM returns the GORM database instance, abstracting the boilerplate
+func (bc *BaseController) GORM() *gorm.DB {
+	if bc.App != nil && bc.App.database != nil {
+		return bc.App.database.GetGenericConnection().(*gorm.DB)
 	}
 	return nil
 }
@@ -220,6 +510,8 @@ func (bc *BaseController) Auth() AuthConfig {
 	}
 	return AuthConfig{}
 }
+
+// Note: BaseController render methods are deprecated - use functional handlers with Context instead
 
 // App represents the Cartridge web application with a clean API
 type App struct {
@@ -311,10 +603,10 @@ func newApp(appType AppType, options ...AppOption) *App {
 
 	// Initialize shared app context singleton
 	app.ctx = &Context{
-		DB:     app.database,
-		Logger: app.logger,
-		Config: app.config,
-		Auth:   app.authConfig,
+		Database: app.database,
+		Logger:   app.logger,
+		Config:   app.config,
+		Auth:     app.authConfig,
 		Middleware: MiddlewareConfig{
 			CSRF:      DefaultCSRFConfig(),
 			RateLimit: DefaultRateLimiterConfig(),
@@ -647,170 +939,121 @@ func (app *App) defaultLivenessCheck(c RequestContext) error {
 
 // HTTP Methods for the streamlined API
 
-// Get registers a GET route
-func (app *App) Get(path string, handler Handler) *App {
-	app.fiberApp.Get(path, handler)
+// Get registers a GET route - supports both Handler and ContextHandler
+func (app *App) Get(path string, handler interface{}) *App {
+	switch h := handler.(type) {
+	case ContextHandler:
+		app.fiberApp.Get(path, app.HandlerFunc(h))
+	case func(*Context) error: // Support direct function syntax
+		app.fiberApp.Get(path, app.HandlerFunc(h))
+	case Handler:
+		app.fiberApp.Get(path, h)
+	default:
+		panic("handler must be either Handler or ContextHandler")
+	}
 	app.logger.Debug("Registered GET route", "path", path)
 	return app
 }
 
-// Post registers a POST route
-func (app *App) Post(path string, handler Handler) *App {
-	app.fiberApp.Post(path, handler)
+// Post registers a POST route - supports both Handler and ContextHandler
+func (app *App) Post(path string, handler interface{}) *App {
+	switch h := handler.(type) {
+	case ContextHandler:
+		app.fiberApp.Post(path, app.HandlerFunc(h))
+	case func(*Context) error: // Support direct function syntax
+		app.fiberApp.Post(path, app.HandlerFunc(h))
+	case Handler:
+		app.fiberApp.Post(path, h)
+	default:
+		panic("handler must be either Handler or ContextHandler")
+	}
 	app.logger.Debug("Registered POST route", "path", path)
 	return app
 }
 
-// Put registers a PUT route
-func (app *App) Put(path string, handler Handler) *App {
-	app.fiberApp.Put(path, handler)
+// Put registers a PUT route - supports both Handler and ContextHandler
+func (app *App) Put(path string, handler interface{}) *App {
+	switch h := handler.(type) {
+	case ContextHandler:
+		app.fiberApp.Put(path, app.HandlerFunc(h))
+	case func(*Context) error: // Support direct function syntax
+		app.fiberApp.Put(path, app.HandlerFunc(h))
+	case Handler:
+		app.fiberApp.Put(path, h)
+	default:
+		panic("handler must be either Handler or ContextHandler")
+	}
 	app.logger.Debug("Registered PUT route", "path", path)
 	return app
 }
 
-// Delete registers a DELETE route
-func (app *App) Delete(path string, handler Handler) *App {
-	app.fiberApp.Delete(path, handler)
+// Delete registers a DELETE route - supports both Handler and ContextHandler
+func (app *App) Delete(path string, handler interface{}) *App {
+	switch h := handler.(type) {
+	case ContextHandler:
+		app.fiberApp.Delete(path, app.HandlerFunc(h))
+	case func(*Context) error: // Support direct function syntax
+		app.fiberApp.Delete(path, app.HandlerFunc(h))
+	case Handler:
+		app.fiberApp.Delete(path, h)
+	default:
+		panic("handler must be either Handler or ContextHandler")
+	}
 	app.logger.Debug("Registered DELETE route", "path", path)
 	return app
 }
 
-// CrudRouteWithController registers all CRUD routes for a resource with a controller
-// This creates routes like: GET /products, POST /products, GET /products/:id, etc.
-// The controller must implement the CrudController interface
-// If the controller also implements AppAware, it will receive the app instance
-func (app *App) CrudRouteWithController(resource string, controller CrudController) *App {
-	// Inject app instance if controller supports it
-	if appAware, ok := controller.(AppAware); ok {
-		appAware.SetApp(app)
-	}
-
-	basePath := "/" + resource
-
-	// Index: GET /products
-	app.Get(basePath, controller.Index)
-
-	// New: GET /products/new (for forms - only in full-stack apps)
-	if app.appType == AppTypeFullStack {
-		app.Get(basePath+"/new", controller.New)
-	}
-
-	// Create: POST /products
-	app.Post(basePath, controller.Create)
-
-	// Show: GET /products/:id
-	app.Get(basePath+"/:id", controller.Show)
-
-	// Edit: GET /products/:id/edit (for forms - only in full-stack apps)
-	if app.appType == AppTypeFullStack {
-		app.Get(basePath+"/:id/edit", controller.Edit)
-	}
-
-	// Update: PUT /products/:id
-	app.Put(basePath+"/:id", controller.Update)
-
-	// Delete: DELETE /products/:id
-	app.Delete(basePath+"/:id", controller.Delete)
-
-	_, hasAppAccess := controller.(AppAware)
-	fmt.Printf("✓ Registered CRUD routes for %s (with app injection: %t)\n", resource, hasAppAccess)
-	return app
-}
-
-// Resource is a convenience method that works like CrudRouteWithController
-// Use this for more Rails-like syntax: app.Resource("products", controller)
-func (app *App) Resource(name string, controller CrudController) *App {
-	return app.CrudRouteWithController(name, controller)
-}
-
-// CrudRoutes represents a fluent API for building CRUD routes
-// This provides app context automatically and a cleaner syntax
-type CrudRoutes struct {
+// RouteGroup provides a fluent way to register multiple routes with a common base path
+type RouteGroup struct {
 	app      *App
-	resource string
-	BaseController
+	basePath string
 }
 
-// CrudRoute creates a fluent CRUD route builder (opinionated approach)
-// Usage: products := app.CrudRoute("products")
-//
-//	products.Index(handler).Show(handler).Create(handler)
-func (app *App) CrudRoute(resource string) *CrudRoutes {
-	cr := &CrudRoutes{
+// Group creates a route group with a base path
+func (app *App) Group(basePath string) *RouteGroup {
+	return &RouteGroup{
 		app:      app,
-		resource: resource,
-		BaseController: BaseController{
-			App: app, // Inject app immediately
-		},
+		basePath: basePath,
 	}
-
-	fmt.Printf("✓ Created CRUD route builder for %s (with app context)\n", resource)
-	return cr
 }
 
-// Fluent API methods for CrudRoutes
-
-// Index registers GET /resource
-func (cr *CrudRoutes) Index(handler Handler) *CrudRoutes {
-	cr.app.Get("/"+cr.resource, handler)
-	return cr
+// Routes registers multiple routes for a controller in one call
+func (rg *RouteGroup) Routes(controller interface{}) *RouteGroup {
+	// Use reflection to find methods and register them automatically
+	// This would need to be implemented based on naming conventions
+	// For now, provide a manual method
+	return rg
 }
 
-// Show registers GET /resource/:id
-func (cr *CrudRoutes) Show(handler Handler) *CrudRoutes {
-	cr.app.Get("/"+cr.resource+"/:id", handler)
-	return cr
+// GET registers a GET route within the group - supports both Handler and ContextHandler
+func (rg *RouteGroup) GET(path string, handler interface{}) *RouteGroup {
+	fullPath := rg.basePath + path
+	rg.app.Get(fullPath, handler)
+	return rg
 }
 
-// Create registers POST /resource
-func (cr *CrudRoutes) Create(handler Handler) *CrudRoutes {
-	cr.app.Post("/"+cr.resource, handler)
-	return cr
+// POST registers a POST route within the group - supports both Handler and ContextHandler
+func (rg *RouteGroup) POST(path string, handler interface{}) *RouteGroup {
+	fullPath := rg.basePath + path
+	rg.app.Post(fullPath, handler)
+	return rg
 }
 
-// Update registers PUT /resource/:id
-func (cr *CrudRoutes) Update(handler Handler) *CrudRoutes {
-	cr.app.Put("/"+cr.resource+"/:id", handler)
-	return cr
+// PUT registers a PUT route within the group - supports both Handler and ContextHandler
+func (rg *RouteGroup) PUT(path string, handler interface{}) *RouteGroup {
+	fullPath := rg.basePath + path
+	rg.app.Put(fullPath, handler)
+	return rg
 }
 
-// Delete registers DELETE /resource/:id
-func (cr *CrudRoutes) Delete(handler Handler) *CrudRoutes {
-	cr.app.Delete("/"+cr.resource+"/:id", handler)
-	return cr
+// DELETE registers a DELETE route within the group - supports both Handler and ContextHandler
+func (rg *RouteGroup) DELETE(path string, handler interface{}) *RouteGroup {
+	fullPath := rg.basePath + path
+	rg.app.Delete(fullPath, handler)
+	return rg
 }
 
-// New registers GET /resource/new (for full-stack apps)
-func (cr *CrudRoutes) New(handler Handler) *CrudRoutes {
-	if cr.app.appType == AppTypeFullStack {
-		cr.app.Get("/"+cr.resource+"/new", handler)
-	}
-	return cr
-}
 
-// Edit registers GET /resource/:id/edit (for full-stack apps)
-func (cr *CrudRoutes) Edit(handler Handler) *CrudRoutes {
-	if cr.app.appType == AppTypeFullStack {
-		cr.app.Get("/"+cr.resource+"/:id/edit", handler)
-	}
-	return cr
-}
-
-// All registers all CRUD routes with a single controller (convenience method)
-func (cr *CrudRoutes) All(controller CrudController) *CrudRoutes {
-	// Inject app if controller supports it
-	if appAware, ok := controller.(AppAware); ok {
-		appAware.SetApp(cr.app)
-	}
-
-	return cr.Index(controller.Index).
-		Show(controller.Show).
-		Create(controller.Create).
-		Update(controller.Update).
-		Delete(controller.Delete).
-		New(controller.New).
-		Edit(controller.Edit)
-}
 
 // Listen starts the server with graceful shutdown
 func (app *App) Listen(addr string) error {
@@ -945,7 +1188,8 @@ func (app *App) setupMiddleware() {
 		csrfConfig := DefaultCSRFConfig()
 		csrfConfig.CookieSecure = app.config.Environment == "production"
 		fiberApp.Use(CSRF(app.logger, csrfConfig))
-		app.logger.Debug("CSRF protection enabled")
+		fiberApp.Use(CSRFTokenInjector(csrfConfig))
+		app.logger.Debug("CSRF protection enabled with token injection")
 	}
 
 	if app.config.EnableRateLimit {
