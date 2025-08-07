@@ -92,26 +92,66 @@ func CSRF(logger Logger, config CSRFConfig) fiber.Handler {
 		"CookieName", config.CookieName,
 		"ContextKey", config.ContextKey)
 
-	// Ensure KeyLookup is not empty
+	// Ensure KeyLookup is not empty and valid
 	keyLookup := config.KeyLookup
 	if keyLookup == "" {
 		keyLookup = "header:X-CSRF-Token,form:_csrf_token,query:_csrf_token"
 		logger.Warn("KeyLookup was empty, using default", "keyLookup", keyLookup)
 	}
 
-	return csrf.New(csrf.Config{
-		KeyLookup:      keyLookup,
-		CookieName:     config.CookieName,
-		CookieSameSite: config.CookieSameSite,
-		CookieSecure:   config.CookieSecure,
-		Expiration:     config.Expiration,
-		ContextKey:     config.ContextKey,
-		// Make token available in context for rendering
+	// Validate KeyLookup format to prevent panic
+	if !strings.Contains(keyLookup, ":") {
+		logger.Error("Invalid KeyLookup format", "keyLookup", keyLookup)
+		keyLookup = "header:X-CSRF-Token,form:_csrf_token,query:_csrf_token"
+		logger.Warn("Using fallback KeyLookup", "keyLookup", keyLookup)
+	}
+
+	// Additional validation - ensure we have proper source:key format
+	parts := strings.Split(keyLookup, ",")
+	validParts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.Contains(part, ":") && len(strings.Split(part, ":")) == 2 {
+			validParts = append(validParts, part)
+		} else {
+			logger.Warn("Skipping invalid KeyLookup part", "part", part)
+		}
+	}
+
+	if len(validParts) == 0 {
+		logger.Error("No valid KeyLookup parts found, using fallback")
+		keyLookup = "header:X-CSRF-Token,form:_csrf_token,query:_csrf_token"
+	} else {
+		keyLookup = strings.Join(validParts, ",")
+	}
+
+	logger.Info("Final CSRF KeyLookup", "keyLookup", keyLookup)
+
+	// Create a simpler configuration for debugging
+	csrfConfig := csrf.Config{
+		KeyLookup: "header:X-CSRF-Token",
 		Next: func(c *fiber.Ctx) bool {
 			// Skip CSRF for API endpoints that use other auth methods
 			return IsExcludedPath(c.Path(), config.ExcludedPaths)
 		},
-	})
+	}
+
+	// Add optional fields only if they are set
+	if config.CookieName != "" {
+		csrfConfig.CookieName = config.CookieName
+	}
+	if config.CookieSameSite != "" {
+		csrfConfig.CookieSameSite = config.CookieSameSite
+	}
+	if config.Expiration > 0 {
+		csrfConfig.Expiration = config.Expiration
+	}
+	if config.ContextKey != "" {
+		csrfConfig.ContextKey = config.ContextKey
+	}
+	csrfConfig.CookieSecure = config.CookieSecure
+
+	return csrf.New(csrfConfig)
 }
 
 // CSRFTokenInjector injects CSRF token into request context after CSRF middleware runs

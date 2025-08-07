@@ -1628,3 +1628,97 @@ func (cartridge *App) ForceMigrationVersion(version int) error {
 
 	return cartridge.migrations.Force(version)
 }
+
+// Additional convenience methods for Context
+
+// RenderTemplate renders a template with the given data
+func (ctx *Context) RenderTemplate(template string, data interface{}) error {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.Render(template, data)
+	}
+	return fmt.Errorf("fiber context not available")
+}
+
+// Redirect redirects the request to the specified URL
+func (ctx *Context) Redirect(url string) error {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.Redirect(url)
+	}
+	return fmt.Errorf("fiber context not available")
+}
+
+// Method returns the HTTP method
+func (ctx *Context) Method() string {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.Method()
+	}
+	return ""
+}
+
+// Path returns the request path
+func (ctx *Context) Path() string {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.Path()
+	}
+	return ""
+}
+
+// Set adds a response header
+func (ctx *Context) Set(key, value string) {
+	if ctx.Fiber != nil {
+		ctx.Fiber.Set(key, value)
+	}
+}
+
+// Cookie sets a cookie
+func (ctx *Context) Cookie(cookie *fiber.Cookie) {
+	if ctx.Fiber != nil {
+		ctx.Fiber.Cookie(cookie)
+	}
+}
+
+// ClearCookie clears a cookie
+func (ctx *Context) ClearCookie(name string) {
+	if ctx.Fiber != nil {
+		ctx.Fiber.ClearCookie(name)
+	}
+}
+
+// Cookies returns the cookie value for the given key
+func (ctx *Context) Cookies(key string) string {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.Cookies(key)
+	}
+	return ""
+}
+
+// Next calls the next middleware in the stack
+func (ctx *Context) Next() error {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.Next()
+	}
+	return fmt.Errorf("fiber context not available")
+}
+
+// Get retrieves a local variable
+func (ctx *Context) Get(key string) interface{} {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.Locals(key)
+	}
+	return nil
+}
+
+// SetLocal sets a local variable
+func (ctx *Context) SetLocal(key string, value interface{}) {
+	if ctx.Fiber != nil {
+		ctx.Fiber.Locals(key, value)
+	}
+}
+
+// SendString sends a plain text response
+func (ctx *Context) SendString(s string) error {
+	if ctx.Fiber != nil {
+		return ctx.Fiber.SendString(s)
+	}
+	return fmt.Errorf("fiber context not available")
+}
