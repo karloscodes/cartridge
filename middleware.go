@@ -118,16 +118,18 @@ func DefaultCSRFConfig() CSRFConfig {
 		CookieSecure:   false, // Will be set based on environment
 		Expiration:     2 * time.Hour,
 		ContextKey:     "csrf",
-		KeyLookup:      "header:X-CSRF-Token,form:_csrf_token,query:_csrf_token",
+		KeyLookup:      "header:X-CSRF-Token",
 	}
 }
 
 // CSRF provides simplified CSRF protection
 func CSRF(logger Logger, config CSRFConfig) fiber.Handler {
-	logger.Debug("Setting up CSRF middleware",
-		"contextKey", config.ContextKey,
-		"cookieName", config.CookieName)
+	// Ensure config has proper defaults if KeyLookup is empty
+	if config.KeyLookup == "" {
+		config = DefaultCSRFConfig()
+	}
 
+	logger.Info("About to create fiber CSRF config", "keyLookup", config.KeyLookup, "cookieName", config.CookieName)
 	csrfConfig := csrf.Config{
 		KeyLookup:      config.KeyLookup,
 		CookieName:     config.CookieName,
