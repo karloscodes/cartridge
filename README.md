@@ -96,6 +96,7 @@ go run main.go
 curl http://localhost:3000/hello?name=Developer
 curl -X POST http://localhost:3000/demo/async
 curl http://localhost:3000/status/demo-task
+```
 
 ## ⚡ Async Processing Made Simple
 
