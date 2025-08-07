@@ -42,6 +42,7 @@ func SetupTestDB(t *testing.T) interface{} {
 		Level:         LogLevel(cfg.LogLevel),
 		EnableConsole: false, // Disable console output for tests
 		UseJSON:       false,
+		Environment:   "test",
 	})
 
 	dbInstance := NewDatabase(cfg, logger)

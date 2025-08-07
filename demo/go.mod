@@ -1,17 +1,14 @@
-module github.com/karloscodes/cartridge
+module demo
 
 go 1.23.0
 
 toolchain go1.24.5
 
+replace github.com/karloscodes/cartridge => ../
+
 require (
-	github.com/go-playground/validator/v10 v10.27.0
 	github.com/gofiber/fiber/v2 v2.52.4
-	github.com/golang-migrate/migrate/v4 v4.18.3
-	github.com/lmittmann/tint v1.1.2
-	github.com/robfig/cron/v3 v3.0.1
-	gorm.io/driver/sqlite v1.6.0
-	gorm.io/gorm v1.30.1
+	github.com/karloscodes/cartridge v0.0.0-00010101000000-000000000000
 )
 
 require (
@@ -19,6 +16,8 @@ require (
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/go-playground/validator/v10 v10.27.0 // indirect
+	github.com/golang-migrate/migrate/v4 v4.18.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
@@ -32,6 +31,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.30 // indirect
 	github.com/philhofer/fwd v1.1.2 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
+	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/tinylib/msgp v1.1.8 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.51.0 // indirect
@@ -41,4 +41,6 @@ require (
 	golang.org/x/net v0.38.0 // indirect
 	golang.org/x/sys v0.31.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
+	gorm.io/driver/sqlite v1.6.0 // indirect
+	gorm.io/gorm v1.30.1 // indirect
 )

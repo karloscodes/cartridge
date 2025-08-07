@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,7 +31,6 @@ const (
 // RequestContext represents the request context using Fiber
 type RequestContext = *fiber.Ctx
 
-
 // Handler represents a route handler function
 type Handler = fiber.Handler
 
@@ -42,6 +42,23 @@ func (app *App) HandlerFunc(handler ContextHandler) Handler {
 	return func(c *fiber.Ctx) error {
 		// Create a copy of the context with Fiber embedded
 		ctx := app.createRequestContext(c)
+
+		// Error boundary for HTTP handlers
+		defer func() {
+			if r := recover(); r != nil {
+				ctx.Logger.Error("HTTP handler panicked",
+					"method", c.Method(),
+					"path", c.Path(),
+					"panic", r)
+
+				// Send 500 Internal Server Error
+				c.Status(500).JSON(fiber.Map{
+					"error":   "Internal server error",
+					"message": "An unexpected error occurred",
+				})
+			}
+		}()
+
 		return handler(ctx)
 	}
 }
@@ -64,7 +81,6 @@ type Route struct {
 	Path    string
 	Handler Handler
 }
-
 
 // AppAware is an optional interface that controllers can implement
 // to receive the app instance for dependency injection
@@ -259,7 +275,7 @@ func (ctx *Context) Fail(err error, message ...string) error {
 	if len(message) > 0 {
 		msg = message[0]
 	}
-	
+
 	ctx.Logger.Error("Handler failed", "error", err, "message", msg)
 	return ctx.Status(500).JSON(fiber.Map{"error": msg})
 }
@@ -270,7 +286,7 @@ func (ctx *Context) BadRequest(err error, message ...string) error {
 	if len(message) > 0 {
 		msg = message[0]
 	}
-	
+
 	ctx.Logger.Warn("Bad request", "error", err, "message", msg)
 	return ctx.Status(400).JSON(fiber.Map{"error": msg})
 }
@@ -281,7 +297,7 @@ func (ctx *Context) NotFound(message ...string) error {
 	if len(message) > 0 {
 		msg = message[0]
 	}
-	
+
 	ctx.Logger.Info("Resource not found", "message", msg)
 	return ctx.Status(404).JSON(fiber.Map{"error": msg})
 }
@@ -292,7 +308,7 @@ func (ctx *Context) Unauthorized(message ...string) error {
 	if len(message) > 0 {
 		msg = message[0]
 	}
-	
+
 	ctx.Logger.Warn("Unauthorized access", "message", msg)
 	return ctx.Status(401).JSON(fiber.Map{"error": msg})
 }
@@ -302,6 +318,46 @@ func (ctx *Context) Unauthorized(message ...string) error {
 func (ctx *Context) Must(err error) {
 	if err != nil {
 		panic(ctx.Fail(err))
+	}
+}
+
+// Require validates that required fields exist in data - panics with BadRequest if missing
+// Usage: ctx.Require(data, "name", "email", "price")
+func (ctx *Context) Require(data map[string]interface{}, fields ...string) {
+	missing := []string{}
+	for _, field := range fields {
+		if val, exists := data[field]; !exists || val == nil || val == "" {
+			missing = append(missing, field)
+		}
+	}
+	if len(missing) > 0 {
+		panic(ctx.BadRequest(nil, fmt.Sprintf("Required fields missing: %s", strings.Join(missing, ", "))))
+	}
+}
+
+// RequireFile gets an uploaded file or panics with BadRequest if missing
+// Usage: file := ctx.RequireFile("avatar")
+func (ctx *Context) RequireFile(key string) *multipart.FileHeader {
+	file, err := ctx.FormFile(key)
+	if err != nil {
+		panic(ctx.BadRequest(err, fmt.Sprintf("Required file '%s' is missing", key)))
+	}
+	return file
+}
+
+// Validate runs a validator and panics with BadRequest if validation fails
+// Usage: ctx.Validate(validator) - clean way to handle complex validation
+func (ctx *Context) Validate(validator *Validator) {
+	if !validator.IsValid() {
+		panic(ctx.BadRequest(validator.Error(), validator.ErrorMessage()))
+	}
+}
+
+// ValidateStruct validates a struct with validator tags and panics with BadRequest if invalid
+// Usage: ctx.ValidateStruct(userStruct) - simple struct validation
+func (ctx *Context) ValidateStruct(s interface{}) {
+	if err := ValidateStruct(s); err != nil {
+		panic(ctx.BadRequest(err, FormatValidationError(err)))
 	}
 }
 
@@ -340,7 +396,7 @@ func (ctx *Context) Forbidden(message ...string) error {
 	if len(message) > 0 {
 		msg = message[0]
 	}
-	
+
 	ctx.Logger.Warn("Forbidden access", "message", msg)
 	return ctx.Status(403).JSON(fiber.Map{"error": msg})
 }
@@ -351,7 +407,7 @@ func (ctx *Context) Conflict(message ...string) error {
 	if len(message) > 0 {
 		msg = message[0]
 	}
-	
+
 	ctx.Logger.Warn("Resource conflict", "message", msg)
 	return ctx.Status(409).JSON(fiber.Map{"error": msg})
 }
@@ -362,7 +418,7 @@ func (ctx *Context) UnprocessableEntity(message ...string) error {
 	if len(message) > 0 {
 		msg = message[0]
 	}
-	
+
 	ctx.Logger.Warn("Unprocessable entity", "message", msg)
 	return ctx.Status(422).JSON(fiber.Map{"error": msg})
 }
@@ -373,7 +429,7 @@ func (ctx *Context) TooManyRequests(message ...string) error {
 	if len(message) > 0 {
 		msg = message[0]
 	}
-	
+
 	ctx.Logger.Warn("Rate limit exceeded", "message", msg)
 	return ctx.Status(429).JSON(fiber.Map{"error": msg})
 }
@@ -385,7 +441,7 @@ func (ctx *Context) getCSRFToken() string {
 	if contextKey == "" {
 		contextKey = "csrf" // fallback to default
 	}
-	
+
 	if ctx.Fiber != nil {
 		if token := ctx.Fiber.Locals(contextKey); token != nil {
 			if tokenStr, ok := token.(string); ok {
@@ -400,14 +456,14 @@ func (ctx *Context) getCSRFToken() string {
 // This bridges cartridge.Context (app services) with context.Context (request scope)
 func (ctx *Context) WithGoContext(goCtx context.Context) *RequestData {
 	return &RequestData{
-		Context: ctx,    // App services
-		ctx:     goCtx,  // Go context for request scope
+		Context: ctx,   // App services
+		ctx:     goCtx, // Go context for request scope
 	}
 }
 
 // RequestData combines app services with Go context for request handling
 type RequestData struct {
-	*Context              // App services (DB, Logger, Config, Auth)
+	*Context                 // App services (DB, Logger, Config, Auth)
 	ctx      context.Context // Go context for request-scoped data and cancellation
 }
 
@@ -523,6 +579,9 @@ type App struct {
 	appType    AppType
 	routes     map[string]Route
 	ctx        *Context // Shared app context singleton
+	migrations *MigrationManager
+	cron       *CronManager
+	async      *AsyncManager
 }
 
 // CartridgeConfig holds the internal configuration for Cartridge
@@ -538,6 +597,23 @@ type CartridgeConfig struct {
 	EnableCORS      bool
 	EnableRateLimit bool
 	CORSOrigins     []string
+}
+
+// RunConfig holds configuration for the Run method
+type RunConfig struct {
+	MigrationFS  *embed.FS
+	MigrationDir string
+}
+
+// RunOption is a functional option for configuring the Run method
+type RunOption func(*RunConfig)
+
+// WithMigrations configures embedded migrations to be loaded and run
+func WithMigrations(fs embed.FS, dir string) RunOption {
+	return func(cfg *RunConfig) {
+		cfg.MigrationFS = &fs
+		cfg.MigrationDir = dir
+	}
 }
 
 // AppOption is a functional option for configuring the Cartridge application
@@ -585,8 +661,8 @@ func newApp(appType AppType, options ...AppOption) *App {
 		// For now, log and continue with placeholders
 		fmt.Printf("Warning: Failed to create dependencies: %v\n", err)
 		deps = &dependencies{
-			logger:     NewLogger(LogConfig{}),
-			database:   NewDatabase(&Config{}, NewLogger(LogConfig{})),
+			logger:     NewLogger(LogConfig{Environment: "development", EnableConsole: true, EnableColors: true}),
+			database:   NewDatabase(&Config{}, NewLogger(LogConfig{Environment: "development", EnableConsole: true, EnableColors: true})),
 			authConfig: AuthConfig{},
 		}
 	}
@@ -613,6 +689,15 @@ func newApp(appType AppType, options ...AppOption) *App {
 			CORS:      DefaultCORSConfig(),
 			Security:  DefaultSecurityHeaders(),
 		},
+	}
+
+	// Initialize migration manager
+	if db := app.database.GetGenericConnection(); db != nil {
+		if gormDB, ok := db.(*gorm.DB); ok {
+			app.migrations = NewMigrationManager(gormDB, app.logger)
+			app.cron = NewCronManager(app.database, app.logger)
+			app.async = NewAsyncManager(app.database, app.logger)
+		}
 	}
 
 	// Setup the application (placeholder mode)
@@ -772,8 +857,10 @@ func createDependencies() (*dependencies, error) {
 		Level:         LogLevel(cfg.LogLevel),
 		Directory:     cfg.LogsDirectory,
 		UseJSON:       cfg.IsProduction(),
-		EnableConsole: true,
+		EnableConsole: cfg.IsDevelopment(), // Console only in development
+		EnableColors:  cfg.IsDevelopment(), // Enable colors in development
 		AddSource:     cfg.IsDevelopment(),
+		Environment:   cfg.Environment, // Pass environment for smart routing
 	})
 
 	// Setup database
@@ -830,17 +917,17 @@ func (app *App) setupDefaultRoutes() {
 	app.Get("/_health", app.defaultHealthCheck)
 	app.Get("/_ready", app.defaultReadinessCheck)
 	app.Get("/_live", app.defaultLivenessCheck)
-	
-	app.logger.Info("Default routes configured", 
+
+	app.logger.Info("Default routes configured",
 		"health", "/_health",
-		"readiness", "/_ready", 
+		"readiness", "/_ready",
 		"liveness", "/_live")
 }
 
 // defaultHealthCheck provides comprehensive health information
 func (app *App) defaultHealthCheck(c RequestContext) error {
 	startTime := time.Now()
-	
+
 	// Check database connectivity
 	dbHealthy := true
 	var dbError string
@@ -880,7 +967,7 @@ func (app *App) defaultHealthCheck(c RequestContext) error {
 		statusCode = 503
 	}
 
-	app.logger.Info("Health check requested", 
+	app.logger.Info("Health check requested",
 		"status", health["status"],
 		"db_healthy", dbHealthy)
 
@@ -1053,8 +1140,6 @@ func (rg *RouteGroup) DELETE(path string, handler interface{}) *RouteGroup {
 	return rg
 }
 
-
-
 // Listen starts the server with graceful shutdown
 func (app *App) Listen(addr string) error {
 	app.logger.Info("Starting Cartridge server", "address", addr)
@@ -1077,7 +1162,7 @@ func (app *App) Listen(addr string) error {
 			app.logger.Error("Server failed", "error", err)
 			return err
 		}
-		
+
 	case sig := <-sigChan:
 		app.logger.Info("Shutdown signal received", "signal", sig.String())
 	}
@@ -1109,7 +1194,7 @@ func (app *App) Shutdown() error {
 		}
 		app.logger.Info("Graceful shutdown completed")
 		return nil
-		
+
 	case <-ctx.Done():
 		app.logger.Error("Shutdown timed out")
 		return ctx.Err()
@@ -1293,34 +1378,253 @@ func (app *App) Auth() AuthConfig {
 	return app.authConfig
 }
 
-
 // Start starts the application with graceful shutdown using the configured port
 func (app *App) Start() error {
 	app.logger.Info("Starting Cartridge application")
-	
+
 	// Use port from config
 	addr := ":" + app.config.Port
-	
+
 	app.logger.Info("Server will start", "address", addr)
 	app.logger.Info("Press Ctrl+C to shutdown gracefully")
-	
+
 	return app.Listen(addr)
 }
 
-// Run is an alias for Start (for backward compatibility)
-func (app *App) Run() error {
-	return app.Start()
+// Run starts the application with optional configurations
+// This is the new unified method that handles migrations, cron jobs, and startup
+// Panics on any failure for a sublime developer experience
+func (app *App) Run(options ...RunOption) {
+	// Apply run-time options
+	runConfig := &RunConfig{}
+	for _, option := range options {
+		option(runConfig)
+	}
+
+	// Handle migrations if provided
+	if runConfig.MigrationFS != nil {
+		app.logger.Info("Loading database migrations from embedded files")
+		if err := app.LoadMigrationsFromFS(*runConfig.MigrationFS, runConfig.MigrationDir); err != nil {
+			app.logger.Error("Failed to load migrations", "error", err)
+			panic(fmt.Errorf("failed to load migrations: %w", err))
+		}
+
+		app.logger.Info("Running database migrations")
+		if err := app.Migrate(); err != nil {
+			app.logger.Error("Failed to run migrations", "error", err)
+			panic(fmt.Errorf("failed to run migrations: %w", err))
+		}
+		app.logger.Info("Database migrations completed")
+	}
+
+	// Start cron jobs if any are registered
+	if app.cron != nil && app.cron.HasJobs() {
+		app.logger.Info("Starting cron jobs")
+		app.StartCronJobs()
+		app.logger.Info("Cron jobs started")
+	}
+
+	// Start the server - panic on failure for clean developer experience
+	if err := app.Start(); err != nil {
+		app.logger.Error("Failed to start server", "error", err)
+		panic(fmt.Errorf("failed to start server: %w", err))
+	}
 }
 
 // Stop gracefully stops the web application
-func (app *App) Stop() error {
-	app.logger.Info("Stopping web application")
+func (cartridge *App) Stop() error {
+	cartridge.logger.Info("Stopping web application")
 
-	// Close database connections
-	if err := app.database.Close(); err != nil {
-		app.logger.Error("Failed to close database", "error", err)
+	// Stop cron jobs
+	if cartridge.cron != nil {
+		cartridge.logger.Info("Stopping cron scheduler")
+		cartridge.cron.Stop()
 	}
 
-	app.logger.Info("Application stopped")
+	// Close migration manager
+	if cartridge.migrations != nil {
+		if err := cartridge.migrations.Close(); err != nil {
+			cartridge.logger.Error("Failed to close migration manager", "error", err)
+		}
+	}
+
+	// Close database connections
+	if err := cartridge.database.Close(); err != nil {
+		cartridge.logger.Error("Failed to close database", "error", err)
+	}
+
+	cartridge.logger.Info("Application stopped")
 	return nil
+}
+
+// Migration Management
+
+// LoadMigrationsFromFS loads migrations from embedded filesystem
+func (cartridge *App) LoadMigrationsFromFS(fsys embed.FS, dir string) error {
+	if cartridge.migrations == nil {
+		return fmt.Errorf("migration manager not initialized")
+	}
+	return cartridge.migrations.LoadFromFS(fsys, dir)
+}
+
+// AddBinaryMigration adds a programmatic migration to be executed in-memory
+func (cartridge *App) AddBinaryMigration(version uint, description string, up, down func(*gorm.DB) error) {
+	if cartridge.migrations == nil {
+		cartridge.logger.Warn("Migration manager not initialized")
+		return
+	}
+	cartridge.migrations.AddBinaryMigration(version, description, up, down)
+}
+
+// CronJob registers a new cron job with the scheduler (description is optional)
+// Schedule format supports seconds: "0 30 * * * *" (every 30 seconds), "0 0 12 * * MON-FRI" (weekdays at noon)
+// Panics on failure for sublime developer experience
+func (cartridge *App) CronJob(id, schedule string, handler CronHandler, description ...string) {
+	if cartridge.cron == nil {
+		panic(fmt.Errorf("cron manager not initialized"))
+	}
+
+	desc := ""
+	if len(description) > 0 {
+		desc = description[0]
+	}
+
+	if err := cartridge.cron.AddJob(id, schedule, desc, handler); err != nil {
+		panic(fmt.Errorf("failed to register cron job '%s': %w", id, err))
+	}
+}
+
+// AddCronJob registers a new cron job with the scheduler (legacy method)
+// Schedule format supports seconds: "0 30 * * * *" (every 30 seconds), "0 0 12 * * MON-FRI" (weekdays at noon)
+func (cartridge *App) AddCronJob(id, schedule, description string, handler CronHandler) error {
+	if cartridge.cron == nil {
+		return fmt.Errorf("cron manager not initialized")
+	}
+	return cartridge.cron.AddJob(id, schedule, description, handler)
+}
+
+// RemoveCronJob removes a cron job from the scheduler
+func (cartridge *App) RemoveCronJob(id string) error {
+	if cartridge.cron == nil {
+		return fmt.Errorf("cron manager not initialized")
+	}
+	return cartridge.cron.RemoveJob(id)
+}
+
+// StartCronJobs starts the cron scheduler
+func (cartridge *App) StartCronJobs() {
+	if cartridge.cron == nil {
+		cartridge.logger.Warn("Cron manager not initialized")
+		return
+	}
+	cartridge.cron.Start()
+}
+
+// StopCronJobs gracefully stops the cron scheduler
+func (cartridge *App) StopCronJobs() {
+	if cartridge.cron == nil {
+		return
+	}
+	cartridge.cron.Stop()
+}
+
+// CronStatus returns the status of all cron jobs
+func (cartridge *App) CronStatus() map[string]interface{} {
+	if cartridge.cron == nil {
+		return map[string]interface{}{
+			"error": "cron manager not initialized",
+		}
+	}
+	return cartridge.cron.Status()
+}
+
+// Async Processing Methods
+
+// AsyncJob runs a background task and returns the task ID and error for error checking
+func (cartridge *App) AsyncJob(id string, handler AsyncHandler, args map[string]interface{}) (string, error) {
+	if cartridge.async == nil {
+		return "", fmt.Errorf("async manager not initialized")
+	}
+	taskID := cartridge.async.Run(id, handler, args)
+	return taskID, nil
+}
+
+// AsyncStatus returns the status of a specific async task
+func (cartridge *App) AsyncStatus(id string) (*TaskInfo, error) {
+	if cartridge.async == nil {
+		return nil, fmt.Errorf("async manager not initialized")
+	}
+	return cartridge.async.Status(id)
+}
+
+// AsyncCancel cancels a running async task
+func (cartridge *App) AsyncCancel(id string) error {
+	if cartridge.async == nil {
+		return fmt.Errorf("async manager not initialized")
+	}
+	return cartridge.async.Cancel(id)
+}
+
+// AsyncList returns all async tasks with their current status
+func (cartridge *App) AsyncList() map[string]interface{} {
+	if cartridge.async == nil {
+		return map[string]interface{}{
+			"error": "async manager not initialized",
+		}
+	}
+	return cartridge.async.List()
+}
+
+// AsyncCleanup removes completed or failed tasks older than the specified duration
+func (cartridge *App) AsyncCleanup(olderThan time.Duration) int {
+	if cartridge.async == nil {
+		return 0
+	}
+	return cartridge.async.Cleanup(olderThan)
+}
+
+// AddMigration manually adds a migration (deprecated - use AddBinaryMigration or SQL files)
+func (cartridge *App) AddMigration(version int, name, upSQL, downSQL string) {
+	cartridge.logger.Warn("AddMigration is deprecated - use AddBinaryMigration or SQL files instead")
+}
+
+// Migrate runs all pending database migrations
+func (cartridge *App) Migrate() error {
+	if cartridge.migrations == nil {
+		return fmt.Errorf("migration manager not initialized")
+	}
+
+	// Initialize database first
+	if err := cartridge.database.Init(); err != nil {
+		return fmt.Errorf("failed to initialize database: %w", err)
+	}
+
+	return cartridge.migrations.Up()
+}
+
+// RollbackMigration rolls back the latest migration
+func (cartridge *App) RollbackMigration() error {
+	if cartridge.migrations == nil {
+		return fmt.Errorf("migration manager not initialized")
+	}
+
+	return cartridge.migrations.Down()
+}
+
+// MigrationStatus shows the status of all migrations
+func (cartridge *App) MigrationStatus() error {
+	if cartridge.migrations == nil {
+		return fmt.Errorf("migration manager not initialized")
+	}
+
+	return cartridge.migrations.Status()
+}
+
+// ForceMigrationVersion forces migration version (for debugging dirty states)
+func (cartridge *App) ForceMigrationVersion(version int) error {
+	if cartridge.migrations == nil {
+		return fmt.Errorf("migration manager not initialized")
+	}
+
+	return cartridge.migrations.Force(version)
 }

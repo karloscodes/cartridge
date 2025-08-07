@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+
+	"github.com/lmittmann/tint"
 )
 
 // Logger is a simple alias for slog.Logger to provide direct access
@@ -15,8 +17,10 @@ type LogConfig struct {
 	Directory     string
 	UseJSON       bool
 	EnableConsole bool
+	EnableColors  bool
 	AddSource     bool
-}
+	Environment   string // "development", "production", "test"
+} // NewLogger creates a new slog.Logger instance with the given configuration
 
 // NewLogger creates a new slog.Logger instance with the given configuration
 func NewLogger(config LogConfig) Logger {
@@ -42,33 +46,57 @@ func NewLogger(config LogConfig) Logger {
 	}
 
 	var handler slog.Handler
-	var writer *os.File
+	isProduction := config.Environment == "production"
 
-	// Setup file writer if directory is specified
-	if config.Directory != "" {
-		if err := os.MkdirAll(config.Directory, 0o755); err != nil {
-			// Fall back to stdout
-			writer = os.Stdout
-		} else {
+	// Production: Log to file only with structured JSON
+	if isProduction && config.Directory != "" {
+		if err := os.MkdirAll(config.Directory, 0o755); err == nil {
 			logFile := filepath.Join(config.Directory, "app.log")
-			file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-			if err != nil {
-				writer = os.Stdout
-			} else {
-				writer = file
+			if file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+				// Always use JSON in production for structured logs
+				handler = slog.NewJSONHandler(file, opts)
+				return slog.New(handler)
 			}
 		}
-	} else {
-		writer = os.Stdout
+		// Fallback to stdout with JSON if file creation fails
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+		return slog.New(handler)
 	}
 
-	// Create appropriate handler
-	if config.UseJSON {
-		handler = slog.NewJSONHandler(writer, opts)
-	} else {
-		handler = slog.NewTextHandler(writer, opts)
+	// Development/Test: Console with colors, optional file logging
+	if config.EnableConsole || config.Directory == "" {
+		// Console output with colors in development
+		if config.EnableColors {
+			handler = tint.NewHandler(os.Stdout, &tint.Options{
+				Level:      slogLevel,
+				TimeFormat: "15:04:05",
+				AddSource:  config.AddSource,
+			})
+		} else if config.UseJSON {
+			handler = slog.NewJSONHandler(os.Stdout, opts)
+		} else {
+			handler = slog.NewTextHandler(os.Stdout, opts)
+		}
+		return slog.New(handler)
 	}
 
+	// File logging for development (when console is disabled)
+	if config.Directory != "" {
+		if err := os.MkdirAll(config.Directory, 0o755); err == nil {
+			logFile := filepath.Join(config.Directory, "app.log")
+			if file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+				if config.UseJSON {
+					handler = slog.NewJSONHandler(file, opts)
+				} else {
+					handler = slog.NewTextHandler(file, opts)
+				}
+				return slog.New(handler)
+			}
+		}
+	}
+
+	// Final fallback
+	handler = slog.NewTextHandler(os.Stdout, opts)
 	return slog.New(handler)
 }
 

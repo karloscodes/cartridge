@@ -68,6 +68,7 @@ type CSRFConfig struct {
 	CookieSecure   bool
 	Expiration     time.Duration
 	ContextKey     string
+	KeyLookup      string
 }
 
 // DefaultCSRFConfig returns default CSRF configuration
@@ -79,13 +80,27 @@ func DefaultCSRFConfig() CSRFConfig {
 		CookieSecure:   false, // Will be set based on environment
 		Expiration:     2 * time.Hour,
 		ContextKey:     "csrf",
+		KeyLookup:      "header:X-CSRF-Token,form:_csrf_token,query:_csrf_token",
 	}
 }
 
 // CSRF provides CSRF protection with token injection
 func CSRF(logger Logger, config CSRFConfig) fiber.Handler {
+	// Debug logging to see what config we're getting
+	logger.Debug("CSRF middleware config",
+		"KeyLookup", config.KeyLookup,
+		"CookieName", config.CookieName,
+		"ContextKey", config.ContextKey)
+
+	// Ensure KeyLookup is not empty
+	keyLookup := config.KeyLookup
+	if keyLookup == "" {
+		keyLookup = "header:X-CSRF-Token,form:_csrf_token,query:_csrf_token"
+		logger.Warn("KeyLookup was empty, using default", "keyLookup", keyLookup)
+	}
+
 	return csrf.New(csrf.Config{
-		KeyLookup:      "header:X-CSRF-Token,form:_csrf_token,query:_csrf_token",
+		KeyLookup:      keyLookup,
 		CookieName:     config.CookieName,
 		CookieSameSite: config.CookieSameSite,
 		CookieSecure:   config.CookieSecure,
@@ -164,7 +179,7 @@ func ProductionCORSConfig(allowedOrigins []string) CORSConfig {
 	if len(allowedOrigins) == 0 {
 		allowedOrigins = []string{"https://localhost:3000"} // Default safe origin
 	}
-	
+
 	return CORSConfig{
 		AllowOrigins:     allowedOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -229,12 +244,12 @@ func NewRequestLogger(logger Logger) *RequestLogger {
 // LogRequest logs HTTP request details using slog directly
 func (rl *RequestLogger) LogRequest(method, path, ip, userAgent string, status int, duration time.Duration, size int64) {
 	message := fmt.Sprintf("%s %s", method, path)
-	
+
 	args := []any{
 		"method", method,
 		"path", path,
 		"status", status,
-		"duration_ms", float64(duration.Nanoseconds())/1e6,
+		"duration_ms", float64(duration.Nanoseconds()) / 1e6,
 		"ip", ip,
 		"user_agent", userAgent,
 		"response_size", size,
