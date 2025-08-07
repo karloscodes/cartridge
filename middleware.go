@@ -1,7 +1,7 @@
 package cartridge
 
 import (
-	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -20,33 +20,71 @@ func RequestID() fiber.Handler {
 	return requestid.New()
 }
 
+// RecoveryConfig holds recovery middleware configuration
+type RecoveryConfig struct {
+	EnableStackTrace bool
+	SkipHealthChecks bool
+}
+
 // Recovery provides panic recovery with stack traces
-func Recovery(logger Logger) fiber.Handler {
+func Recovery(config RecoveryConfig) fiber.Handler {
 	return recover.New(recover.Config{
-		EnableStackTrace: true,
+		EnableStackTrace: config.EnableStackTrace,
+		Next: func(c *fiber.Ctx) bool {
+			// Skip recovery for health checks if configured
+			return config.SkipHealthChecks && c.Path() == "/health"
+		},
 	})
+}
+
+// LoggerConfig holds logging middleware configuration
+type LoggerConfig struct {
+	Format           string
+	SkipHealthChecks bool
+	SkipStaticAssets bool
+	SkipPaths        []string
 }
 
 // LoggerMiddleware provides HTTP request/response logging
-func LoggerMiddleware(appLogger Logger) fiber.Handler {
+func LoggerMiddleware(config LoggerConfig) fiber.Handler {
 	return logger.New(logger.Config{
-		Format: "${time} ${status} - ${method} ${path} - ${latency}\n",
+		Format: config.Format,
+		Output: os.Stdout,
+		Next: func(c *fiber.Ctx) bool {
+			path := c.Path()
+
+			// Skip health checks if configured
+			if config.SkipHealthChecks && path == "/health" {
+				return true
+			}
+
+			// Skip static assets if configured
+			if config.SkipStaticAssets && (strings.HasPrefix(path, "/static/") || strings.HasPrefix(path, "/assets/")) {
+				return true
+			}
+
+			// Skip custom paths
+			for _, skipPath := range config.SkipPaths {
+				if strings.HasPrefix(path, skipPath) {
+					return true
+				}
+			}
+
+			return false
+		},
 	})
 }
 
-// Helmet provides security headers
-func Helmet(referrerPolicy string) fiber.Handler {
+// HelmetConfig holds security headers configuration
+type HelmetConfig struct {
+	ReferrerPolicy string
+}
+
+// Helmet provides security headers based on configuration
+func Helmet(config HelmetConfig) fiber.Handler {
 	return helmet.New(helmet.Config{
-		ReferrerPolicy: referrerPolicy,
+		ReferrerPolicy: config.ReferrerPolicy,
 	})
-}
-
-// DatabaseInjection adds database connections to context
-func DatabaseInjection(database Database) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		c.Locals("db", database)
-		return c.Next()
-	}
 }
 
 // MethodOverride supports _method form field for PUT/DELETE via POST
@@ -84,72 +122,23 @@ func DefaultCSRFConfig() CSRFConfig {
 	}
 }
 
-// CSRF provides CSRF protection with token injection
+// CSRF provides simplified CSRF protection
 func CSRF(logger Logger, config CSRFConfig) fiber.Handler {
-	// Debug logging to see what config we're getting
-	logger.Debug("CSRF middleware config",
-		"KeyLookup", config.KeyLookup,
-		"CookieName", config.CookieName,
-		"ContextKey", config.ContextKey)
+	logger.Debug("Setting up CSRF middleware",
+		"contextKey", config.ContextKey,
+		"cookieName", config.CookieName)
 
-	// Ensure KeyLookup is not empty and valid
-	keyLookup := config.KeyLookup
-	if keyLookup == "" {
-		keyLookup = "header:X-CSRF-Token,form:_csrf_token,query:_csrf_token"
-		logger.Warn("KeyLookup was empty, using default", "keyLookup", keyLookup)
-	}
-
-	// Validate KeyLookup format to prevent panic
-	if !strings.Contains(keyLookup, ":") {
-		logger.Error("Invalid KeyLookup format", "keyLookup", keyLookup)
-		keyLookup = "header:X-CSRF-Token,form:_csrf_token,query:_csrf_token"
-		logger.Warn("Using fallback KeyLookup", "keyLookup", keyLookup)
-	}
-
-	// Additional validation - ensure we have proper source:key format
-	parts := strings.Split(keyLookup, ",")
-	validParts := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if strings.Contains(part, ":") && len(strings.Split(part, ":")) == 2 {
-			validParts = append(validParts, part)
-		} else {
-			logger.Warn("Skipping invalid KeyLookup part", "part", part)
-		}
-	}
-
-	if len(validParts) == 0 {
-		logger.Error("No valid KeyLookup parts found, using fallback")
-		keyLookup = "header:X-CSRF-Token,form:_csrf_token,query:_csrf_token"
-	} else {
-		keyLookup = strings.Join(validParts, ",")
-	}
-
-	logger.Info("Final CSRF KeyLookup", "keyLookup", keyLookup)
-
-	// Create a simpler configuration for debugging
 	csrfConfig := csrf.Config{
-		KeyLookup: "header:X-CSRF-Token",
+		KeyLookup:      config.KeyLookup,
+		CookieName:     config.CookieName,
+		CookieSameSite: config.CookieSameSite,
+		CookieSecure:   config.CookieSecure,
+		Expiration:     config.Expiration,
+		ContextKey:     config.ContextKey,
 		Next: func(c *fiber.Ctx) bool {
-			// Skip CSRF for API endpoints that use other auth methods
 			return IsExcludedPath(c.Path(), config.ExcludedPaths)
 		},
 	}
-
-	// Add optional fields only if they are set
-	if config.CookieName != "" {
-		csrfConfig.CookieName = config.CookieName
-	}
-	if config.CookieSameSite != "" {
-		csrfConfig.CookieSameSite = config.CookieSameSite
-	}
-	if config.Expiration > 0 {
-		csrfConfig.Expiration = config.Expiration
-	}
-	if config.ContextKey != "" {
-		csrfConfig.ContextKey = config.ContextKey
-	}
-	csrfConfig.CookieSecure = config.CookieSecure
 
 	return csrf.New(csrfConfig)
 }
@@ -269,42 +258,116 @@ func WriteConcurrencyLimitMiddleware(limiter *ConcurrencyLimiter) fiber.Handler 
 	}
 }
 
-// RequestLogger provides structured HTTP request logging
-type RequestLogger struct {
-	logger Logger
-}
-
-// NewRequestLogger creates a new request logger
-func NewRequestLogger(logger Logger) *RequestLogger {
-	return &RequestLogger{
-		logger: logger,
+// DefaultDevelopmentLoggerConfig returns logger config for development
+func DefaultDevelopmentLoggerConfig() LoggerConfig {
+	return LoggerConfig{
+		Format:           "${time} ${status} - ${method} ${path} - ${latency}\n",
+		SkipHealthChecks: false,
+		SkipStaticAssets: false,
+		SkipPaths:        []string{},
 	}
 }
 
-// LogRequest logs HTTP request details using slog directly
-func (rl *RequestLogger) LogRequest(method, path, ip, userAgent string, status int, duration time.Duration, size int64) {
-	message := fmt.Sprintf("%s %s", method, path)
-
-	args := []any{
-		"method", method,
-		"path", path,
-		"status", status,
-		"duration_ms", float64(duration.Nanoseconds()) / 1e6,
-		"ip", ip,
-		"user_agent", userAgent,
-		"response_size", size,
-	}
-
-	if status >= 500 {
-		rl.logger.Error(message, args...)
-	} else if status >= 400 {
-		rl.logger.Warn(message, args...)
-	} else {
-		rl.logger.Info(message, args...)
+// DefaultProductionLoggerConfig returns logger config for production
+func DefaultProductionLoggerConfig() LoggerConfig {
+	return LoggerConfig{
+		Format:           `{"time":"${time}","status":${status},"method":"${method}","path":"${path}","latency":"${latency}","ip":"${ip}","user_agent":"${ua}"}` + "\n",
+		SkipHealthChecks: true,
+		SkipStaticAssets: true,
+		SkipPaths:        []string{"/metrics", "/favicon.ico"},
 	}
 }
 
-// IsExcludedPath checks if a path should be excluded from middleware
+// DefaultRecoveryConfig returns default recovery configuration
+func DefaultRecoveryConfig(enableStackTrace bool) RecoveryConfig {
+	return RecoveryConfig{
+		EnableStackTrace: enableStackTrace,
+		SkipHealthChecks: false,
+	}
+}
+
+// DefaultHelmetConfig returns default helmet configuration
+func DefaultHelmetConfig(production bool) HelmetConfig {
+	if production {
+		return HelmetConfig{
+			ReferrerPolicy: "strict-origin-when-cross-origin",
+		}
+	}
+	return HelmetConfig{
+		ReferrerPolicy: "no-referrer-when-downgrade",
+	}
+}
+
+// AppTypeMiddlewareConfig holds middleware configurations for different app types
+type AppTypeMiddlewareConfig struct {
+	EnableCSRF      bool
+	EnableCORS      bool
+	EnableRateLimit bool
+	CSRFConfig      CSRFConfig
+	CORSConfig      CORSConfig
+	RateLimitConfig RateLimiterConfig
+	LoggerConfig    LoggerConfig
+	RecoveryConfig  RecoveryConfig
+	HelmetConfig    HelmetConfig
+}
+
+// NewAppTypeMiddlewareConfig creates middleware config based on app type and environment
+// csrfExcludedPaths: Global CSRF excluded paths that override default paths
+func NewAppTypeMiddlewareConfig(appType int, environment string, csrfExcludedPaths []string) AppTypeMiddlewareConfig {
+	isProduction := environment == EnvProduction
+
+	// Base configuration
+	config := AppTypeMiddlewareConfig{
+		LoggerConfig:   DefaultDevelopmentLoggerConfig(),
+		RecoveryConfig: DefaultRecoveryConfig(!isProduction),
+		HelmetConfig:   DefaultHelmetConfig(isProduction),
+	}
+
+	if isProduction {
+		config.LoggerConfig = DefaultProductionLoggerConfig()
+	} // App type specific configurations
+	switch appType {
+	case 0: // AppTypeGeneric
+		config.EnableCSRF = true
+		config.EnableCORS = false
+		config.EnableRateLimit = false
+		config.CSRFConfig = DefaultCSRFConfig()
+		// Override with global excluded paths if provided
+		if len(csrfExcludedPaths) > 0 {
+			config.CSRFConfig.ExcludedPaths = csrfExcludedPaths
+		}
+		if isProduction {
+			config.CSRFConfig.CookieSecure = true
+		}
+
+	case 1: // AppTypeFullStack
+		config.EnableCSRF = true
+		config.EnableCORS = false
+		config.EnableRateLimit = false
+		config.CSRFConfig = DefaultCSRFConfig()
+		// Override with global excluded paths if provided
+		if len(csrfExcludedPaths) > 0 {
+			config.CSRFConfig.ExcludedPaths = csrfExcludedPaths
+		}
+		if isProduction {
+			config.CSRFConfig.CookieSecure = true
+		}
+
+	case 2: // AppTypeAPIOnly
+		config.EnableCSRF = false
+		config.EnableCORS = true
+		config.EnableRateLimit = true
+		config.CORSConfig = DefaultCORSConfig()
+		config.RateLimitConfig = DefaultRateLimiterConfig()
+		if isProduction {
+			config.CORSConfig = ProductionCORSConfig([]string{})
+			config.RateLimitConfig.Max = 60
+			config.RateLimitConfig.Duration = 1 * time.Minute
+		}
+	}
+
+	return config
+} // IsExcludedPath checks if a path should be excluded from middleware
 func IsExcludedPath(path string, excludedPaths []string) bool {
 	for _, excluded := range excludedPaths {
 		if strings.HasPrefix(path, excluded) {

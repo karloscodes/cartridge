@@ -209,7 +209,7 @@ func (dm *sqliteDatabase) Init() error {
 		return fmt.Errorf("failed to apply SQLite pragmas: %w", err)
 	}
 
-	dm.logger.Info("Database connection established successfully", 
+	dm.logger.Info("Database connection established successfully",
 		"max_open_conns", dbConfig.MaxOpenConns,
 		"max_idle_conns", dbConfig.MaxIdleConns,
 		"journal_mode", dbConfig.JournalMode)
@@ -224,35 +224,6 @@ func (dm *sqliteDatabase) applySQLitePragmas(config DatabaseConfig) error {
 		fmt.Sprintf("PRAGMA synchronous = %s", config.Synchronous),  // NORMAL for good performance/safety balance
 		fmt.Sprintf("PRAGMA cache_size = %d", config.CacheSize),     // Negative value = KB, positive = pages
 		fmt.Sprintf("PRAGMA temp_store = %s", config.TempStore),     // Store temp tables in memory
-		
-		// Performance optimizations
-		"PRAGMA busy_timeout = 30000",        // 30s timeout for concurrent access
-		"PRAGMA auto_vacuum = INCREMENTAL",   // Gradual vacuum to prevent large pauses
-		"PRAGMA mmap_size = 268435456",       // 256MB memory-mapped I/O
-		"PRAGMA page_size = 4096",            // 4KB pages (good balance)
-		
-		// WAL mode optimizations
-		"PRAGMA wal_autocheckpoint = 1000",   // Auto checkpoint every 1000 pages
-		"PRAGMA wal_checkpoint(TRUNCATE)",    // Initial WAL cleanup
-		
-		// Security and reliability
-		"PRAGMA secure_delete = OFF",         // Faster deletes (data overwritten anyway in WAL)
-		"PRAGMA case_sensitive_like = ON",    // Consistent LIKE behavior
-	}
-
-	// Environment-specific pragmas
-	if dm.config.IsDevelopment() {
-		// Development: More paranoid settings for debugging
-		pragmas = append(pragmas, 
-			"PRAGMA integrity_check",         // Check DB integrity
-			"PRAGMA optimize",               // Analyze tables for query optimization
-		)
-	} else {
-		// Production: Performance-focused
-		pragmas = append(pragmas,
-			"PRAGMA analysis_limit = 1000", // Limit ANALYZE time
-			"PRAGMA optimize",              // Optimize query planner stats
-		)
 	}
 
 	// Foreign keys (usually enabled)
@@ -277,12 +248,12 @@ func (dm *sqliteDatabase) applySQLitePragmas(config DatabaseConfig) error {
 		}
 	}
 
-	dm.logger.Info("SQLite pragmas configuration completed", 
-		"total", len(pragmas), 
+	dm.logger.Info("SQLite pragmas configuration completed",
+		"total", len(pragmas),
 		"successful", successCount,
 		"mode", config.JournalMode,
 		"cache_size_kb", -config.CacheSize/1024)
-	
+
 	return nil
 }
 
@@ -392,18 +363,18 @@ func (dm *sqliteDatabase) Ping() error {
 	if dm.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
-	
+
 	sqlDB, err := dm.db.DB()
 	if err != nil {
 		dm.logger.Error("Failed to get underlying sql.DB for ping", "error", err)
 		return err
 	}
-	
+
 	if err := sqlDB.Ping(); err != nil {
 		dm.logger.Error("Database ping failed", "error", err)
 		return err
 	}
-	
+
 	dm.logger.Debug("Database ping successful")
 	return nil
 }

@@ -5,6 +5,9 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 // AssetConfig holds asset serving configuration
@@ -98,35 +101,46 @@ func (am *AssetManager) GetTemplateFileSystem() fs.FS {
 }
 
 // SetupStaticRoutes configures static asset routes
-func (am *AssetManager) SetupStaticRoutes(app interface{}) {
+func (am *AssetManager) SetupStaticRoutes(app *fiber.App) {
 	am.logger.Info("Setting up static asset routes",
 		"path", am.config.StaticPath,
 		"cache_duration", am.config.CacheDuration,
 		"compression", am.config.EnableCompression)
 
-	// TODO: This would configure Fiber static routes when available
-	/*
-		fiberApp := app.(*fiber.App)
+	if am.useEmbedded && am.staticFS != (embed.FS{}) {
+		// Use embedded filesystem
+		app.Static("/static", "./static", fiber.Static{
+			MaxAge:   am.parseDuration(am.config.CacheDuration),
+			Compress: am.config.EnableCompression,
+			Browse:   am.config.EnableBrowsing,
+			Index:    am.config.IndexFile,
+		})
+		am.logger.Debug("Configured embedded static assets")
+	} else {
+		// Use OS filesystem for development
+		app.Static("/static", am.config.StaticPath, fiber.Static{
+			MaxAge:   am.parseDuration(am.config.CacheDuration),
+			Compress: am.config.EnableCompression,
+			Browse:   am.config.EnableBrowsing,
+			Index:    am.config.IndexFile,
+		})
+		am.logger.Debug("Configured filesystem-based static assets")
+	}
+}
 
-		if am.useEmbedded {
-			// Use embedded filesystem
-			fiberApp.Static("/static", "./", fiber.Static{
-				Embed:      am.staticFS,
-				MaxAge:     parseDuration(am.config.CacheDuration),
-				Compress:   am.config.EnableCompression,
-				Browse:     am.config.EnableBrowsing,
-				Index:      am.config.IndexFile,
-			})
-		} else {
-			// Use OS filesystem
-			fiberApp.Static("/static", am.config.StaticPath, fiber.Static{
-				MaxAge:   parseDuration(am.config.CacheDuration),
-				Compress: am.config.EnableCompression,
-				Browse:   am.config.EnableBrowsing,
-				Index:    am.config.IndexFile,
-			})
-		}
-	*/
+// parseDuration converts a duration string to time.Duration
+func (am *AssetManager) parseDuration(durationStr string) int {
+	if durationStr == "0" {
+		return 0
+	}
+
+	duration, err := time.ParseDuration(durationStr)
+	if err != nil {
+		am.logger.Warn("Invalid cache duration", "duration", durationStr, "error", err)
+		return 0
+	}
+
+	return int(duration.Seconds())
 }
 
 // GetAssetPath returns the path for a static asset

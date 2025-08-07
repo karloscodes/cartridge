@@ -4,9 +4,13 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"html/template"
+	"io"
+	"io/fs"
 	"mime/multipart"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -582,21 +586,25 @@ type App struct {
 	migrations *MigrationManager
 	cron       *CronManager
 	async      *AsyncManager
+	assets     *AssetManager      // Asset manager for static files and templates
+	templates  *template.Template // Template engine for HTML rendering
 }
 
 // CartridgeConfig holds the internal configuration for Cartridge
 type CartridgeConfig struct {
-	Environment     string
-	Port            string
-	TrustedProxies  []string
-	Concurrency     int
-	ErrorHandler    interface{} // fiber.ErrorHandler
-	StaticFS        embed.FS
-	TemplateFS      embed.FS
-	EnableCSRF      bool
-	EnableCORS      bool
-	EnableRateLimit bool
-	CORSOrigins     []string
+	Environment       string
+	Port              string
+	TrustedProxies    []string
+	Concurrency       int
+	ErrorHandler      interface{} // fiber.ErrorHandler
+	StaticFS          embed.FS
+	TemplateFS        embed.FS
+	MigrationFS       embed.FS // Embedded filesystem for migrations
+	EnableCSRF        bool
+	EnableCORS        bool
+	EnableRateLimit   bool
+	CORSOrigins       []string
+	CSRFExcludedPaths []string // Global CSRF excluded paths
 }
 
 // RunConfig holds configuration for the Run method
@@ -700,6 +708,16 @@ func newApp(appType AppType, options ...AppOption) *App {
 		}
 	}
 
+	// Initialize asset manager
+	config := &Config{Environment: app.config.Environment}
+	assetConfig := DefaultAssetConfig(config)
+	app.assets = NewAssetManager(assetConfig, app.logger)
+
+	// Set embedded filesystems if provided
+	if app.config.StaticFS != (embed.FS{}) || app.config.TemplateFS != (embed.FS{}) {
+		app.assets.SetEmbeddedFS(app.config.StaticFS, app.config.TemplateFS)
+	}
+
 	// Setup the application (placeholder mode)
 	app.setup()
 
@@ -785,6 +803,22 @@ func WithCORSOrigins(origins []string) AppOption {
 	}
 }
 
+// WithCSRFExcludedPaths sets paths to exclude from CSRF protection
+// Example: WithCSRFExcludedPaths([]string{"/api/", "/webhooks/", "/health/"})
+// These paths will bypass CSRF token validation
+func WithCSRFExcludedPaths(paths []string) AppOption {
+	return func(cfg *CartridgeConfig) {
+		cfg.CSRFExcludedPaths = paths
+	}
+}
+
+// WithMigrationFS sets the embedded filesystem for migrations
+func WithMigrationFS(fs embed.FS) AppOption {
+	return func(cfg *CartridgeConfig) {
+		cfg.MigrationFS = fs
+	}
+}
+
 // defaultConfigForType returns a default CartridgeConfig based on app type
 func defaultConfigForType(appType AppType) CartridgeConfig {
 	cfg := NewConfig()
@@ -802,11 +836,12 @@ func defaultConfigForType(appType AppType) CartridgeConfig {
 	}
 
 	baseConfig := CartridgeConfig{
-		Environment:    environment,
-		Port:           port,
-		TrustedProxies: []string{},
-		Concurrency:    DefaultConcurrency,
-		ErrorHandler:   nil,
+		Environment:       environment,
+		Port:              port,
+		TrustedProxies:    []string{},
+		Concurrency:       DefaultConcurrency,
+		ErrorHandler:      nil,
+		CSRFExcludedPaths: []string{"/api/", "/static/", "/_health", "/_ready", "/_live"}, // Default excluded paths
 	}
 
 	// Configure based on app type
@@ -886,7 +921,17 @@ func (app *App) setup() error {
 		"environment", app.config.Environment,
 		"port", app.config.Port)
 
-	// Create and configure the Fiber app
+	// Setup template engine first (before creating Fiber app)
+	if app.config.TemplateFS != (embed.FS{}) || app.config.Environment == EnvDevelopment {
+		app.setupTemplateEngine()
+	}
+
+	// Setup migrations (before creating Fiber app)
+	if app.config.MigrationFS != (embed.FS{}) || app.config.Environment == EnvDevelopment {
+		app.setupMigrations()
+	}
+
+	// Create and configure the Fiber app (with templates if available)
 	if err := app.createFiberApp(); err != nil {
 		return fmt.Errorf("failed to create Fiber app: %w", err)
 	}
@@ -897,11 +942,6 @@ func (app *App) setup() error {
 	// Setup static assets if provided
 	if app.config.StaticFS != (embed.FS{}) {
 		app.setupStaticAssets()
-	}
-
-	// Setup template engine if provided
-	if app.config.TemplateFS != (embed.FS{}) {
-		app.setupTemplateEngine()
 	}
 
 	// Setup default routes
@@ -1232,14 +1272,60 @@ func (app *App) performShutdown(ctx context.Context) error {
 
 // createFiberApp creates and configures the Fiber application
 func (app *App) createFiberApp() error {
-	fiberApp := fiber.New(fiber.Config{
+	// Create Fiber config
+	config := fiber.Config{
 		AppName:      "Cartridge App",
 		ErrorHandler: app.getErrorHandler(),
 		Prefork:      app.config.Environment == EnvProduction,
-	})
+	}
+
+	// Add custom template renderer if templates are available
+	if app.templates != nil {
+		config.Views = &TemplateRenderer{
+			templates: app.templates,
+			logger:    app.logger,
+		}
+	}
+
+	fiberApp := fiber.New(config)
 	app.fiberApp = fiberApp
 
 	app.logger.Info("Fiber application created successfully")
+	return nil
+}
+
+// TemplateRenderer implements Fiber's Views interface for custom template rendering
+type TemplateRenderer struct {
+	templates *template.Template
+	logger    Logger
+}
+
+// Load is required by Fiber's Views interface (no-op for our implementation)
+func (tr *TemplateRenderer) Load() error {
+	return nil
+}
+
+// Render renders a template with the given data
+func (tr *TemplateRenderer) Render(out io.Writer, name string, binding interface{}, layout ...string) error {
+	// Use the layout if provided (Fiber convention)
+	templateName := name
+	if len(layout) > 0 && layout[0] != "" {
+		templateName = layout[0]
+	}
+
+	// Execute the template
+	tmpl := tr.templates.Lookup(templateName)
+	if tmpl == nil {
+		tr.logger.Error("Template not found", "name", templateName)
+		return fmt.Errorf("template not found: %s", templateName)
+	}
+
+	if err := tmpl.Execute(out, binding); err != nil {
+		tr.logger.Error("Failed to execute template", "name", templateName, "error", err)
+		return fmt.Errorf("failed to execute template %s: %w", templateName, err)
+	}
+
+	tr.logger.Debug("Template rendered successfully", "name", templateName)
 	return nil
 }
 
@@ -1249,54 +1335,42 @@ func (app *App) setupMiddleware() {
 
 	fiberApp := app.fiberApp
 
+	// Get middleware configuration for this app type and environment
+	middlewareConfig := NewAppTypeMiddlewareConfig(int(app.appType), app.config.Environment, app.config.CSRFExcludedPaths)
+
 	// Global middleware stack (in order):
 	// 1. Request ID for tracing
 	fiberApp.Use(RequestID())
 
 	// 2. Recovery with stack traces
-	fiberApp.Use(Recovery(app.logger))
+	fiberApp.Use(Recovery(middlewareConfig.RecoveryConfig))
 
 	// 3. HTTP request logging
-	fiberApp.Use(LoggerMiddleware(app.logger))
+	fiberApp.Use(LoggerMiddleware(middlewareConfig.LoggerConfig))
 
 	// 4. Security headers
-	fiberApp.Use(Helmet("strict-origin-when-cross-origin"))
+	fiberApp.Use(Helmet(middlewareConfig.HelmetConfig))
 
-	// 5. Database injection
-	fiberApp.Use(DatabaseInjection(app.database))
-
-	// 6. Method override for forms
+	// 5. Method override for forms
 	fiberApp.Use(MethodOverride())
 
-	// Conditional middleware based on configuration
-	if app.config.EnableCSRF {
-		csrfConfig := DefaultCSRFConfig()
-		csrfConfig.CookieSecure = app.config.Environment == "production"
-		fiberApp.Use(CSRF(app.logger, csrfConfig))
-		fiberApp.Use(CSRFTokenInjector(csrfConfig))
+	// Conditional middleware based on app type configuration
+	if middlewareConfig.EnableCSRF {
+		fiberApp.Use(CSRF(app.logger, middlewareConfig.CSRFConfig))
+		fiberApp.Use(CSRFTokenInjector(middlewareConfig.CSRFConfig))
 		app.logger.Debug("CSRF protection enabled with token injection")
 	}
 
-	if app.config.EnableRateLimit {
-		rateLimitConfig := DefaultRateLimiterConfig()
-		if app.config.Environment == "production" {
-			rateLimitConfig.Max = 60
-			rateLimitConfig.Duration = 1 * time.Minute
-		}
-		fiberApp.Use(RateLimiter(rateLimitConfig))
-		app.logger.Debug("Rate limiting enabled", "max", rateLimitConfig.Max)
+	if middlewareConfig.EnableRateLimit {
+		fiberApp.Use(RateLimiter(middlewareConfig.RateLimitConfig))
+		app.logger.Debug("Rate limiting enabled", "max", middlewareConfig.RateLimitConfig.Max)
 	}
 
-	if app.config.EnableCORS {
-		var corsConfig CORSConfig
-		if app.config.Environment == "production" {
-			corsConfig = ProductionCORSConfig(app.config.CORSOrigins)
-		} else {
-			corsConfig = DefaultCORSConfig()
-			// Override with custom origins if provided
-			if len(app.config.CORSOrigins) > 0 {
-				corsConfig.AllowOrigins = app.config.CORSOrigins
-			}
+	if middlewareConfig.EnableCORS {
+		// Allow custom origins to override defaults
+		corsConfig := middlewareConfig.CORSConfig
+		if len(app.config.CORSOrigins) > 0 {
+			corsConfig.AllowOrigins = app.config.CORSOrigins
 		}
 		fiberApp.Use(CORS(corsConfig))
 		app.logger.Debug("CORS enabled", "origins", corsConfig.AllowOrigins, "credentials", corsConfig.AllowCredentials)
@@ -1309,12 +1383,20 @@ func (app *App) setupMiddleware() {
 func (app *App) setupStaticAssets() {
 	app.logger.Info("Setting up static assets")
 
-	if app.config.Environment == "development" {
+	if app.assets == nil {
+		app.logger.Warn("Asset manager not initialized")
+		return
+	}
+
+	// Configure asset serving based on environment
+	if app.config.Environment == EnvDevelopment {
 		// Development: filesystem-based serving with no caching
 		app.logger.Debug("Using filesystem-based static assets")
+		app.assets.SetupStaticRoutes(app.fiberApp)
 	} else {
-		// Production: embedded filesystem with caching
+		// Production/Test: embedded filesystem with caching
 		app.logger.Debug("Using embedded static assets")
+		app.assets.SetupStaticRoutes(app.fiberApp)
 	}
 }
 
@@ -1322,12 +1404,211 @@ func (app *App) setupStaticAssets() {
 func (app *App) setupTemplateEngine() {
 	app.logger.Info("Setting up template engine")
 
-	if app.config.Environment == "development" {
+	// Initialize the template engine with custom functions
+	funcMap := app.getTemplateFunctions()
+	tmpl := template.New("").Funcs(funcMap)
+
+	if app.config.Environment == EnvDevelopment {
 		// Development: filesystem templates with reloading
 		app.logger.Debug("Using filesystem templates with reloading")
+
+		// Load templates from filesystem
+		if err := app.loadTemplatesFromFilesystem(tmpl); err != nil {
+			app.logger.Error("Failed to load templates from filesystem", "error", err)
+			return
+		}
 	} else {
-		// Production: embedded templates
+		// Production/Test: embedded templates
 		app.logger.Debug("Using embedded templates")
+
+		// Load templates from embedded filesystem
+		if err := app.loadTemplatesFromEmbedded(tmpl); err != nil {
+			app.logger.Error("Failed to load embedded templates", "error", err)
+			return
+		}
+	}
+
+	app.templates = tmpl
+	app.logger.Info("Template engine configured successfully")
+}
+
+// loadTemplatesFromFilesystem loads templates from the ./templates directory
+func (app *App) loadTemplatesFromFilesystem(tmpl *template.Template) error {
+	templatesDir := "./templates"
+
+	// Check if templates directory exists
+	if _, err := os.Stat(templatesDir); os.IsNotExist(err) {
+		app.logger.Warn("Templates directory does not exist", "path", templatesDir)
+		return nil // Not an error, just no templates to load
+	}
+
+	// Walk through templates directory and load all .html files
+	err := filepath.Walk(templatesDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip directories and non-HTML files
+		if info.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".html") {
+			return nil
+		}
+
+		// Get relative path for template name
+		relPath, err := filepath.Rel(templatesDir, path)
+		if err != nil {
+			return err
+		}
+
+		// Normalize path separators for cross-platform compatibility
+		templateName := filepath.ToSlash(relPath)
+
+		app.logger.Debug("Loading template", "name", templateName, "path", path)
+
+		// Read template content
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read template %s: %w", path, err)
+		}
+
+		// Parse template
+		_, err = tmpl.New(templateName).Parse(string(content))
+		if err != nil {
+			return fmt.Errorf("failed to parse template %s: %w", templateName, err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to load templates from filesystem: %w", err)
+	}
+
+	app.logger.Info("Templates loaded from filesystem", "directory", templatesDir)
+	return nil
+}
+
+// loadTemplatesFromEmbedded loads templates from embedded filesystem
+func (app *App) loadTemplatesFromEmbedded(tmpl *template.Template) error {
+	if app.config.TemplateFS == (embed.FS{}) {
+		app.logger.Debug("No embedded template filesystem provided")
+		return nil
+	}
+
+	templateFS := app.config.TemplateFS
+	templatesDir := "templates"
+
+	// Walk through embedded templates directory
+	err := fs.WalkDir(templateFS, templatesDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip directories and non-HTML files
+		if d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".html") {
+			return nil
+		}
+
+		// Get relative path for template name
+		relPath, err := filepath.Rel(templatesDir, path)
+		if err != nil {
+			return err
+		}
+
+		// Normalize path separators for cross-platform compatibility
+		templateName := filepath.ToSlash(relPath)
+
+		app.logger.Debug("Loading embedded template", "name", templateName, "path", path)
+
+		// Read template content from embedded filesystem
+		content, err := templateFS.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read embedded template %s: %w", path, err)
+		}
+
+		// Parse template
+		_, err = tmpl.New(templateName).Parse(string(content))
+		if err != nil {
+			return fmt.Errorf("failed to parse embedded template %s: %w", templateName, err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to load embedded templates: %w", err)
+	}
+
+	app.logger.Info("Templates loaded from embedded filesystem")
+	return nil
+}
+
+// getTemplateFunctions returns custom template functions
+func (app *App) getTemplateFunctions() template.FuncMap {
+	return template.FuncMap{
+		// Asset helpers
+		"asset": func(path string) string {
+			if app.assets != nil {
+				return app.assets.GetAssetPath(path)
+			}
+			return "/static/" + path
+		},
+		"css": func(filename string) string {
+			if app.assets != nil {
+				return app.assets.CSS(filename)
+			}
+			return "/static/css/" + filename
+		},
+		"js": func(filename string) string {
+			if app.assets != nil {
+				return app.assets.JS(filename)
+			}
+			return "/static/js/" + filename
+		},
+		"image": func(filename string) string {
+			if app.assets != nil {
+				return app.assets.Image(filename)
+			}
+			return "/static/images/" + filename
+		},
+		"icon": func(filename string) string {
+			if app.assets != nil {
+				return app.assets.Icon(filename)
+			}
+			return "/static/icons/" + filename
+		},
+
+		// String utilities
+		"upper": strings.ToUpper,
+		"lower": strings.ToLower,
+		"title": strings.Title,
+		"trim":  strings.TrimSpace,
+
+		// Environment checks
+		"isDev": func() bool {
+			return app.config.Environment == EnvDevelopment
+		},
+		"isProd": func() bool {
+			return app.config.Environment == EnvProduction
+		},
+		"isTest": func() bool {
+			return app.config.Environment == EnvTest
+		},
+
+		// CSRF token
+		"csrfToken": func() string {
+			// This would typically be set per-request, but we provide a fallback
+			return ""
+		},
+
+		// Configuration access
+		"config": func(key string) interface{} {
+			switch key {
+			case "environment":
+				return app.config.Environment
+			case "port":
+				return app.config.Port
+			default:
+				return nil
+			}
+		},
 	}
 }
 
@@ -1341,12 +1622,12 @@ func (app *App) getErrorHandler() fiber.ErrorHandler {
 
 	return func(c *fiber.Ctx, err error) error {
 		// Environment-specific error handling
-		if app.config.Environment == "development" {
+		if app.config.Environment == EnvDevelopment {
 			// Development: detailed error messages with stack traces
 			app.logger.Error("Request error (development)", "error", err.Error(), "path", c.Path())
 			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 		} else {
-			// Production: generic error messages, detailed logging
+			// Production/Test: generic error messages, detailed logging
 			app.logger.Error("Request error (production)", "error", err.Error(), "path", c.Path())
 			return c.Status(500).JSON(fiber.Map{"error": "Internal server error"})
 		}
@@ -1629,6 +1910,54 @@ func (cartridge *App) ForceMigrationVersion(version int) error {
 	return cartridge.migrations.Force(version)
 }
 
+// Template Management Methods
+
+// GetTemplate returns a specific template by name
+func (app *App) GetTemplate(name string) *template.Template {
+	if app.templates == nil {
+		return nil
+	}
+	return app.templates.Lookup(name)
+}
+
+// HasTemplate checks if a template exists
+func (app *App) HasTemplate(name string) bool {
+	return app.GetTemplate(name) != nil
+}
+
+// ListTemplates returns a list of all loaded template names
+func (app *App) ListTemplates() []string {
+	if app.templates == nil {
+		return []string{}
+	}
+
+	var names []string
+	for _, tmpl := range app.templates.Templates() {
+		if tmpl.Name() != "" {
+			names = append(names, tmpl.Name())
+		}
+	}
+	return names
+}
+
+// ReloadTemplates reloads all templates (useful in development)
+func (app *App) ReloadTemplates() error {
+	if app.config.Environment != EnvDevelopment {
+		app.logger.Warn("Template reloading is only available in development mode")
+		return fmt.Errorf("template reloading only available in development mode")
+	}
+
+	app.logger.Info("Reloading templates")
+	app.setupTemplateEngine()
+
+	// Recreate Fiber app with new template renderer
+	if err := app.createFiberApp(); err != nil {
+		return fmt.Errorf("failed to recreate Fiber app with new templates: %w", err)
+	}
+
+	return nil
+}
+
 // Additional convenience methods for Context
 
 // RenderTemplate renders a template with the given data
@@ -1637,6 +1966,93 @@ func (ctx *Context) RenderTemplate(template string, data interface{}) error {
 		return ctx.Fiber.Render(template, data)
 	}
 	return fmt.Errorf("fiber context not available")
+}
+
+// RenderHTML renders a template using the app's template engine
+func (ctx *Context) RenderHTML(templateName string, data interface{}) error {
+	if ctx.Fiber == nil {
+		return fmt.Errorf("fiber context not available")
+	}
+
+	// Prepare template data with defaults
+	templateData := map[string]interface{}{
+		"CSRFToken":     ctx.getCSRFToken(),
+		"Environment":   ctx.Config.Environment,
+		"IsDevelopment": ctx.Config.Environment == EnvDevelopment,
+		"IsProduction":  ctx.Config.Environment == EnvProduction,
+		"IsTest":        ctx.Config.Environment == EnvTest,
+		"RequestPath":   ctx.Path(),
+		"RequestMethod": ctx.Method(),
+	}
+
+	// Merge with provided data
+	switch v := data.(type) {
+	case map[string]interface{}:
+		for k, val := range v {
+			templateData[k] = val
+		}
+	case nil:
+		// Use only default data
+	default:
+		// Wrap non-map data in a "Data" field
+		templateData["Data"] = data
+	}
+
+	// Use Fiber's render method which will use our custom template renderer
+	return ctx.Fiber.Render(templateName, templateData)
+}
+
+// RenderHTMLTemplate renders a template using the app's template engine with enhanced error handling
+func (ctx *Context) RenderHTMLTemplate(templateName string, data interface{}) error {
+	if ctx.Fiber == nil {
+		return fmt.Errorf("fiber context not available")
+	}
+
+	// Prepare template data with defaults
+	templateData := map[string]interface{}{
+		"CSRFToken":     ctx.getCSRFToken(),
+		"Environment":   ctx.Config.Environment,
+		"IsDevelopment": ctx.Config.Environment == EnvDevelopment,
+		"IsProduction":  ctx.Config.Environment == EnvProduction,
+		"IsTest":        ctx.Config.Environment == EnvTest,
+		"RequestPath":   ctx.Path(),
+		"RequestMethod": ctx.Method(),
+	}
+
+	// Merge with provided data
+	switch v := data.(type) {
+	case map[string]interface{}:
+		for k, val := range v {
+			templateData[k] = val
+		}
+	case nil:
+		// Use only default data
+	default:
+		// Wrap non-map data in a "Data" field
+		templateData["Data"] = data
+	}
+
+	// Use Fiber's render method which will use our custom template renderer
+	return ctx.Fiber.Render(templateName, templateData)
+}
+
+// Page renders a template with page-specific data structure
+func (ctx *Context) Page(templateName string, pageData interface{}) error {
+	data := map[string]interface{}{
+		"Page": pageData,
+		"Meta": map[string]interface{}{
+			"Title":       "",
+			"Description": "",
+			"Keywords":    "",
+		},
+	}
+
+	return ctx.RenderHTMLTemplate(templateName, data)
+}
+
+// PartialHTML renders a partial template (useful for HTMX/AJAX responses)
+func (ctx *Context) PartialHTML(templateName string, data interface{}) error {
+	return ctx.RenderHTMLTemplate(templateName, data)
 }
 
 // Redirect redirects the request to the specified URL
@@ -1721,4 +2137,79 @@ func (ctx *Context) SendString(s string) error {
 		return ctx.Fiber.SendString(s)
 	}
 	return fmt.Errorf("fiber context not available")
+}
+
+// setupMigrations configures the migration system with convention-based loading
+func (app *App) setupMigrations() {
+	app.logger.Info("Setting up migrations")
+
+	if app.migrations == nil {
+		app.logger.Warn("Migration manager not initialized")
+		return
+	}
+
+	if app.config.Environment == EnvDevelopment {
+		// Development: filesystem migrations with reloading
+		app.logger.Debug("Using filesystem migrations")
+
+		// Load migrations from filesystem
+		if err := app.loadMigrationsFromFilesystem(); err != nil {
+			app.logger.Error("Failed to load migrations from filesystem", "error", err)
+			return
+		}
+	} else {
+		// Production/Test: embedded migrations
+		app.logger.Debug("Using embedded migrations")
+
+		// Load migrations from embedded filesystem
+		if err := app.loadMigrationsFromEmbedded(); err != nil {
+			app.logger.Error("Failed to load embedded migrations", "error", err)
+			return
+		}
+	}
+
+	app.logger.Info("Migration system configured successfully")
+}
+
+// loadMigrationsFromFilesystem loads migrations from the ./migrations directory
+func (app *App) loadMigrationsFromFilesystem() error {
+	migrationsDir := "./migrations"
+
+	// Check if migrations directory exists
+	if _, err := os.Stat(migrationsDir); os.IsNotExist(err) {
+		app.logger.Info("Migrations directory does not exist, skipping migration setup", "path", migrationsDir)
+		return nil // Not an error, just no migrations to load
+	}
+
+	app.logger.Debug("Loading migrations from filesystem", "directory", migrationsDir)
+
+	// Use the existing LoadFromFS method but we need to adapt it for OS filesystem
+	// For now, we'll create a placeholder that logs the intention
+	// In a real implementation, we'd need to adapt the migration manager for OS filesystem
+
+	app.logger.Info("Filesystem-based migration loading detected", "directory", migrationsDir)
+	app.logger.Warn("Filesystem migration loading not yet implemented - use embedded migrations for now")
+
+	return nil
+}
+
+// loadMigrationsFromEmbedded loads migrations from embedded filesystem
+func (app *App) loadMigrationsFromEmbedded() error {
+	if app.config.MigrationFS == (embed.FS{}) {
+		app.logger.Debug("No embedded migration filesystem provided")
+		return nil
+	}
+
+	migrationFS := app.config.MigrationFS
+	migrationsDir := "migrations"
+
+	app.logger.Debug("Loading migrations from embedded filesystem", "directory", migrationsDir)
+
+	// Use the existing migration manager to load from embedded FS
+	if err := app.migrations.LoadFromFS(migrationFS, migrationsDir); err != nil {
+		return fmt.Errorf("failed to load embedded migrations: %w", err)
+	}
+
+	app.logger.Info("Migrations loaded from embedded filesystem")
+	return nil
 }
