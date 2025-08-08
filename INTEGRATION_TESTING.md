@@ -174,6 +174,81 @@ client.LoginWithJSON("/api/login", map[string]interface{}{
 client.GET("/dashboard").Expect().ExpectOK()
 ```
 
+### Authentication Test Helpers
+
+Cartridge provides specialized helpers for testing authentication and authorization:
+
+```go
+// Test that routes require authentication (redirects to login)
+client.AssertRequiresAuth("GET", "/admin/dashboard")
+client.AssertRequiresAuth("POST", "/admin/users")
+client.AssertRequiresAuth("PUT", "/admin/users/1")
+client.AssertRequiresAuth("DELETE", "/admin/users/1")
+
+// Test with custom login redirect path
+authConfig := &cartridge.AuthTestConfig{
+    LoginRedirectPath: "/custom-login",
+}
+client.AssertRequiresAuth("GET", "/admin", authConfig)
+
+// Test form validation errors
+client.AssertValidationError("/admin/login", map[string]string{
+    "username": "",
+    "password": "wrongpass",
+}, "Invalid username or password")
+
+// Test successful form submissions
+client.AssertSuccessfulRedirect("/admin/login", "/admin/dashboard", map[string]string{
+    "username": "admin",
+    "password": "admin123",
+})
+
+// Test multiple routes require authentication at once
+protectedRoutes := []struct{ Method, Path string }{
+    {"GET", "/admin/dashboard"},
+    {"GET", "/admin/users"},
+    {"POST", "/admin/users"},
+    {"PUT", "/admin/users/1"},
+    {"DELETE", "/admin/users/1"},
+}
+client.AssertMultipleRoutesRequireAuth(protectedRoutes)
+```
+
+### Advanced Authentication Testing
+
+For more complex scenarios, use the flexible configuration helpers:
+
+```go
+// Test validation with custom HTTP method and response expectations
+validationConfig := &cartridge.ValidationTestConfig{
+    Method:       "PUT",
+    ExpectStatus: 422,
+    ContentType:  "application/json",
+}
+client.AssertValidationErrorWithConfig("/api/users/1", invalidData, "validation failed", validationConfig)
+
+// Test form submissions with custom configuration
+formConfig := &cartridge.FormSubmissionConfig{
+    Method:            "PATCH",
+    WithCSRF:          true,
+    ExpectStatus:      200,
+    ExpectContentType: "application/json",
+    Headers: map[string]string{
+        "Accept": "application/json",
+    },
+}
+client.AssertFormSubmissionWithConfig("/api/users/1", "", userData, formConfig)
+
+// Test JSON API validation errors
+client.AssertJSONValidationError("/api/users", map[string]string{
+    "name":  "",
+    "email": "invalid-email",
+}, map[string]string{
+    "name":  "required",
+    "email": "invalid format",
+})
+```
+
 ### Advanced Features
 
 ```go
@@ -440,6 +515,139 @@ func TestWebApplication(t *testing.T) {
                 map[string][]byte{"file": fileContent},
             ).
             WithCSRF().
+            Expect().
+            ExpectOK()
+    })
+}
+```
+
+### Complete Authentication Test Example
+
+Here's a real-world example using the authentication helpers:
+
+```go
+func TestAuthenticationWorkflow(t *testing.T) {
+    app := setupTestApp() // Your app setup
+    client := cartridge.NewIntegrationTestClient(t, app)
+    
+    client.WithCleanDatabase(func() {
+        // Test that protected routes require authentication
+        protectedRoutes := []struct{ Method, Path string }{
+            {"GET", "/admin/dashboard"},
+            {"GET", "/admin/users"},
+            {"POST", "/admin/users"},
+            {"PUT", "/admin/users/1"},
+            {"DELETE", "/admin/users/1"},
+            {"GET", "/admin/settings"},
+            {"POST", "/admin/settings"},
+        }
+        client.AssertMultipleRoutesRequireAuth(protectedRoutes)
+        
+        // Test login validation errors
+        client.AssertValidationError("/admin/login", map[string]string{
+            "username": "",
+            "password": "",
+        }, "Username and password are required")
+        
+        client.AssertValidationError("/admin/login", map[string]string{
+            "username": "admin",
+            "password": "wrongpassword",
+        }, "Invalid username or password")
+        
+        // Test successful login
+        client.AssertSuccessfulRedirect("/admin/login", "/admin/dashboard", map[string]string{
+            "username": "admin",
+            "password": "admin123",
+        })
+        
+        // After login, verify access to protected routes works
+        client.GET("/admin/dashboard").Expect().ExpectOK().ExpectHTML()
+        client.GET("/admin/users").Expect().ExpectOK().ExpectHTML()
+        
+        // Test logout
+        client.POST("/admin/logout").WithCSRF().Expect().ExpectRedirect("/admin/login")
+        
+        // Verify logout worked - should require auth again
+        client.AssertRequiresAuth("GET", "/admin/dashboard")
+    })
+}
+
+func TestUserManagement(t *testing.T) {
+    app := setupTestApp()
+    client := cartridge.NewIntegrationTestClient(t, app)
+    
+    client.WithCleanDatabase(func() {
+        // Login as admin first
+        client.LoginWithCredentials("/admin/login", "admin", "admin123")
+        
+        // Test user creation validation
+        client.AssertValidationError("/admin/users", map[string]string{
+            "name":  "",
+            "email": "invalid-email",
+        }, "Name is required")
+        
+        client.AssertValidationError("/admin/users", map[string]string{
+            "name":  "John Doe",
+            "email": "invalid-email",
+        }, "Please enter a valid email address")
+        
+        // Test successful user creation
+        client.AssertSuccessfulRedirect("/admin/users", "/admin/users/1", map[string]string{
+            "name":  "John Doe",
+            "email": "john@example.com",
+            "role":  "user",
+        })
+        
+        // Test user update validation
+        client.AssertValidationError("/admin/users/1", map[string]string{
+            "name":  "",
+            "email": "john@example.com",
+        }, "Name is required")
+        
+        // Test successful user update
+        updateConfig := &cartridge.FormSubmissionConfig{
+            Method: "PUT",
+        }
+        client.AssertFormSubmissionWithConfig("/admin/users/1", "/admin/users/1", map[string]string{
+            "name":  "John Updated",
+            "email": "john.updated@example.com",
+        }, updateConfig)
+    })
+}
+
+func TestAPIAuthentication(t *testing.T) {
+    app := setupAPIApp() // Your API-only app setup
+    client := cartridge.NewIntegrationTestClient(t, app)
+    
+    client.WithCleanDatabase(func() {
+        // Test API endpoints require authentication
+        client.AssertRequiresAuth("GET", "/api/v1/users")
+        client.AssertRequiresAuth("POST", "/api/v1/users") 
+        
+        // Test JSON validation errors
+        client.AssertJSONValidationError("/api/v1/users", map[string]string{
+            "name":  "",
+            "email": "invalid",
+        }, map[string]string{
+            "name":  "required",
+            "email": "invalid format",
+        })
+        
+        // Test successful API authentication
+        var authResponse map[string]interface{}
+        client.POST("/api/v1/auth/login").
+            WithJSON(map[string]interface{}{
+                "email":    "admin@example.com",
+                "password": "admin123",
+            }).
+            Expect().
+            ExpectOK().
+            ExpectJSON(&authResponse)
+        
+        // Use the token for authenticated requests
+        token := authResponse["token"].(string)
+        client.GET("/api/v1/users").
+            WithAuth(token).
             Expect().
             ExpectOK()
     })

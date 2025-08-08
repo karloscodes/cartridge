@@ -122,7 +122,7 @@ type Context struct {
 	Database   Database
 	Logger     Logger
 	Config     CartridgeConfig
-	Auth       AuthConfig
+	Auth       CookieAuthConfig
 	Middleware MiddlewareConfig
 	Fiber      RequestContext // Embedded Fiber context for request access
 }
@@ -564,11 +564,11 @@ func (bc *BaseController) Config() CartridgeConfig {
 }
 
 // Auth returns the auth configuration
-func (bc *BaseController) Auth() AuthConfig {
+func (bc *BaseController) Auth() CookieAuthConfig {
 	if bc.App != nil {
 		return bc.App.authConfig
 	}
-	return AuthConfig{}
+	return CookieAuthConfig{}
 }
 
 // Note: BaseController render methods are deprecated - use functional handlers with Context instead
@@ -578,7 +578,7 @@ type App struct {
 	config     CartridgeConfig
 	logger     Logger
 	database   Database
-	authConfig AuthConfig
+	authConfig CookieAuthConfig
 	fiberApp   *fiber.App
 	appType    AppType
 	routes     map[string]Route
@@ -671,7 +671,7 @@ func newApp(appType AppType, options ...AppOption) *App {
 		deps = &dependencies{
 			logger:     NewLogger(LogConfig{Environment: "development", EnableConsole: true, EnableColors: true}),
 			database:   NewDatabase(&Config{}, NewLogger(LogConfig{Environment: "development", EnableConsole: true, EnableColors: true})),
-			authConfig: AuthConfig{},
+			authConfig: CookieAuthConfig{},
 		}
 	}
 
@@ -879,7 +879,7 @@ type dependencies struct {
 	config     *Config
 	logger     Logger
 	database   Database
-	authConfig AuthConfig
+	authConfig CookieAuthConfig
 }
 
 // createDependencies creates all application dependencies
@@ -1669,7 +1669,7 @@ func (app *App) Config() CartridgeConfig {
 }
 
 // Auth returns the auth configuration (for factory pattern)
-func (app *App) Auth() AuthConfig {
+func (app *App) Auth() CookieAuthConfig {
 	return app.authConfig
 }
 
@@ -1980,6 +1980,17 @@ func (ctx *Context) RenderTemplate(template string, data interface{}) error {
 		return ctx.Fiber.Render(template, data)
 	}
 	return fmt.Errorf("fiber context not available")
+}
+
+// RenderTemplateOrJSON automatically handles the difference between test and production environments
+// In production, it renders HTML templates normally
+// In test environments, it returns JSON instead (making integration tests easier)
+// This saves every cartridge user from having to write this pattern themselves
+func (ctx *Context) RenderTemplateOrJSON(templateName string, data interface{}) error {
+	if ctx.Config.Environment == "test" {
+		return ctx.JSON(data)
+	}
+	return ctx.RenderTemplate(templateName, data)
 }
 
 // RenderHTML renders a template using the app's template engine

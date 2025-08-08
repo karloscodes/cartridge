@@ -398,3 +398,65 @@ func DefaultSecurityHeaders() SecurityHeaders {
 		ContentSecurityPolicy: "default-src 'self'",
 	}
 }
+
+// AuthenticationMiddleware creates a Fiber-compatible authentication middleware
+// that works with Cartridge's interface-based authentication system
+func AuthenticationMiddleware(config AuthMiddlewareConfig) fiber.Handler {
+	requireAuth := RequireAuthInterface(config)
+	
+	return func(c *fiber.Ctx) error {
+		// Create Cartridge context for this request
+		// This would typically be done by the app's HandlerFunc wrapper
+		// but for middleware, we need to create it manually
+		
+		// Note: This assumes the app context is available in Fiber locals
+		// In practice, this would be injected by the application setup
+		appCtx, ok := c.Locals("cartridge_context").(*Context)
+		if !ok {
+			// Fallback: create minimal context (not ideal but functional)
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Cartridge context not available",
+			})
+		}
+		
+		// Set Fiber context in the Cartridge context
+		appCtx.Fiber = c
+		
+		// Call the generic RequireAuth middleware
+		if err := requireAuth(appCtx); err != nil {
+			return err
+		}
+		
+		return c.Next()
+	}
+}
+
+// SimpleAuthenticationMiddleware creates a simpler authentication middleware
+// that uses basic redirect-based authentication without complex context management
+func SimpleAuthenticationMiddleware(
+	userFinder func(userID string) (User, error),
+	authConfig CookieAuthConfig,
+	loginRedirectPath string,
+) fiber.Handler {
+	if loginRedirectPath == "" {
+		loginRedirectPath = "/admin/login"
+	}
+	
+	return func(c *fiber.Ctx) error {
+		// Get session data using cartridge's auth system
+		sessionData, err := GetAuthCookie(c, authConfig)
+		if err != nil || sessionData == nil {
+			return c.Redirect(loginRedirectPath)
+		}
+
+		// Find user in database
+		user, err := userFinder(sessionData.UserID)
+		if err != nil {
+			return c.Redirect(loginRedirectPath)
+		}
+
+		// Store current user in Fiber locals for handlers to use
+		c.Locals("current_user", user)
+		return c.Next()
+	}
+}

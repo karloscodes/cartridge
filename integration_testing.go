@@ -760,3 +760,259 @@ func (c *IntegrationTestClient) ExpectCSRFProtection(protectedPath string) {
 		WithCSRF().
 		Expect()
 }
+
+// Authentication test helper configuration
+type AuthTestConfig struct {
+	LoginRedirectPath string // Default: "/admin/login"
+}
+
+// DefaultAuthTestConfig returns the default authentication test configuration
+func DefaultAuthTestConfig() *AuthTestConfig {
+	return &AuthTestConfig{
+		LoginRedirectPath: "/admin/login",
+	}
+}
+
+// AssertRequiresAuth tests that routes require authentication
+// This helper validates that unauthenticated requests to protected routes redirect to the login page
+func (c *IntegrationTestClient) AssertRequiresAuth(method, path string, config ...*AuthTestConfig) *IntegrationTestClient {
+	c.t.Helper()
+
+	// Use default config if none provided
+	cfg := DefaultAuthTestConfig()
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+
+	switch method {
+	case "GET":
+		c.GET(path).
+			Expect().
+			ExpectRedirect(cfg.LoginRedirectPath)
+	case "POST":
+		c.POST(path).
+			WithForm(map[string]string{"test": "data"}).
+			Expect().
+			ExpectRedirect(cfg.LoginRedirectPath)
+	case "PUT":
+		c.PUT(path).
+			WithForm(map[string]string{"test": "data"}).
+			Expect().
+			ExpectRedirect(cfg.LoginRedirectPath)
+	case "DELETE":
+		c.DELETE(path).
+			Expect().
+			ExpectRedirect(cfg.LoginRedirectPath)
+	case "PATCH":
+		c.PATCH(path).
+			WithForm(map[string]string{"test": "data"}).
+			Expect().
+			ExpectRedirect(cfg.LoginRedirectPath)
+	default:
+		c.t.Fatalf("Unsupported HTTP method: %s", method)
+	}
+
+	return c
+}
+
+// AssertValidationError tests form validation errors
+// This helper validates that form submissions with invalid data display the expected error message
+func (c *IntegrationTestClient) AssertValidationError(path string, formData map[string]string, expectedError string) *IntegrationTestClient {
+	c.t.Helper()
+
+	c.POST(path).
+		WithForm(formData).
+		WithCSRF().
+		Expect().
+		ExpectOK().
+		ExpectHTML().
+		ExpectBodyContains(expectedError)
+
+	return c
+}
+
+// AssertSuccessfulRedirect tests successful form submissions
+// This helper validates that form submissions with valid data redirect to the expected location
+func (c *IntegrationTestClient) AssertSuccessfulRedirect(path, expectedRedirect string, formData map[string]string) *IntegrationTestClient {
+	c.t.Helper()
+
+	c.POST(path).
+		WithForm(formData).
+		WithCSRF().
+		Expect().
+		ExpectRedirect(expectedRedirect)
+
+	return c
+}
+
+// ValidationTestConfig holds configuration for validation testing
+type ValidationTestConfig struct {
+	Method       string // HTTP method to use (default: POST)
+	ExpectStatus int    // Expected status code (default: 200)
+	ContentType  string // Expected content type (default: text/html)
+}
+
+// DefaultValidationTestConfig returns default validation test configuration
+func DefaultValidationTestConfig() *ValidationTestConfig {
+	return &ValidationTestConfig{
+		Method:       "POST",
+		ExpectStatus: 200,
+		ContentType:  "text/html",
+	}
+}
+
+// AssertValidationErrorWithConfig tests form validation errors with flexible configuration
+// This helper allows testing different HTTP methods and response patterns
+func (c *IntegrationTestClient) AssertValidationErrorWithConfig(path string, formData map[string]string, expectedError string, config ...*ValidationTestConfig) *IntegrationTestClient {
+	c.t.Helper()
+
+	// Use default config if none provided
+	cfg := DefaultValidationTestConfig()
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+
+	var request *TestRequest
+
+	switch cfg.Method {
+	case "POST":
+		request = c.POST(path).WithForm(formData).WithCSRF()
+	case "PUT":
+		request = c.PUT(path).WithForm(formData).WithCSRF()
+	case "PATCH":
+		request = c.PATCH(path).WithForm(formData).WithCSRF()
+	default:
+		c.t.Fatalf("Unsupported HTTP method for validation testing: %s", cfg.Method)
+	}
+
+	response := request.Expect().ExpectStatus(cfg.ExpectStatus)
+
+	// Check content type if specified
+	if cfg.ContentType == "text/html" {
+		response.ExpectHTML()
+	} else if cfg.ContentType == "application/json" {
+		response.ExpectJSON(map[string]interface{}{})
+	}
+
+	response.ExpectBodyContains(expectedError)
+
+	return c
+}
+
+// FormSubmissionConfig holds configuration for form submission testing
+type FormSubmissionConfig struct {
+	Method            string            // HTTP method (default: POST)
+	Headers           map[string]string // Additional headers
+	WithCSRF          bool              // Whether to include CSRF token (default: true)
+	ExpectStatus      int               // Expected status code
+	ExpectContentType string            // Expected content type
+}
+
+// DefaultFormSubmissionConfig returns default form submission test configuration
+func DefaultFormSubmissionConfig() *FormSubmissionConfig {
+	return &FormSubmissionConfig{
+		Method:       "POST",
+		WithCSRF:     true,
+		ExpectStatus: 302, // Redirect
+	}
+}
+
+// AssertFormSubmissionWithConfig tests form submissions with flexible configuration
+// This helper allows testing different HTTP methods, headers, and response expectations
+func (c *IntegrationTestClient) AssertFormSubmissionWithConfig(path, expectedRedirect string, formData map[string]string, config ...*FormSubmissionConfig) *IntegrationTestClient {
+	c.t.Helper()
+
+	// Use default config if none provided
+	cfg := DefaultFormSubmissionConfig()
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+
+	var request *TestRequest
+
+	switch cfg.Method {
+	case "POST":
+		request = c.POST(path).WithForm(formData)
+	case "PUT":
+		request = c.PUT(path).WithForm(formData)
+	case "PATCH":
+		request = c.PATCH(path).WithForm(formData)
+	default:
+		c.t.Fatalf("Unsupported HTTP method for form submission: %s", cfg.Method)
+	}
+
+	// Add CSRF if configured
+	if cfg.WithCSRF {
+		request = request.WithCSRF()
+	}
+
+	// Add additional headers
+	for key, value := range cfg.Headers {
+		request = request.WithHeader(key, value)
+	}
+
+	response := request.Expect().ExpectStatus(cfg.ExpectStatus)
+
+	// If expecting a redirect, check the location
+	if cfg.ExpectStatus >= 300 && cfg.ExpectStatus < 400 && expectedRedirect != "" {
+		response.ExpectRedirect(expectedRedirect)
+	}
+
+	// Check content type if specified
+	if cfg.ExpectContentType != "" {
+		if cfg.ExpectContentType == "text/html" {
+			response.ExpectHTML()
+		} else if cfg.ExpectContentType == "application/json" {
+			response.ExpectJSON(map[string]interface{}{})
+		}
+	}
+
+	return c
+}
+
+// AssertMultipleRoutesRequireAuth tests that multiple routes require authentication
+// This is a convenience method for testing many routes at once
+func (c *IntegrationTestClient) AssertMultipleRoutesRequireAuth(routes []struct{ Method, Path string }, config ...*AuthTestConfig) *IntegrationTestClient {
+	c.t.Helper()
+
+	for _, route := range routes {
+		c.t.Run(route.Method+" "+route.Path+" requires auth", func(t *testing.T) {
+			// Create a new client for this sub-test to avoid state interference
+			subClient := NewIntegrationTestClient(t, c.app)
+			subClient.AssertRequiresAuth(route.Method, route.Path, config...)
+		})
+	}
+
+	return c
+}
+
+// JSONValidationError represents an error response in JSON format
+type JSONValidationError struct {
+	Message string            `json:"message"`
+	Errors  map[string]string `json:"errors"`
+}
+
+// AssertJSONValidationError tests JSON API validation errors
+// This helper is useful for testing API endpoints that return JSON error responses
+func (c *IntegrationTestClient) AssertJSONValidationError(path string, formData map[string]string, expectedErrors map[string]string) *IntegrationTestClient {
+	c.t.Helper()
+
+	var response JSONValidationError
+	c.POST(path).
+		WithJSON(formData).
+		WithCSRF().
+		Expect().
+		ExpectStatus(400).
+		ExpectJSON(&response)
+
+	// Check that expected errors are present
+	for field, expectedError := range expectedErrors {
+		if actualError, exists := response.Errors[field]; !exists {
+			c.t.Errorf("Expected validation error for field %q not found", field)
+		} else if !strings.Contains(actualError, expectedError) {
+			c.t.Errorf("Expected validation error for field %q to contain %q, got %q", field, expectedError, actualError)
+		}
+	}
+
+	return c
+}
