@@ -1449,7 +1449,7 @@ func (app *App) loadTemplatesFromFilesystem(tmpl *template.Template) error {
 		}
 
 		// Skip directories and non-HTML files
-		if info.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".html") {
+		if info.IsDir() || (!strings.HasSuffix(strings.ToLower(path), ".html") && !strings.HasSuffix(strings.ToLower(path), ".gohtml")) {
 			return nil
 		}
 
@@ -1461,6 +1461,13 @@ func (app *App) loadTemplatesFromFilesystem(tmpl *template.Template) error {
 
 		// Normalize path separators for cross-platform compatibility
 		templateName := filepath.ToSlash(relPath)
+		
+		// Strip file extension for template name
+		if strings.HasSuffix(strings.ToLower(templateName), ".html") {
+			templateName = templateName[:len(templateName)-5]
+		} else if strings.HasSuffix(strings.ToLower(templateName), ".gohtml") {
+			templateName = templateName[:len(templateName)-7]
+		}
 
 		app.logger.Debug("Loading template", "name", templateName, "path", path)
 
@@ -1503,7 +1510,7 @@ func (app *App) loadTemplatesFromEmbedded(tmpl *template.Template) error {
 		}
 
 		// Skip directories and non-HTML files
-		if d.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".html") {
+		if d.IsDir() || (!strings.HasSuffix(strings.ToLower(path), ".html") && !strings.HasSuffix(strings.ToLower(path), ".gohtml")) {
 			return nil
 		}
 
@@ -1515,6 +1522,13 @@ func (app *App) loadTemplatesFromEmbedded(tmpl *template.Template) error {
 
 		// Normalize path separators for cross-platform compatibility
 		templateName := filepath.ToSlash(relPath)
+		
+		// Strip file extension for template name
+		if strings.HasSuffix(strings.ToLower(templateName), ".html") {
+			templateName = templateName[:len(templateName)-5]
+		} else if strings.HasSuffix(strings.ToLower(templateName), ".gohtml") {
+			templateName = templateName[:len(templateName)-7]
+		}
 
 		app.logger.Debug("Loading embedded template", "name", templateName, "path", path)
 
