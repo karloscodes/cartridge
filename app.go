@@ -1982,16 +1982,6 @@ func (ctx *Context) RenderTemplate(template string, data interface{}) error {
 	return fmt.Errorf("fiber context not available")
 }
 
-// RenderTemplateOrJSON automatically handles the difference between test and production environments
-// In production, it renders HTML templates normally
-// In test environments, it returns JSON instead (making integration tests easier)
-// This saves every cartridge user from having to write this pattern themselves
-func (ctx *Context) RenderTemplateOrJSON(templateName string, data interface{}) error {
-	if ctx.Config.Environment == "test" {
-		return ctx.JSON(data)
-	}
-	return ctx.RenderTemplate(templateName, data)
-}
 
 // RenderHTML renders a template using the app's template engine
 func (ctx *Context) RenderHTML(templateName string, data interface{}) error {
