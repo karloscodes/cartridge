@@ -2154,6 +2154,63 @@ func (ctx *Context) SendString(s string) error {
 	return fmt.Errorf("fiber context not available")
 }
 
+// DeleteModelSecurely safely deletes a model with security checks
+func (ctx *Context) DeleteModelSecurely(model interface{}, id string, successRedirect string, customLogic func(interface{}) error) error {
+	// Find the model first
+	if err := ctx.FindOrFail(model, id); err != nil {
+		return err
+	}
+	
+	if customLogic != nil {
+		if err := customLogic(model); err != nil {
+			return err
+		}
+	}
+	
+	db := ctx.DB()
+	if db == nil {
+		return fmt.Errorf("database not available")
+	}
+	
+	if err := db.Delete(model).Error; err != nil {
+		ctx.Logger.Error("Failed to delete model", "error", err)
+		return err
+	}
+	
+	return ctx.Redirect(successRedirect)
+}
+
+// SafeRenderWithStatus renders a template with status and handles errors safely
+func (ctx *Context) SafeRenderWithStatus(status int, template string, data interface{}, validationErrors ...interface{}) error {
+	ctx.Status(status)
+	
+	// Create render data that includes validation errors if provided
+	renderData := map[string]interface{}{
+		"Data": data,
+	}
+	
+	if len(validationErrors) > 0 && validationErrors[0] != nil {
+		renderData["ValidationErrors"] = validationErrors[0]
+	}
+	
+	return ctx.RenderHTMLTemplate(template, renderData)
+}
+
+// ErrorPage renders an error page with status code
+func (ctx *Context) ErrorPage(err error, status int) error {
+	ctx.Status(status)
+	message := err.Error()
+	if err == nil {
+		message = "An error occurred"
+	}
+	errorData := map[string]interface{}{
+		"status":  status,
+		"message": message,
+		"title":   "Error",
+	}
+	return ctx.RenderHTMLTemplate("error", errorData)
+}
+
 // setupMigrations configures the migration system with convention-based loading
 func (app *App) setupMigrations() {
 	app.logger.Info("Setting up migrations")
