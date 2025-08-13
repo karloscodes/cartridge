@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 	"gorm.io/gorm"
+	"github.com/gofiber/fiber/v2"
 )
 
 // Essential type definitions for cartridge framework
@@ -113,7 +114,10 @@ func NewDatabase(cfg *Config, logger Logger) Database {
 
 type simpleDatabase struct{}
 
-func (d *simpleDatabase) GetGenericConnection() interface{} { return nil }
+func (d *simpleDatabase) GetGenericConnection() interface{} { 
+	// For testing purposes, return a mock gorm.DB connection
+	return &gorm.DB{}
+}
 func (d *simpleDatabase) Init() error                       { return nil }
 func (d *simpleDatabase) Close() error                      { return nil }
 func (d *simpleDatabase) Ping() error                       { return nil }
@@ -309,48 +313,74 @@ func NewAppTypeMiddlewareConfig(maxAge int, appType string, excludedPaths []stri
 }
 
 // Recovery middleware function
-func Recovery(config interface{}) interface{} {
-	return func() { /* simple recovery middleware */ }
+func Recovery(config interface{}) func(*fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+		defer func() {
+			if r := recover(); r != nil {
+				c.Status(500).SendString("Internal server error")
+			}
+		}()
+		return c.Next()
+	}
 }
 
 // LoggerMiddleware function
-func LoggerMiddleware(config interface{}) interface{} {
-	return func() { /* simple logger middleware */ }
+func LoggerMiddleware(config interface{}) func(*fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+		return c.Next()
+	}
 }
 
 // Helmet middleware function
-func Helmet(config interface{}) interface{} {
-	return func() { /* simple helmet middleware */ }
+func Helmet(config interface{}) func(*fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+		return c.Next()
+	}
 }
 
 // MethodOverride middleware function
-func MethodOverride() interface{} {
-	return func() { /* simple method override middleware */ }
+func MethodOverride() func(*fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+		return c.Next()
+	}
 }
 
 // CSRF middleware function
-func CSRF(logger Logger, config CSRFConfig) interface{} {
-	return func() { /* simple CSRF middleware */ }
+func CSRF(logger Logger, config CSRFConfig) func(*fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+		return c.Next()
+	}
 }
 
 // CSRFTokenInjector middleware function
-func CSRFTokenInjector(config CSRFConfig) interface{} {
-	return func() { /* simple CSRF token injector middleware */ }
+func CSRFTokenInjector(config CSRFConfig) func(*fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+		return c.Next()
+	}
 }
 
 // RateLimiter middleware function
-func RateLimiter(config RateLimiterConfig) interface{} {
-	return func() { /* simple rate limiter middleware */ }
+func RateLimiter(config RateLimiterConfig) func(*fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+		return c.Next()
+	}
 }
 
 // CORS middleware function
-func CORS(config CORSConfig) interface{} {
-	return func() { /* simple CORS middleware */ }
+func CORS(config CORSConfig) func(*fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+		return c.Next()
+	}
 }
 
-// RequestID generates a request ID
-func RequestID() string {
-	return GenerateRandomString(16)
+// RequestID middleware that generates and sets a request ID
+func RequestID() func(*fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+		requestID := GenerateRandomString(16)
+		c.Locals("requestID", requestID)
+		c.Set("X-Request-ID", requestID)
+		return c.Next()
+	}
 }
 
 // TypedQueryBuilder represents a query builder for typed models
