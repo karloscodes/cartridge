@@ -588,6 +588,7 @@ type App struct {
 	async      *AsyncManager
 	assets     *AssetManager      // Asset manager for static files and templates
 	templates  *template.Template // Template engine for HTML rendering
+	inertia    *InertiaManager    // Inertia.js manager for FullStackInertia apps
 }
 
 // CartridgeConfig holds the internal configuration for Cartridge
@@ -605,6 +606,10 @@ type CartridgeConfig struct {
 	EnableRateLimit   bool
 	CORSOrigins       []string
 	CSRFExcludedPaths []string // Global CSRF excluded paths
+	
+	// Profile-based configuration
+	Profile           AppProfile // The active application profile
+	AppType           AppType    // The application type for this instance
 }
 
 // RunConfig holds configuration for the Run method
@@ -634,94 +639,18 @@ const (
 	AppTypeGeneric AppType = iota
 	AppTypeFullStack
 	AppTypeAPIOnly
+	AppTypeFullStackInertia
 )
 
 // New creates a new generic Cartridge app with sublime developer experience
 // Returns a single App instance for the streamlined API
 func New(options ...AppOption) *App {
-	return newApp(AppTypeGeneric, options...)
+	return NewGeneric(options...)
 }
 
-// NewFullStack creates a new full-stack Cartridge application with templates, sessions, etc.
-func NewFullStack(options ...AppOption) *App {
-	return newApp(AppTypeFullStack, options...)
-}
-
-// NewAPIOnly creates a new lightweight API-only Cartridge application
-func NewAPIOnly(options ...AppOption) *App {
-	return newApp(AppTypeAPIOnly, options...)
-}
-
-// newApp is the internal constructor for all app types
+// Legacy function for backwards compatibility - now uses unified core
 func newApp(appType AppType, options ...AppOption) *App {
-	// Start with default configuration based on app type
-	cfg := defaultConfigForType(appType)
-
-	// Apply functional options
-	for _, option := range options {
-		option(&cfg)
-	}
-
-	// Create dependencies with error handling
-	deps, err := createDependencies()
-	if err != nil {
-		// In a real implementation, we'd handle this better
-		// For now, log and continue with placeholders
-		fmt.Printf("Warning: Failed to create dependencies: %v\n", err)
-		deps = &dependencies{
-			logger:     NewLogger(LogConfig{Environment: "development", EnableConsole: true, EnableColors: true}),
-			database:   NewDatabase(&Config{}, NewLogger(LogConfig{Environment: "development", EnableConsole: true, EnableColors: true})),
-			authConfig: CookieAuthConfig{},
-		}
-	}
-
-	// Create application
-	app := &App{
-		config:     cfg,
-		logger:     deps.logger,
-		database:   deps.database,
-		authConfig: deps.authConfig,
-		appType:    appType,
-		routes:     make(map[string]Route),
-	}
-
-	// Initialize shared app context singleton
-	app.ctx = &Context{
-		Database: app.database,
-		Logger:   app.logger,
-		Config:   app.config,
-		Auth:     app.authConfig,
-		Middleware: MiddlewareConfig{
-			CSRF:      DefaultCSRFConfig(),
-			RateLimit: DefaultRateLimiterConfig(),
-			CORS:      DefaultCORSConfig(),
-			Security:  DefaultSecurityHeaders(),
-		},
-	}
-
-	// Initialize migration manager
-	if db := app.database.GetGenericConnection(); db != nil {
-		if gormDB, ok := db.(*gorm.DB); ok {
-			app.migrations = NewMigrationManager(gormDB, app.logger)
-			app.cron = NewCronManager(app.database, app.logger)
-			app.async = NewAsyncManager(app.database, app.logger)
-		}
-	}
-
-	// Initialize asset manager
-	config := &Config{Environment: app.config.Environment}
-	assetConfig := DefaultAssetConfig(config)
-	app.assets = NewAssetManager(assetConfig, app.logger)
-
-	// Set embedded filesystems if provided
-	if app.config.StaticFS != (embed.FS{}) || app.config.TemplateFS != (embed.FS{}) {
-		app.assets.SetEmbeddedFS(app.config.StaticFS, app.config.TemplateFS)
-	}
-
-	// Setup the application (placeholder mode)
-	app.setup()
-
-	return app
+	return newAppWithProfile(appType, options...)
 }
 
 // Functional options for configuring the application
@@ -835,30 +764,23 @@ func defaultConfigForType(appType AppType) CartridgeConfig {
 		port = DefaultPort
 	}
 
+	// Get the profile for this app type
+	profile := GetProfileForType(appType)
+
+	// Create base config with common settings
 	baseConfig := CartridgeConfig{
-		Environment:       environment,
-		Port:              port,
-		TrustedProxies:    []string{},
-		Concurrency:       DefaultConcurrency,
-		ErrorHandler:      nil,
-		CSRFExcludedPaths: []string{"/api/", "/static/", "/_health", "/_ready", "/_live"}, // Default excluded paths
+		Environment:    environment,
+		Port:           port,
+		Concurrency:    DefaultConcurrency,
+		ErrorHandler:   nil,
+		
+		// Apply profile to config
+		Profile:        profile,
+		AppType:        appType,
 	}
 
-	// Configure based on app type
-	switch appType {
-	case AppTypeFullStack:
-		baseConfig.EnableCSRF = true
-		baseConfig.EnableCORS = false
-		baseConfig.EnableRateLimit = false
-	case AppTypeAPIOnly:
-		baseConfig.EnableCSRF = false
-		baseConfig.EnableCORS = true
-		baseConfig.EnableRateLimit = true
-	default: // AppTypeGeneric
-		baseConfig.EnableCSRF = true
-		baseConfig.EnableCORS = false
-		baseConfig.EnableRateLimit = false
-	}
+	// Apply the profile settings to the config
+	ApplyProfile(&baseConfig, profile)
 
 	return baseConfig
 }
@@ -938,6 +860,15 @@ func (app *App) setup() error {
 
 	// Setup middleware
 	app.setupMiddleware()
+
+	// Setup Inertia.js if the profile enables it
+	if app.config.Profile.EnableInertia && app.inertia != nil {
+		if err := app.inertia.Setup(app.fiberApp); err != nil {
+			app.logger.Error("Failed to setup Inertia.js", "error", err)
+		} else {
+			app.logger.Info("Inertia.js integration configured successfully")
+		}
+	}
 
 	// Setup static assets if provided
 	if app.config.StaticFS != (embed.FS{}) {
