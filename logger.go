@@ -40,7 +40,33 @@ type LogConfig struct {
 	AppName string
 }
 
+// LogConfigProvider allows configuration objects to provide log settings directly.
+// Implement this interface on your config type to avoid manual LogConfig mapping.
+type LogConfigProvider interface {
+	GetLogLevel() string
+	GetLogDirectory() string
+	GetLogMaxSizeMB() int
+	GetLogMaxBackups() int
+	GetLogMaxAgeDays() int
+	GetAppName() string
+}
+
+// LogConfigFromProvider creates a LogConfig from a LogConfigProvider.
+func LogConfigFromProvider(p LogConfigProvider) *LogConfig {
+	return &LogConfig{
+		Level:      p.GetLogLevel(),
+		Directory:  p.GetLogDirectory(),
+		MaxSizeMB:  p.GetLogMaxSizeMB(),
+		MaxBackups: p.GetLogMaxBackups(),
+		MaxAgeDays: p.GetLogMaxAgeDays(),
+		AppName:    p.GetAppName(),
+	}
+}
+
 // NewLogger creates a configured slog.Logger based on the environment.
+//
+// If cfg implements LogConfigProvider, log settings are extracted automatically.
+// Otherwise, provide explicit logCfg or use defaults.
 //
 // Development and Test:
 //   - Logs to stdout only
@@ -53,8 +79,13 @@ type LogConfig struct {
 //   - Default level: error
 //   - Files rotated via lumberjack
 func NewLogger(cfg Config, logCfg *LogConfig) *slog.Logger {
+	// Auto-extract log config if cfg implements LogConfigProvider
 	if logCfg == nil {
-		logCfg = &LogConfig{}
+		if provider, ok := cfg.(LogConfigProvider); ok {
+			logCfg = LogConfigFromProvider(provider)
+		} else {
+			logCfg = &LogConfig{}
+		}
 	}
 
 	// Determine log level

@@ -31,7 +31,10 @@ type ApplicationOptions struct {
 	Logger    Logger
 	DBManager DBManager
 
-	// Server configuration
+	// Server - provide a pre-built server (takes precedence over ServerConfig)
+	Server *Server
+
+	// Server configuration (used if Server is nil)
 	ServerConfig *ServerConfig
 
 	// Route mounting function
@@ -46,21 +49,29 @@ type ApplicationOptions struct {
 
 // NewApplication constructs a cartridge application.
 func NewApplication(opts ApplicationOptions) (*Application, error) {
-	// Use default server config if not provided
-	serverCfg := opts.ServerConfig
-	if serverCfg == nil {
-		serverCfg = DefaultServerConfig()
-	}
+	var server *Server
+	var err error
 
-	// Inject dependencies into server config
-	serverCfg.Config = opts.Config
-	serverCfg.Logger = opts.Logger
-	serverCfg.DBManager = opts.DBManager
+	// Use provided server or create one from config
+	if opts.Server != nil {
+		server = opts.Server
+	} else {
+		// Use default server config if not provided
+		serverCfg := opts.ServerConfig
+		if serverCfg == nil {
+			serverCfg = DefaultServerConfig()
+		}
 
-	// Create server
-	server, err := NewServer(serverCfg)
-	if err != nil {
-		return nil, err
+		// Inject dependencies into server config
+		serverCfg.Config = opts.Config
+		serverCfg.Logger = opts.Logger
+		serverCfg.DBManager = opts.DBManager
+
+		// Create server
+		server, err = NewServer(serverCfg)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Set catch-all redirect if provided
