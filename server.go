@@ -11,7 +11,6 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
-	"github.com/gofiber/fiber/v2/middleware/helmet"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
 
 	cartridgemiddleware "github.com/karloscodes/cartridge/middleware"
@@ -178,13 +177,11 @@ func (s *Server) setupGlobalMiddleware() {
 	}
 
 	if s.cfg.EnableRecover {
-		s.app.Use(cartridgemiddleware.Recover(s.cfg.Logger))
+		s.app.Use(cartridgemiddleware.Recover())
 	}
 
 	if s.cfg.EnableHelmet {
-		s.app.Use(helmet.New(helmet.Config{
-			ContentSecurityPolicy: "", // Let applications configure CSP
-		}))
+		s.app.Use(cartridgemiddleware.Helmet())
 	}
 
 	if s.cfg.EnableCompress {
