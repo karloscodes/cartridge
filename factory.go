@@ -21,6 +21,7 @@ type App struct {
 type AppOption func(*appConfig)
 
 type appConfig struct {
+	cfg                *config.Config
 	templatesFS        fs.FS
 	staticFS           fs.FS
 	templatesDirectory string
@@ -29,6 +30,14 @@ type appConfig struct {
 	init               func(*App)
 	beforeStart        func(*App) error
 	routes             func(*Server, *config.Config)
+}
+
+// WithConfig provides a pre-loaded config instead of loading one.
+// Use this when your app has an extended config type.
+func WithConfig(cfg *config.Config) AppOption {
+	return func(c *appConfig) {
+		c.cfg = cfg
+	}
 }
 
 // WithTemplates sets the embedded templates filesystem for production.
@@ -117,10 +126,16 @@ func NewApp(appName string, opts ...AppOption) (*App, error) {
 		opt(cfg)
 	}
 
-	// Load configuration
-	appCfg, err := config.Load(appName)
-	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
+	// Use provided config or load one
+	var appCfg *config.Config
+	var err error
+	if cfg.cfg != nil {
+		appCfg = cfg.cfg
+	} else {
+		appCfg, err = config.Load(appName)
+		if err != nil {
+			return nil, fmt.Errorf("load config: %w", err)
+		}
 	}
 
 	// Create logger
