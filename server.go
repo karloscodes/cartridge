@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -363,6 +364,8 @@ func (s *Server) wrapHandler(handler HandlerFunc) fiber.Handler {
 			Config:    s.cfg.Config,
 			DBManager: s.cfg.DBManager,
 		}
+		// Store context in locals for middleware access
+		c.Locals("cartridge_ctx", ctx)
 		return handler(ctx)
 	}
 }
@@ -430,10 +433,10 @@ func createDefaultErrorHandler(logger Logger, cfg Config) fiber.ErrorHandler {
 		}
 
 		logger.Error("Request error",
-			"error", err,
-			"status", code,
-			"path", c.Path(),
-			"method", c.Method(),
+			slog.Any("error", err),
+			slog.Int("status", code),
+			slog.String("path", c.Path()),
+			slog.String("method", c.Method()),
 		)
 
 		// JSON error response for API requests

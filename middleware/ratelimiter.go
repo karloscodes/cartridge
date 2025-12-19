@@ -8,12 +8,20 @@ import (
 	"github.com/gofiber/fiber/v2/utils"
 )
 
+// EnvironmentChecker provides methods to check the runtime environment.
+// Implement this interface to automatically skip rate limiting in dev/test modes.
+type EnvironmentChecker interface {
+	IsTest() bool
+	IsDevelopment() bool
+}
+
 // RateLimiterConfig holds configuration for the rate limiter.
 type RateLimiterConfig struct {
 	Max      int
 	Duration time.Duration
 	Skip     func(*fiber.Ctx) bool
-	Storage  fiber.Storage // Optional: persistent storage for distributed rate limiting
+	Storage  fiber.Storage        // Optional: persistent storage for distributed rate limiting
+	Env      EnvironmentChecker   // Optional: environment checker to skip rate limiting in dev/test
 }
 
 // RateLimiterOption defines a function to modify RateLimiterConfig.
@@ -49,6 +57,16 @@ func WithSkip(skip func(*fiber.Ctx) bool) RateLimiterOption {
 func WithStorage(storage fiber.Storage) RateLimiterOption {
 	return func(cfg *RateLimiterConfig) {
 		cfg.Storage = storage
+	}
+}
+
+// WithEnv configures environment checking to automatically skip rate limiting
+// in development and test environments. This is the recommended way to configure
+// rate limiting as it follows the convention over configuration principle.
+// Example: WithEnv(cfg) where cfg implements EnvironmentChecker
+func WithEnv(env EnvironmentChecker) RateLimiterOption {
+	return func(cfg *RateLimiterConfig) {
+		cfg.Env = env
 	}
 }
 
@@ -98,6 +116,11 @@ func RateLimiter(options ...RateLimiterOption) fiber.Handler {
 			})
 		},
 		Next: func(c *fiber.Ctx) bool {
+			// Skip rate limiting in dev/test environments (convention over configuration)
+			if cfg.Env != nil && (cfg.Env.IsTest() || cfg.Env.IsDevelopment()) {
+				return true
+			}
+			// Check custom skip function
 			if cfg.Skip != nil {
 				return cfg.Skip(c)
 			}

@@ -1,22 +1,14 @@
 package cartridge
 
-import "gorm.io/gorm"
+import (
+	"log/slog"
 
-// Logger abstracts logging operations across different logging libraries.
-// Both slog and zap can implement this interface via thin adapters.
-type Logger interface {
-	// Debug logs a debug-level message with optional key-value pairs.
-	Debug(msg string, keysAndValues ...any)
+	"gorm.io/gorm"
+)
 
-	// Info logs an info-level message with optional key-value pairs.
-	Info(msg string, keysAndValues ...any)
-
-	// Warn logs a warning-level message with optional key-value pairs.
-	Warn(msg string, keysAndValues ...any)
-
-	// Error logs an error-level message with optional key-value pairs.
-	Error(msg string, keysAndValues ...any)
-}
+// Logger is an alias for *slog.Logger.
+// This allows applications to use cartridge.Logger without importing slog directly.
+type Logger = *slog.Logger
 
 // Config abstracts runtime configuration access.
 // Applications implement this interface to provide environment-specific configuration.

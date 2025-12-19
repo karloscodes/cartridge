@@ -10,11 +10,11 @@ import (
 // adding direct field access to logger, config, and database manager.
 // This eliminates the need for context.Locals and provides type-safe access.
 type Context struct {
-	*fiber.Ctx              // All Fiber HTTP methods (Render, JSON, etc.)
-	Logger     Logger       // Request logger (shared across app)
-	Config     Config       // Runtime configuration
-	DBManager  DBManager    // Database connection pool
-	db         *gorm.DB     // Cached database session (lazy-loaded)
+	*fiber.Ctx            // All Fiber HTTP methods (Render, JSON, etc.)
+	Logger     Logger     // Request logger (shared across app)
+	Config     Config     // Runtime configuration
+	DBManager  DBManager  // Database connection pool
+	db         *gorm.DB   // Cached database session (lazy-loaded)
 }
 
 // DB provides a per-request database session with context attached.
@@ -27,7 +27,9 @@ func (ctx *Context) DB() *gorm.DB {
 
 	db := ctx.DBManager.GetConnection()
 	if db == nil {
-		ctx.Logger.Error("failed to get database connection")
+		if ctx.Logger != nil {
+			ctx.Logger.Error("failed to get database connection")
+		}
 		panic("cartridge: database connection failed")
 	}
 

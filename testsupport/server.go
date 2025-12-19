@@ -2,6 +2,7 @@ package testsupport
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,7 +34,7 @@ type TestServer struct {
 	Server    *cartridge.Server
 	App       *fiber.App
 	DB        *TestDBManager
-	Logger    cartridge.Logger
+	Logger    *slog.Logger
 	Config    *TestConfig
 	DBManager *TestDBManager
 }
