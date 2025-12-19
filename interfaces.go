@@ -46,4 +46,8 @@ type DBManager interface {
 	// GetConnection returns a GORM database connection.
 	// Returns nil if the connection is unavailable.
 	GetConnection() *gorm.DB
+
+	// Connect opens a database connection and returns it.
+	// Returns an error if the connection cannot be established.
+	Connect() (*gorm.DB, error)
 }

@@ -44,10 +44,12 @@ type ServerConfig struct {
 	StaticPrefix       string
 
 	// Middleware configuration
-	EnableRequestID bool
-	EnableRecover   bool
-	EnableHelmet    bool
-	EnableCompress  bool
+	EnableRequestID     bool
+	EnableRecover       bool
+	EnableHelmet        bool
+	EnableCompress      bool
+	EnableSecFetchSite  bool // CSRF protection via Sec-Fetch-Site header
+	EnableRequestLogger bool
 
 	// Concurrency configuration (for SQLite WAL mode)
 	MaxConcurrentReads  int
@@ -68,11 +70,13 @@ func DefaultServerConfig() *ServerConfig {
 		StaticPrefix:       "/assets",
 
 		// Middleware defaults (all enabled)
-		EnableTemplates: true,
-		EnableRequestID: true,
-		EnableRecover:   true,
-		EnableHelmet:    true,
-		EnableCompress:  true,
+		EnableTemplates:     true,
+		EnableRequestID:     true,
+		EnableRecover:       true,
+		EnableHelmet:        true,
+		EnableCompress:      true,
+		EnableSecFetchSite:  true,
+		EnableRequestLogger: true,
 
 		// Concurrency defaults optimized for SQLite WAL mode
 		MaxConcurrentReads:  128,
@@ -90,9 +94,16 @@ type RouteConfig struct {
 	// WriteConcurrency enables write concurrency limiting for this route.
 	WriteConcurrency bool
 
+	// EnableSecFetchSite controls CSRF protection. Default true (nil = enabled).
+	// Set to Bool(false) for public/cross-origin routes.
+	EnableSecFetchSite *bool
+
 	// CustomMiddleware are additional middleware to run before the handler.
 	CustomMiddleware []fiber.Handler
 }
+
+// Bool returns a pointer to a bool value. Useful for optional config fields.
+func Bool(v bool) *bool { return &v }
 
 // Server is the cartridge framework server with clean route registration API.
 type Server struct {
@@ -188,6 +199,22 @@ func (s *Server) setupGlobalMiddleware() {
 		s.app.Use(compress.New(compress.Config{
 			Level: compress.LevelDefault,
 		}))
+	}
+
+	// SecFetchSite CSRF protection (can be disabled per-route)
+	if s.cfg.EnableSecFetchSite {
+		s.app.Use(cartridgemiddleware.SecFetchSiteMiddleware(cartridgemiddleware.SecFetchSiteConfig{
+			Next: func(c *fiber.Ctx) bool {
+				if skip, ok := c.Locals("skip_sec_fetch_site").(bool); ok && skip {
+					return true
+				}
+				return false
+			},
+		}))
+	}
+
+	if s.cfg.EnableRequestLogger {
+		s.app.Use(cartridgemiddleware.RequestLogger(s.cfg.Logger))
 	}
 }
 
@@ -289,6 +316,14 @@ func (s *Server) registerRoute(method, path string, handler HandlerFunc, cfgs ..
 	handlers := make([]fiber.Handler, 0, capacity)
 
 	if routeCfg != nil {
+		// Skip SecFetchSite if explicitly disabled
+		if routeCfg.EnableSecFetchSite != nil && !*routeCfg.EnableSecFetchSite {
+			handlers = append(handlers, func(c *fiber.Ctx) error {
+				c.Locals("skip_sec_fetch_site", true)
+				return c.Next()
+			})
+		}
+
 		// Add CORS if enabled (must come first for preflight handling)
 		if routeCfg.EnableCORS {
 			corsCfg := routeCfg.CORSConfig

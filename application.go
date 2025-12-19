@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+// BackgroundWorker is an interface for background workers that can be started and stopped.
+type BackgroundWorker interface {
+	Start() error
+	Stop()
+}
+
 // Application wires together configuration, logging, database, and HTTP server.
 // It manages the complete lifecycle of a cartridge web application.
 type Application struct {
@@ -15,6 +21,7 @@ type Application struct {
 	Logger    Logger
 	DBManager DBManager
 	Server    *Server
+	workers   []BackgroundWorker
 }
 
 // ApplicationOptions configure application bootstrapping.
@@ -32,6 +39,9 @@ type ApplicationOptions struct {
 
 	// Catch-all redirect path for SPAs
 	CatchAllRedirect string
+
+	// Background workers to run alongside the server
+	BackgroundWorkers []BackgroundWorker
 }
 
 // NewApplication constructs a cartridge application.
@@ -68,22 +78,52 @@ func NewApplication(opts ApplicationOptions) (*Application, error) {
 		Logger:    opts.Logger,
 		DBManager: opts.DBManager,
 		Server:    server,
+		workers:   opts.BackgroundWorkers,
 	}, nil
 }
 
-// Start launches the HTTP server.
+// AddWorker adds a background worker to the application.
+func (a *Application) AddWorker(w BackgroundWorker) {
+	a.workers = append(a.workers, w)
+}
+
+// Start launches background workers and the HTTP server.
 func (a *Application) Start() error {
+	// Start all background workers first
+	for _, w := range a.workers {
+		if err := w.Start(); err != nil {
+			// Stop any already started workers
+			a.stopWorkers()
+			return err
+		}
+	}
 	return a.Server.Start()
 }
 
 // StartAsync launches the HTTP server asynchronously.
 func (a *Application) StartAsync() error {
+	// Start all background workers first
+	for _, w := range a.workers {
+		if err := w.Start(); err != nil {
+			// Stop any already started workers
+			a.stopWorkers()
+			return err
+		}
+	}
 	return a.Server.StartAsync()
 }
 
-// Shutdown gracefully stops the server.
+// Shutdown gracefully stops workers and the server.
 func (a *Application) Shutdown(ctx context.Context) error {
+	a.stopWorkers()
 	return a.Server.Shutdown(ctx)
+}
+
+// stopWorkers stops all background workers.
+func (a *Application) stopWorkers() {
+	for _, w := range a.workers {
+		w.Stop()
+	}
 }
 
 // Run starts the application and waits for termination signals.
