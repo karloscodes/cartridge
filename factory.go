@@ -20,10 +20,15 @@ type SSRAppOptions struct {
 	// TemplatesDirectory overrides template location (development).
 	TemplatesDirectory string
 
-	// BackgroundWorkers to run alongside the server.
-	BackgroundWorkers []BackgroundWorker
+	// BackgroundWorkerFactory creates background workers with access to app dependencies.
+	// Called after database and logger are ready.
+	BackgroundWorkerFactory func(cfg *config.Config, logger *slog.Logger, db *sqlite.Manager) []BackgroundWorker
 
-	// BeforeStart is called after setup but before returning.
+	// Init is called before routes are mounted.
+	// Use this for auth initialization or other setup.
+	Init func(cfg *config.Config, logger *slog.Logger)
+
+	// BeforeStart is called after everything is ready but before returning.
 	// Use this to run migrations or other initialization.
 	BeforeStart func(app *SSRApp) error
 }
@@ -43,9 +48,14 @@ type SSRApp struct {
 //	app, err := cartridge.NewSSRApp("myapp", cartridge.SSRAppOptions{
 //	    TemplatesFS: web.Templates,
 //	    StaticFS:    web.Static,
+//	    Init: func(cfg *config.Config, logger *slog.Logger) {
+//	        auth.Initialize(cfg)
+//	    },
+//	    BackgroundWorkerFactory: func(cfg *config.Config, logger *slog.Logger, db *sqlite.Manager) []cartridge.BackgroundWorker {
+//	        return []cartridge.BackgroundWorker{jobs.NewDispatcher(cfg, logger, db)}
+//	    },
 //	}, func(s *cartridge.Server, cfg *config.Config) {
 //	    s.Get("/", homeHandler)
-//	    s.Post("/submit", submitHandler)
 //	})
 func NewSSRApp(appName string, opts SSRAppOptions, mountRoutes func(*Server, *config.Config)) (*SSRApp, error) {
 	// Load configuration
@@ -57,6 +67,11 @@ func NewSSRApp(appName string, opts SSRAppOptions, mountRoutes func(*Server, *co
 	// Create logger (auto-detects LogConfigProvider)
 	logger := NewLogger(cfg, nil)
 	slog.SetDefault(logger)
+
+	// Run init callback if provided
+	if opts.Init != nil {
+		opts.Init(cfg, logger)
+	}
 
 	// Create database manager
 	dbManager := sqlite.NewManager(sqlite.Config{
@@ -92,13 +107,19 @@ func NewSSRApp(appName string, opts SSRAppOptions, mountRoutes func(*Server, *co
 		mountRoutes(server, cfg)
 	}
 
+	// Create background workers if factory provided
+	var workers []BackgroundWorker
+	if opts.BackgroundWorkerFactory != nil {
+		workers = opts.BackgroundWorkerFactory(cfg, logger, dbManager)
+	}
+
 	// Create application
 	application, err := NewApplication(ApplicationOptions{
 		Config:            cfg,
 		Logger:            logger,
 		DBManager:         dbManager,
 		Server:            server,
-		BackgroundWorkers: opts.BackgroundWorkers,
+		BackgroundWorkers: workers,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create application: %w", err)
