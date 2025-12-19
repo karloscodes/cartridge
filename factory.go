@@ -9,91 +9,157 @@ import (
 	"github.com/karloscodes/cartridge/sqlite"
 )
 
-// SSRAppOptions configures a server-side rendered application.
-type SSRAppOptions struct {
-	// TemplatesFS is the embedded filesystem for templates (production).
-	TemplatesFS fs.FS
-
-	// StaticFS is the embedded filesystem for static assets (production).
-	StaticFS fs.FS
-
-	// TemplatesDirectory overrides template location (development).
-	TemplatesDirectory string
-
-	// BackgroundWorkerFactory creates background workers with access to app dependencies.
-	// Called after database and logger are ready.
-	BackgroundWorkerFactory func(cfg *config.Config, logger *slog.Logger, db *sqlite.Manager) []BackgroundWorker
-
-	// Init is called before routes are mounted.
-	// Use this for auth initialization or other setup.
-	Init func(cfg *config.Config, logger *slog.Logger)
-
-	// BeforeStart is called after everything is ready but before returning.
-	// Use this to run migrations or other initialization.
-	BeforeStart func(app *SSRApp) error
-}
-
-// SSRApp is a server-side rendered application with all dependencies wired.
-type SSRApp struct {
+// App is a fully configured cartridge application.
+type App struct {
 	*Application
 	Config    *config.Config
 	Logger    *slog.Logger
 	DBManager *sqlite.Manager
 }
 
-// NewSSRApp creates a complete SSR application.
+// AppOption configures the application.
+type AppOption func(*appConfig)
+
+type appConfig struct {
+	templatesFS        fs.FS
+	staticFS           fs.FS
+	templatesDirectory string
+	workers            []BackgroundWorker
+	workerFactory      func(*App) []BackgroundWorker
+	init               func(*App)
+	beforeStart        func(*App) error
+	routes             func(*Server, *config.Config)
+}
+
+// WithTemplates sets the embedded templates filesystem for production.
+func WithTemplates(fs fs.FS) AppOption {
+	return func(c *appConfig) {
+		c.templatesFS = fs
+	}
+}
+
+// WithStatic sets the embedded static assets filesystem for production.
+func WithStatic(fs fs.FS) AppOption {
+	return func(c *appConfig) {
+		c.staticFS = fs
+	}
+}
+
+// WithTemplatesDir sets the templates directory for development.
+func WithTemplatesDir(dir string) AppOption {
+	return func(c *appConfig) {
+		c.templatesDirectory = dir
+	}
+}
+
+// WithWorkers adds background workers.
+func WithWorkers(workers ...BackgroundWorker) AppOption {
+	return func(c *appConfig) {
+		c.workers = append(c.workers, workers...)
+	}
+}
+
+// WithWorkerFactory sets a factory function to create workers after app is initialized.
+// Use this when workers need access to the app's logger or database.
+func WithWorkerFactory(factory func(*App) []BackgroundWorker) AppOption {
+	return func(c *appConfig) {
+		c.workerFactory = factory
+	}
+}
+
+// WithInit sets an initialization function called after logger and database are ready.
+// Use this for auth setup or other initialization.
+func WithInit(fn func(*App)) AppOption {
+	return func(c *appConfig) {
+		c.init = fn
+	}
+}
+
+// WithBeforeStart sets a function called before the app is returned.
+// Use this for migrations or validation.
+func WithBeforeStart(fn func(*App) error) AppOption {
+	return func(c *appConfig) {
+		c.beforeStart = fn
+	}
+}
+
+// WithRoutes sets the route mounting function.
+func WithRoutes(fn func(*Server, *config.Config)) AppOption {
+	return func(c *appConfig) {
+		c.routes = fn
+	}
+}
+
+// NewApp creates a complete cartridge application.
 //
 // Example:
 //
-//	app, err := cartridge.NewSSRApp("myapp", cartridge.SSRAppOptions{
-//	    TemplatesFS: web.Templates,
-//	    StaticFS:    web.Static,
-//	    Init: func(cfg *config.Config, logger *slog.Logger) {
-//	        auth.Initialize(cfg)
-//	    },
-//	    BackgroundWorkerFactory: func(cfg *config.Config, logger *slog.Logger, db *sqlite.Manager) []cartridge.BackgroundWorker {
-//	        return []cartridge.BackgroundWorker{jobs.NewDispatcher(cfg, logger, db)}
-//	    },
-//	}, func(s *cartridge.Server, cfg *config.Config) {
-//	    s.Get("/", homeHandler)
-//	})
-func NewSSRApp(appName string, opts SSRAppOptions, mountRoutes func(*Server, *config.Config)) (*SSRApp, error) {
+//	app, err := cartridge.NewApp("myapp",
+//	    cartridge.WithTemplates(web.Templates),
+//	    cartridge.WithStatic(web.Static),
+//	    cartridge.WithInit(func(a *cartridge.App) {
+//	        auth.Initialize(a.Config)
+//	    }),
+//	    cartridge.WithWorkerFactory(func(a *cartridge.App) []cartridge.BackgroundWorker {
+//	        return []cartridge.BackgroundWorker{
+//	            jobs.NewDispatcher(a.Config, a.Logger, a.DBManager),
+//	        }
+//	    }),
+//	    cartridge.WithRoutes(routes.Mount),
+//	    cartridge.WithBeforeStart(func(a *cartridge.App) error {
+//	        return database.Migrate(a.DBManager)
+//	    }),
+//	)
+func NewApp(appName string, opts ...AppOption) (*App, error) {
+	// Apply options
+	cfg := &appConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	// Load configuration
-	cfg, err := config.Load(appName)
+	appCfg, err := config.Load(appName)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 
-	// Create logger (auto-detects LogConfigProvider)
-	logger := NewLogger(cfg, nil)
+	// Create logger
+	logger := NewLogger(appCfg, nil)
 	slog.SetDefault(logger)
-
-	// Run init callback if provided
-	if opts.Init != nil {
-		opts.Init(cfg, logger)
-	}
 
 	// Create database manager
 	dbManager := sqlite.NewManager(sqlite.Config{
-		Path:         cfg.DatabaseDSN(),
-		MaxOpenConns: cfg.GetMaxOpenConns(),
-		MaxIdleConns: cfg.GetMaxIdleConns(),
+		Path:         appCfg.DatabaseDSN(),
+		MaxOpenConns: appCfg.GetMaxOpenConns(),
+		MaxIdleConns: appCfg.GetMaxIdleConns(),
 		Logger:       logger,
 	})
 
+	// Build partial app for callbacks
+	app := &App{
+		Config:    appCfg,
+		Logger:    logger,
+		DBManager: dbManager,
+	}
+
+	// Run init callback
+	if cfg.init != nil {
+		cfg.init(app)
+	}
+
 	// Build server config
 	serverCfg := &ServerConfig{
-		Config:    cfg,
+		Config:    appCfg,
 		Logger:    logger,
 		DBManager: dbManager,
 	}
 
 	// Configure assets based on environment
-	if !cfg.IsDevelopment() {
-		serverCfg.TemplatesFS = opts.TemplatesFS
-		serverCfg.StaticFS = opts.StaticFS
-	} else if opts.TemplatesDirectory != "" {
-		serverCfg.TemplatesDirectory = opts.TemplatesDirectory
+	if !appCfg.IsDevelopment() {
+		serverCfg.TemplatesFS = cfg.templatesFS
+		serverCfg.StaticFS = cfg.staticFS
+	} else if cfg.templatesDirectory != "" {
+		serverCfg.TemplatesDirectory = cfg.templatesDirectory
 	}
 
 	// Create server
@@ -103,19 +169,19 @@ func NewSSRApp(appName string, opts SSRAppOptions, mountRoutes func(*Server, *co
 	}
 
 	// Mount routes
-	if mountRoutes != nil {
-		mountRoutes(server, cfg)
+	if cfg.routes != nil {
+		cfg.routes(server, appCfg)
 	}
 
-	// Create background workers if factory provided
-	var workers []BackgroundWorker
-	if opts.BackgroundWorkerFactory != nil {
-		workers = opts.BackgroundWorkerFactory(cfg, logger, dbManager)
+	// Collect workers
+	workers := cfg.workers
+	if cfg.workerFactory != nil {
+		workers = append(workers, cfg.workerFactory(app)...)
 	}
 
 	// Create application
 	application, err := NewApplication(ApplicationOptions{
-		Config:            cfg,
+		Config:            appCfg,
 		Logger:            logger,
 		DBManager:         dbManager,
 		Server:            server,
@@ -125,24 +191,14 @@ func NewSSRApp(appName string, opts SSRAppOptions, mountRoutes func(*Server, *co
 		return nil, fmt.Errorf("create application: %w", err)
 	}
 
-	app := &SSRApp{
-		Application: application,
-		Config:      cfg,
-		Logger:      logger,
-		DBManager:   dbManager,
-	}
+	app.Application = application
 
-	// Run BeforeStart hook if provided
-	if opts.BeforeStart != nil {
-		if err := opts.BeforeStart(app); err != nil {
+	// Run before start callback
+	if cfg.beforeStart != nil {
+		if err := cfg.beforeStart(app); err != nil {
 			return nil, fmt.Errorf("before start: %w", err)
 		}
 	}
 
 	return app, nil
-}
-
-// DB returns a database connection.
-func (a *SSRApp) DB() *sqlite.Manager {
-	return a.DBManager
 }
