@@ -1,15 +1,15 @@
 # Cartridge
 
-A minimal, opinionated web framework built on [GoFiber](https://gofiber.io/) that I use as a boilerplate for my Go web projects.
+An opinionated web framework boilerplate built on [GoFiber](https://gofiber.io/) that I use for my Go projects.
 
-## Features
+## What it does
 
-- Request-scoped Context with dependency injection
-- Clean route registration with per-route middleware
+- Request-scoped context with dependency injection (logger, config, db)
 - Single handler signature: `func(*Context) error`
-- Concurrency limiting middleware (useful for SQLite WAL mode)
-- Application lifecycle with graceful shutdown
-- Adapters for slog and zap logging
+- Per-route middleware configuration
+- Graceful shutdown with signal handling
+- Concurrency limiting for SQLite applications (WAL mode)
+- Logger adapters for slog and zap
 
 ## Usage
 

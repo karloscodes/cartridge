@@ -360,7 +360,7 @@ func (s *Server) Start() error {
 	}
 
 	port := s.cfg.Config.GetPort()
-	s.cfg.Logger.Info("Starting HTTP server", "addr", ":"+port)
+	s.cfg.Logger.Info("Server started and ready to accept requests", "port", port)
 	return s.app.Listen(":" + port)
 }
 
