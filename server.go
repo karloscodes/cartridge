@@ -112,6 +112,17 @@ type Server struct {
 	cfg      *ServerConfig
 	limiter  *cartridgemiddleware.ConcurrencyLimiter
 	catchAll string
+	session  *SessionManager
+}
+
+// Session returns the session manager. Returns nil if sessions are not enabled.
+func (s *Server) Session() *SessionManager {
+	return s.session
+}
+
+// SetSession sets the session manager. Called by the factory after creation.
+func (s *Server) SetSession(sm *SessionManager) {
+	s.session = sm
 }
 
 // NewServer creates a new cartridge server with the provided configuration.

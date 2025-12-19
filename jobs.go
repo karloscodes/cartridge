@@ -1,4 +1,4 @@
-package jobs
+package cartridge
 
 import (
 	"context"
@@ -6,14 +6,12 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-
-	"github.com/karloscodes/cartridge"
 )
 
 // JobContext provides job-scoped access to application dependencies.
 type JobContext struct {
 	context.Context
-	Logger cartridge.Logger
+	Logger Logger
 	DB     *gorm.DB
 }
 
@@ -22,10 +20,10 @@ type Processor interface {
 	ProcessBatch(ctx *JobContext) error
 }
 
-// Dispatcher runs processors periodically in a background loop.
-type Dispatcher struct {
-	logger     cartridge.Logger
-	dbManager  cartridge.DBManager
+// JobDispatcher runs processors periodically in a background loop.
+type JobDispatcher struct {
+	logger     Logger
+	dbManager  DBManager
 	processors []Processor
 	interval   time.Duration
 	mu         sync.Mutex
@@ -34,9 +32,9 @@ type Dispatcher struct {
 	wg         sync.WaitGroup
 }
 
-// NewDispatcher creates a new background job dispatcher.
-func NewDispatcher(logger cartridge.Logger, dbManager cartridge.DBManager, interval time.Duration, processors ...Processor) *Dispatcher {
-	return &Dispatcher{
+// NewJobDispatcher creates a new background job dispatcher.
+func NewJobDispatcher(logger Logger, dbManager DBManager, interval time.Duration, processors ...Processor) *JobDispatcher {
+	return &JobDispatcher{
 		logger:     logger,
 		dbManager:  dbManager,
 		processors: processors,
@@ -45,7 +43,7 @@ func NewDispatcher(logger cartridge.Logger, dbManager cartridge.DBManager, inter
 }
 
 // Start begins the background processing loop.
-func (d *Dispatcher) Start() error {
+func (d *JobDispatcher) Start() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -61,7 +59,7 @@ func (d *Dispatcher) Start() error {
 }
 
 // Stop terminates the dispatcher and waits for completion.
-func (d *Dispatcher) Stop() {
+func (d *JobDispatcher) Stop() {
 	d.mu.Lock()
 	if !d.running {
 		d.mu.Unlock()
@@ -73,7 +71,7 @@ func (d *Dispatcher) Stop() {
 	d.wg.Wait()
 }
 
-func (d *Dispatcher) loop() {
+func (d *JobDispatcher) loop() {
 	defer d.wg.Done()
 
 	d.logger.Info("jobs dispatcher started", "processors", len(d.processors))
@@ -94,7 +92,7 @@ func (d *Dispatcher) loop() {
 	}
 }
 
-func (d *Dispatcher) processBatch() {
+func (d *JobDispatcher) processBatch() {
 	db, err := d.dbManager.Connect()
 	if err != nil {
 		d.logger.Error("failed to connect to database", "error", err)
@@ -112,11 +110,4 @@ func (d *Dispatcher) processBatch() {
 			d.logger.Error("processor failed", "error", err)
 		}
 	}
-}
-
-// IsRunning returns whether the dispatcher is currently running.
-func (d *Dispatcher) IsRunning() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.running
 }

@@ -1,9 +1,16 @@
 package cartridge
 
 import (
+	"bytes"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	html "github.com/gofiber/template/html/v2"
 
 	"github.com/karloscodes/cartridge/config"
 	"github.com/karloscodes/cartridge/sqlite"
@@ -15,118 +22,111 @@ type App struct {
 	Config    *config.Config
 	Logger    *slog.Logger
 	DBManager *sqlite.Manager
+	Server    *Server
+	Session   *SessionManager
 }
 
 // AppOption configures the application.
 type AppOption func(*appConfig)
 
+// jobGroup represents a set of processors with their interval.
+type jobGroup struct {
+	interval   time.Duration
+	processors []Processor
+}
+
 type appConfig struct {
-	cfg                *config.Config
-	templatesFS        fs.FS
-	staticFS           fs.FS
-	templatesDirectory string
-	workers            []BackgroundWorker
-	workerFactory      func(*App) []BackgroundWorker
-	init               func(*App)
-	beforeStart        func(*App) error
-	routes             func(*Server, *config.Config)
+	cfg           *config.Config
+	templatesFS   fs.FS
+	staticFS      fs.FS
+	templateFuncs template.FuncMap
+	errorHandler  fiber.ErrorHandler
+	init          func(*App)
+	routes        func(*Server)
+	jobGroups     []jobGroup
+	sessionPath   string // login path for session middleware
 }
 
 // WithConfig provides a pre-loaded config instead of loading one.
-// Use this when your app has an extended config type.
 func WithConfig(cfg *config.Config) AppOption {
 	return func(c *appConfig) {
 		c.cfg = cfg
 	}
 }
 
-// WithTemplates sets the embedded templates filesystem for production.
-func WithTemplates(fs fs.FS) AppOption {
+// WithAssets sets embedded templates and static files for production.
+func WithAssets(templates, static fs.FS) AppOption {
 	return func(c *appConfig) {
-		c.templatesFS = fs
+		c.templatesFS = templates
+		c.staticFS = static
 	}
 }
 
-// WithStatic sets the embedded static assets filesystem for production.
-func WithStatic(fs fs.FS) AppOption {
+// WithTemplateFuncs adds custom template functions.
+func WithTemplateFuncs(funcs template.FuncMap) AppOption {
 	return func(c *appConfig) {
-		c.staticFS = fs
+		c.templateFuncs = funcs
 	}
 }
 
-// WithTemplatesDir sets the templates directory for development.
-func WithTemplatesDir(dir string) AppOption {
+// WithErrorHandler sets a custom error handler.
+func WithErrorHandler(handler fiber.ErrorHandler) AppOption {
 	return func(c *appConfig) {
-		c.templatesDirectory = dir
+		c.errorHandler = handler
 	}
 }
 
-// WithWorkers adds background workers.
-func WithWorkers(workers ...BackgroundWorker) AppOption {
-	return func(c *appConfig) {
-		c.workers = append(c.workers, workers...)
-	}
-}
-
-// WithWorkerFactory sets a factory function to create workers after app is initialized.
-// Use this when workers need access to the app's logger or database.
-func WithWorkerFactory(factory func(*App) []BackgroundWorker) AppOption {
-	return func(c *appConfig) {
-		c.workerFactory = factory
-	}
-}
-
-// WithInit sets an initialization function called after logger and database are ready.
-// Use this for auth setup or other initialization.
+// WithInit sets initialization callback (e.g., auth setup).
 func WithInit(fn func(*App)) AppOption {
 	return func(c *appConfig) {
 		c.init = fn
 	}
 }
 
-// WithBeforeStart sets a function called before the app is returned.
-// Use this for migrations or validation.
-func WithBeforeStart(fn func(*App) error) AppOption {
-	return func(c *appConfig) {
-		c.beforeStart = fn
-	}
-}
-
 // WithRoutes sets the route mounting function.
-func WithRoutes(fn func(*Server, *config.Config)) AppOption {
+func WithRoutes(fn func(*Server)) AppOption {
 	return func(c *appConfig) {
 		c.routes = fn
 	}
 }
 
-// NewApp creates a complete cartridge application.
+// WithJobs registers background job processors with a shared interval.
+// Call multiple times to create separate dispatchers with different schedules.
+func WithJobs(interval time.Duration, processors ...Processor) AppOption {
+	return func(c *appConfig) {
+		c.jobGroups = append(c.jobGroups, jobGroup{
+			interval:   interval,
+			processors: processors,
+		})
+	}
+}
+
+// WithSession enables session management with auto-derived cookie name.
+// The cookie name is "{appname}_session" (e.g., "formlander_session").
+func WithSession(loginPath string) AppOption {
+	return func(c *appConfig) {
+		c.sessionPath = loginPath
+	}
+}
+
+// NewSSRApp creates a server-side rendered application with sensible defaults.
 //
 // Example:
 //
-//	app, err := cartridge.NewApp("myapp",
-//	    cartridge.WithTemplates(web.Templates),
-//	    cartridge.WithStatic(web.Static),
-//	    cartridge.WithInit(func(a *cartridge.App) {
-//	        auth.Initialize(a.Config)
-//	    }),
-//	    cartridge.WithWorkerFactory(func(a *cartridge.App) []cartridge.BackgroundWorker {
-//	        return []cartridge.BackgroundWorker{
-//	            jobs.NewDispatcher(a.Config, a.Logger, a.DBManager),
-//	        }
-//	    }),
-//	    cartridge.WithRoutes(routes.Mount),
-//	    cartridge.WithBeforeStart(func(a *cartridge.App) error {
-//	        return database.Migrate(a.DBManager)
-//	    }),
+//	app, err := cartridge.NewSSRApp("myapp",
+//	    cartridge.WithAssets(web.Templates, web.Static),
+//	    cartridge.WithTemplateFuncs(templateFuncs()),
+//	    cartridge.WithJobs(2*time.Minute, webhookJob, emailJob),
+//	    cartridge.WithRoutes(mountRoutes),
 //	)
-func NewApp(appName string, opts ...AppOption) (*App, error) {
+func NewSSRApp(appName string, opts ...AppOption) (*App, error) {
 	// Apply options
 	cfg := &appConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
-	// Use provided config or load one
+	// Load config
 	var appCfg *config.Config
 	var err error
 	if cfg.cfg != nil {
@@ -150,31 +150,18 @@ func NewApp(appName string, opts ...AppOption) (*App, error) {
 		Logger:       logger,
 	})
 
-	// Build partial app for callbacks
-	app := &App{
-		Config:    appCfg,
-		Logger:    logger,
-		DBManager: dbManager,
-	}
-
-	// Run init callback
-	if cfg.init != nil {
-		cfg.init(app)
-	}
+	// Create views engine
+	viewsEngine := createViewsEngine(appCfg, cfg.templatesFS, cfg.templateFuncs)
 
 	// Build server config
-	serverCfg := &ServerConfig{
-		Config:    appCfg,
-		Logger:    logger,
-		DBManager: dbManager,
-	}
-
-	// Configure assets based on environment
-	if !appCfg.IsDevelopment() {
-		serverCfg.TemplatesFS = cfg.templatesFS
-		serverCfg.StaticFS = cfg.staticFS
-	} else if cfg.templatesDirectory != "" {
-		serverCfg.TemplatesDirectory = cfg.templatesDirectory
+	serverCfg := DefaultServerConfig()
+	serverCfg.Config = appCfg
+	serverCfg.Logger = logger
+	serverCfg.DBManager = dbManager
+	serverCfg.ViewsEngine = viewsEngine
+	serverCfg.StaticFS = cfg.staticFS
+	if cfg.errorHandler != nil {
+		serverCfg.ErrorHandler = cfg.errorHandler
 	}
 
 	// Create server
@@ -183,15 +170,43 @@ func NewApp(appName string, opts ...AppOption) (*App, error) {
 		return nil, fmt.Errorf("create server: %w", err)
 	}
 
-	// Mount routes
-	if cfg.routes != nil {
-		cfg.routes(server, appCfg)
+	// Create session manager if enabled and attach to server
+	var sessionMgr *SessionManager
+	if cfg.sessionPath != "" {
+		sessionMgr = NewSessionManager(SessionConfig{
+			CookieName: appCfg.AppName + "_session",
+			Secret:     appCfg.GetSessionSecret(),
+			TTL:        time.Duration(appCfg.GetSessionTimeout()) * time.Second,
+			Secure:     appCfg.IsProduction(),
+			LoginPath:  cfg.sessionPath,
+		})
+		server.SetSession(sessionMgr)
 	}
 
-	// Collect workers
-	workers := cfg.workers
-	if cfg.workerFactory != nil {
-		workers = append(workers, cfg.workerFactory(app)...)
+	// Mount routes (session is available via server.Session())
+	if cfg.routes != nil {
+		cfg.routes(server)
+	}
+
+	// Build app
+	app := &App{
+		Config:    appCfg,
+		Logger:    logger,
+		DBManager: dbManager,
+		Server:    server,
+		Session:   sessionMgr,
+	}
+
+	// Run init callback
+	if cfg.init != nil {
+		cfg.init(app)
+	}
+
+	// Create job dispatchers for each job group
+	var workers []BackgroundWorker
+	for _, group := range cfg.jobGroups {
+		dispatcher := NewJobDispatcher(logger, dbManager, group.interval, group.processors...)
+		workers = append(workers, dispatcher)
 	}
 
 	// Create application
@@ -207,13 +222,47 @@ func NewApp(appName string, opts ...AppOption) (*App, error) {
 	}
 
 	app.Application = application
+	return app, nil
+}
 
-	// Run before start callback
-	if cfg.beforeStart != nil {
-		if err := cfg.beforeStart(app); err != nil {
-			return nil, fmt.Errorf("before start: %w", err)
-		}
+// createViewsEngine creates the template engine with provided functions.
+func createViewsEngine(cfg *config.Config, templatesFS fs.FS, funcs template.FuncMap) *html.Engine {
+	var engine *html.Engine
+
+	if !cfg.IsDevelopment() && templatesFS != nil {
+		engine = html.NewFileSystem(http.FS(templatesFS), ".html")
+	} else {
+		engine = html.New("web/templates", ".html")
 	}
 
-	return app, nil
+	// Add render function (needs engine access)
+	engine.AddFunc("render", func(name string, data any) (template.HTML, error) {
+		if !engine.Loaded {
+			if err := engine.Load(); err != nil {
+				return "", err
+			}
+		}
+		tpl := engine.Templates.Lookup(name)
+		if tpl == nil {
+			return "", fmt.Errorf("template %q not found", name)
+		}
+		var buf bytes.Buffer
+		if err := tpl.Execute(&buf, data); err != nil {
+			return "", err
+		}
+		return template.HTML(buf.String()), nil
+	})
+
+	// Add provided template functions
+	for name, fn := range funcs {
+		engine.AddFunc(name, fn)
+	}
+
+	// Development mode settings
+	engine.Debug(cfg.IsDevelopment())
+	if cfg.IsDevelopment() {
+		engine.Reload(true)
+	}
+
+	return engine
 }
