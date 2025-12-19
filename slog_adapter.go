@@ -31,3 +31,9 @@ func (a *SlogAdapter) Warn(msg string, keysAndValues ...any) {
 func (a *SlogAdapter) Error(msg string, keysAndValues ...any) {
 	a.logger.Error(msg, keysAndValues...)
 }
+
+// Underlying returns the wrapped *slog.Logger.
+// Use this when you need the concrete logger type.
+func (a *SlogAdapter) Underlying() *slog.Logger {
+	return a.logger
+}

@@ -35,3 +35,9 @@ func (a *ZapAdapter) Warn(msg string, keysAndValues ...any) {
 func (a *ZapAdapter) Error(msg string, keysAndValues ...any) {
 	a.sugar.Errorw(msg, keysAndValues...)
 }
+
+// Underlying returns the wrapped *zap.Logger.
+// Use this when you need the concrete logger type.
+func (a *ZapAdapter) Underlying() *zap.Logger {
+	return a.logger
+}
