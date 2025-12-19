@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	html "github.com/gofiber/template/html/v2"
+	"gorm.io/gorm"
 
 	"github.com/karloscodes/cartridge/config"
 	"github.com/karloscodes/cartridge/sqlite"
@@ -24,6 +25,30 @@ type App struct {
 	DBManager *sqlite.Manager
 	Server    *Server
 	Session   *SessionManager
+}
+
+// MigrateDatabase runs database migrations using the provided migrator.
+// It connects to the database, runs migrations, and checkpoints WAL.
+func (a *App) MigrateDatabase(migrator Migrator) error {
+	db, err := a.DBManager.Connect()
+	if err != nil {
+		return fmt.Errorf("connect database: %w", err)
+	}
+
+	if err := migrator.Migrate(db); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+
+	if err := a.DBManager.CheckpointWAL("FULL"); err != nil {
+		a.Logger.Warn("failed to checkpoint WAL after migration", slog.Any("error", err))
+	}
+
+	return nil
+}
+
+// GetDB returns the database connection.
+func (a *App) GetDB() (*gorm.DB, error) {
+	return a.DBManager.Connect()
 }
 
 // AppOption configures the application.
@@ -162,6 +187,8 @@ func NewSSRApp(appName string, opts ...AppOption) (*App, error) {
 	serverCfg.StaticFS = cfg.staticFS
 	if cfg.errorHandler != nil {
 		serverCfg.ErrorHandler = cfg.errorHandler
+	} else {
+		serverCfg.ErrorHandler = DefaultErrorHandler(logger, appCfg.IsDevelopment())
 	}
 
 	// Create server
