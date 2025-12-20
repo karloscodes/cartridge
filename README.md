@@ -1,13 +1,13 @@
 # Cartridge - Go Web Framework
 
-An opinionated, batteries-included Go web framework built on [Fiber](https://gofiber.io) for server-side rendered applications with SQLite.
+An opinionated, batteries-included Go web framework built on [Fiber](https://gofiber.io) for server-side rendered applications.
 
 > **Note**: This module is under active development and APIs may change.
 
 ## Features
 
 - **SSR-first** - Server-side rendering with Go templates
-- **SQLite with WAL** - Optimized database management with connection pooling
+- **Multiple databases** - SQLite (with WAL) or PostgreSQL support
 - **Session management** - Secure cookie-based sessions with HMAC signing
 - **Background jobs** - Simple job dispatcher for async processing
 - **Structured logging** - JSON/text logging with log rotation
@@ -18,6 +18,10 @@ An opinionated, batteries-included Go web framework built on [Fiber](https://gof
 ```bash
 go get github.com/karloscodes/cartridge
 ```
+
+### Using NewSSRApp (Recommended for SQLite)
+
+`NewSSRApp` is the high-level factory for SSR applications with SQLite:
 
 ```go
 package main
@@ -41,12 +45,10 @@ func main() {
         panic(err)
     }
 
-    // Run migrations
     if err := app.MigrateDatabase(myMigrator); err != nil {
         panic(err)
     }
 
-    // Start server with graceful shutdown
     if err := app.Run(); err != nil {
         panic(err)
     }
@@ -54,6 +56,123 @@ func main() {
 
 func homeHandler(ctx *cartridge.Context) error {
     return ctx.Render("home", fiber.Map{"title": "Welcome"})
+}
+```
+
+### Using NewApplication (For Custom Setups)
+
+`NewApplication` is the lower-level constructor for full control over dependencies. Use this when you need PostgreSQL, a custom database manager, or non-SSR applications:
+
+```go
+package main
+
+import (
+    "log/slog"
+    "github.com/karloscodes/cartridge"
+    "github.com/karloscodes/cartridge/database"
+    "github.com/karloscodes/cartridge/postgres"
+)
+
+func main() {
+    // Create your own dependencies
+    logger := slog.Default()
+
+    // Use PostgreSQL
+    dbManager := database.NewManager(
+        postgres.NewDriver(),
+        &database.Config{
+            DSN:          "host=localhost user=app dbname=myapp",
+            MaxOpenConns: 25,
+            MaxIdleConns: 5,
+            Postgres: database.PostgresOptions{
+                SSLMode:  "disable",
+                Timezone: "UTC",
+            },
+        },
+        logger,
+    )
+
+    // Create application with custom dependencies
+    app, err := cartridge.NewApplication(cartridge.ApplicationOptions{
+        Config:    myConfig,    // implements cartridge.Config interface
+        Logger:    logger,
+        DBManager: dbManager,   // implements cartridge.DBManager interface
+        RouteMountFunc: func(s *cartridge.Server) {
+            s.Get("/", homeHandler)
+            s.Post("/api/items", createItemHandler)
+        },
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    if err := app.Run(); err != nil {
+        panic(err)
+    }
+}
+```
+
+## Database Support
+
+Cartridge supports multiple databases through a pluggable driver interface.
+
+### SQLite (Default)
+
+SQLite is the default for `NewSSRApp`. It uses WAL mode and immediate transactions for optimal concurrency:
+
+```go
+import "github.com/karloscodes/cartridge/sqlite"
+
+dbManager := sqlite.NewManager(sqlite.Config{
+    Path:         "storage/app.db",
+    MaxOpenConns: 1,              // SQLite works best with 1 connection
+    MaxIdleConns: 1,
+    BusyTimeout:  5000,           // ms
+    EnableWAL:    true,           // Write-Ahead Logging (default: true)
+    TxImmediate:  true,           // Immediate transaction locks (default: true)
+    Logger:       logger,
+})
+```
+
+### PostgreSQL
+
+For PostgreSQL, use the generic database manager with the PostgreSQL driver:
+
+```go
+import (
+    "github.com/karloscodes/cartridge/database"
+    "github.com/karloscodes/cartridge/postgres"
+)
+
+dbManager := database.NewManager(
+    postgres.NewDriver(),
+    &database.Config{
+        DSN:          "host=localhost port=5432 user=app password=secret dbname=myapp",
+        MaxOpenConns: 25,
+        MaxIdleConns: 5,
+        Postgres: database.PostgresOptions{
+            SSLMode:    "prefer",    // disable, prefer, require
+            Timezone:   "UTC",
+            SearchPath: "public",    // optional schema
+        },
+    },
+    logger,
+)
+```
+
+### Custom Database Drivers
+
+Implement the `database.Driver` interface for other databases:
+
+```go
+type Driver interface {
+    Name() string
+    Open(dsn string) gorm.Dialector
+    ConfigureDSN(dsn string, cfg *Config) string
+    AfterConnect(db *gorm.DB, cfg *Config, logger *slog.Logger) error
+    Close(db *gorm.DB, logger *slog.Logger) error
+    SupportsCheckpoint() bool
+    Checkpoint(db *gorm.DB, mode string) error
 }
 ```
 
@@ -69,7 +188,7 @@ MYAPP_LOG_LEVEL=info
 MYAPP_DATA_DIR=storage
 ```
 
-## App Options
+## App Options (NewSSRApp)
 
 ```go
 app, err := cartridge.NewSSRApp("myapp",
@@ -106,7 +225,7 @@ migrator := cartridge.NewAutoMigrator(
     &Comment{},
 )
 
-// Run migrations (connects, migrates, checkpoints WAL)
+// Run migrations (connects, migrates, checkpoints WAL for SQLite)
 if err := app.MigrateDatabase(migrator); err != nil {
     panic(err)
 }
@@ -160,6 +279,28 @@ func (p *EmailProcessor) ProcessBatch(ctx *cartridge.JobContext) error {
 app, _ := cartridge.NewSSRApp("myapp",
     cartridge.WithJobs(2*time.Minute, &EmailProcessor{}, &WebhookProcessor{}),
 )
+```
+
+## Interfaces
+
+Cartridge uses interfaces for dependency injection, making it easy to swap implementations:
+
+```go
+// Config abstracts runtime configuration
+type Config interface {
+    IsDevelopment() bool
+    IsProduction() bool
+    IsTest() bool
+    GetPort() string
+    GetPublicDirectory() string
+    GetAssetsPrefix() string
+}
+
+// DBManager abstracts database connection management
+type DBManager interface {
+    GetConnection() *gorm.DB
+    Connect() (*gorm.DB, error)
+}
 ```
 
 ## License
