@@ -1,182 +1,167 @@
-# 🎮 Cartridge - Go Web Framework
+# Cartridge - Go Web Framework
 
-> **Ultra-clean Go web development with sublime developer experience**
+An opinionated, batteries-included Go web framework built on [Fiber](https://gofiber.io) for server-side rendered applications with SQLite.
 
-⚠️ Work in Progress - This module is under active development and APIs may change.
+> **Note**: This module is under active development and APIs may change.
 
-An **opinionated**, **batteries-included** Go web framework built on [Fiber](https://gofiber.io) that prioritizes developer experience above all else. Write less boilerplate, ship faster.
+## Features
 
-## ✨ Why Cartridge?
+- **SSR-first** - Server-side rendering with Go templates
+- **SQLite with WAL** - Optimized database management with connection pooling
+- **Session management** - Secure cookie-based sessions with HMAC signing
+- **Background jobs** - Simple job dispatcher for async processing
+- **Structured logging** - JSON/text logging with log rotation
+- **Middleware** - Rate limiting, concurrency control, security headers
 
-```go
-// ❌ Before: Traditional Go web development
-func main() {
-    // 50+ lines of setup boilerplate...
-    if err := server.Start(":8080"); err != nil {
-        log.Fatal(err)
-    }
-}
-
-// ✅ After: Cartridge magic
-func main() {
-    app := cartridge.NewFullStack()
-    
-    app.Get("/users", func(ctx *cartridge.Context) error {
-        return ctx.JSON([]User{}) // Just works! 
-    })
-    
-    app.Run()
-}
-```
-
-## 🚀 Features That Make You Smile
-
-- **🎯 One-line everything** - Server, database, migrations, cron jobs
-- **🎨 Structured logging** - Beautiful, structured logging
-- **⚡ Async processing** - Background tasks with zero ceremony  
-- **⏰ Cron jobs** - Scheduled tasks with database access
-- **🛡️ Smart error handling** - Panics for setup, returns for runtime
-- **🎪 Context magic** - One parameter handlers with everything you need
-- **📁 Embedded assets** - Migrations, templates, static files
-
-## 📦 Quick Start
+## Quick Start
 
 ```bash
-go mod init my-app
 go get github.com/karloscodes/cartridge
 ```
-
-**Create `main.go`:**
 
 ```go
 package main
 
-import "github.com/karloscodes/cartridge"
+import (
+    "time"
+    "github.com/karloscodes/cartridge"
+    "myapp/web"
+)
 
 func main() {
-    app := cartridge.NewFullStack()
-    
-    // Ultra-clean handlers - one parameter only!
-    app.Get("/", func(ctx *cartridge.Context) error {
-        ctx.Logger.Info("🏠 Home page visited", 
-            "endpoint", "/",
-            "user_agent", ctx.Fiber.Get("User-Agent"))
-            
-        return ctx.JSON(map[string]string{
-            "message": "🚀 Welcome to Cartridge!",
-            "status":  "awesome",
-        })
-    })
-    
-    app.Run() // That's it! Server, DB, migrations - all handled
+    app, err := cartridge.NewSSRApp("myapp",
+        cartridge.WithAssets(web.Templates, web.Static),
+        cartridge.WithSession("/login"),
+        cartridge.WithRoutes(func(s *cartridge.Server) {
+            s.Get("/", homeHandler)
+            s.Get("/users", usersHandler)
+        }),
+    )
+    if err != nil {
+        panic(err)
+    }
+
+    // Run migrations
+    if err := app.MigrateDatabase(myMigrator); err != nil {
+        panic(err)
+    }
+
+    // Start server with graceful shutdown
+    if err := app.Run(); err != nil {
+        panic(err)
+    }
+}
+
+func homeHandler(ctx *cartridge.Context) error {
+    return ctx.Render("home", fiber.Map{"title": "Welcome"})
 }
 ```
 
-```bash
-go run main.go
-```
+## Configuration
 
-**Console output with beautiful colors:**
-```
-15:04:05 [INFO ] Starting Cartridge application service=my-app version=1.0.0
-15:04:05 [INFO ] Setting up routes
-15:04:05 [INFO ] Server ready status=listening port=8080
-15:04:12 [INFO ] Home page visited endpoint=/ user_agent=curl/7.68.0
-```
-
-## 🎮 Try the Interactive Demo
+Cartridge reads configuration from environment variables with the app name as prefix:
 
 ```bash
-# Clone and run the demo
-git clone https://github.com/karloscodes/cartridge
-cd cartridge/simple-demo
-go run main.go
-
-# Test the endpoints
-curl http://localhost:3000/hello?name=Developer
-curl -X POST http://localhost:3000/demo/async
-curl http://localhost:3000/status/demo-task
+MYAPP_ENV=production          # development, production, test
+MYAPP_PORT=8080
+MYAPP_SESSION_SECRET=xxx      # Required in production
+MYAPP_LOG_LEVEL=info
+MYAPP_DATA_DIR=storage
 ```
 
-## ⚡ Async Processing Made Simple
-
-Background tasks with **zero ceremony**:
+## App Options
 
 ```go
-// Define your async handler
-func ProcessLargeDataset(ctx *cartridge.AsyncContext, args map[string]interface{}) (interface{}, error) {
-    ctx.Logger.Info("🚀 Starting processing", "task_id", ctx.TaskID)
-    
-    // Your processing logic...
-    time.Sleep(5 * time.Second)
-    
-    return map[string]interface{}{
-        "processed_records": 10000,
-        "status": "success",
-    }, nil
+app, err := cartridge.NewSSRApp("myapp",
+    // Custom configuration
+    cartridge.WithConfig(cfg),
+
+    // Embedded templates and static files
+    cartridge.WithAssets(web.Templates, web.Static),
+
+    // Custom template functions
+    cartridge.WithTemplateFuncs(myFuncs),
+
+    // Custom error handler
+    cartridge.WithErrorHandler(myErrorHandler),
+
+    // Enable session management
+    cartridge.WithSession("/login"),
+
+    // Background job processors
+    cartridge.WithJobs(2*time.Minute, emailProcessor, webhookProcessor),
+
+    // Route mounting
+    cartridge.WithRoutes(mountRoutes),
+)
+```
+
+## Database Migrations
+
+```go
+// Create a migrator with your models
+migrator := cartridge.NewAutoMigrator(
+    &User{},
+    &Post{},
+    &Comment{},
+)
+
+// Run migrations (connects, migrates, checkpoints WAL)
+if err := app.MigrateDatabase(migrator); err != nil {
+    panic(err)
+}
+```
+
+## Session Management
+
+```go
+// In your login handler
+func loginHandler(ctx *cartridge.Context) error {
+    // Validate credentials...
+
+    session := ctx.Ctx.Locals("session").(*cartridge.SessionManager)
+    if err := session.SetSession(ctx.Ctx, userID); err != nil {
+        return err
+    }
+    return ctx.Redirect("/dashboard")
 }
 
-// Start background task
-app.Post("/process", func(ctx *cartridge.Context) error {
-    taskID, err := app.AsyncJob("process-data", ProcessLargeDataset, map[string]interface{}{
-        "dataset_size": "large",
-        "priority": "high",
-    })
-    
-    return ctx.JSON(map[string]string{"task_id": taskID})
-})
-
-// Check task status  
-app.Get("/status/:id", func(ctx *cartridge.Context) error {
-    task, err := app.AsyncStatus(ctx.Params("id"))
-    return ctx.JSON(task)
-})
+// Protected routes use session middleware
+authConfig := &cartridge.RouteConfig{
+    CustomMiddleware: []fiber.Handler{session.Middleware()},
+}
+s.Get("/dashboard", dashboardHandler, authConfig)
 ```
 
-## ⏰ Cron Jobs with Database Access
+## Background Jobs
 
-Schedule tasks with **the same clean UX** as HTTP handlers:
+Jobs run on a fixed interval and process batches of work:
 
 ```go
-func CleanupOldData(ctx *cartridge.CronContext) error {
-    ctx.Logger.Info("🧹 Starting cleanup job")
-    
-    // Direct database access - no setup needed!
-    result := ctx.DBExec("DELETE FROM logs WHERE created_at < datetime('now', '-30 days')")
-    
-    ctx.Logger.Info("✅ Cleanup completed", "rows_affected", result.RowsAffected)
+// Implement the Processor interface
+type EmailProcessor struct{}
+
+func (p *EmailProcessor) ProcessBatch(ctx *cartridge.JobContext) error {
+    ctx.Logger.Info("processing pending emails")
+
+    var pending []Email
+    if err := ctx.DB.Where("sent_at IS NULL").Find(&pending).Error; err != nil {
+        return err
+    }
+
+    for _, email := range pending {
+        // Send email...
+        ctx.DB.Model(&email).Update("sent_at", time.Now())
+    }
     return nil
 }
 
-// Register with optional description
-app.CronJob("cleanup", "0 2 * * *", CleanupOldData, "Clean old logs daily")
-app.CronJob("reports", "0 9 * * MON", GenerateWeeklyReport) // No description needed
+// Register processors with interval
+app, _ := cartridge.NewSSRApp("myapp",
+    cartridge.WithJobs(2*time.Minute, &EmailProcessor{}, &WebhookProcessor{}),
+)
 ```
 
-## 🛡️ Smart Error Handling
-
-**Setup errors panic** (you want to know immediately), **runtime errors return** (handle gracefully):
-
-```go
-// Setup errors panic - fail fast!
-app.CronJob("invalid", "invalid-cron", handler) // 💥 Panics immediately
-app.Run() // 💥 Panics if can't bind port
-
-// Schedule a task -> Runtime errors return - handle gracefully  
-taskID, err := app.AsyncJob("task", handler, args)
-if err != nil {
-    return ctx.BadRequest(err, "Failed to start task")
-}
-```
-
-## 🎯 Design Philosophy
-
-1. **Developer Experience First** - If it's not delightful, we fix it
-2. **Convention over Configuration** - Sensible defaults, override when needed  
-4. **Fail Fast in Development** - Panics for setup, returns for runtime
-5. **Batteries Included** - A cartridge containing all you need: Database, migrations, cron, async jobs, web helpers - all built-in
-
-
-## 📄 License
+## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
