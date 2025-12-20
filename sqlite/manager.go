@@ -8,6 +8,8 @@ import (
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+
+	"github.com/karloscodes/cartridge/database"
 )
 
 // Config configures the SQLite database manager.
@@ -151,7 +153,7 @@ func (m *Manager) open() error {
 	}
 
 	// Create GORM logger
-	gormLogger := NewGormLogger(m.logger.With(slog.String("component", "gorm")), nil)
+	gormLogger := database.NewGormLogger(m.logger.With(slog.String("component", "gorm")), nil)
 
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger:                 gormLogger,
