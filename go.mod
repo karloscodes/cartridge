@@ -1,12 +1,11 @@
 module github.com/karloscodes/cartridge
 
-go 1.23.0
-
-toolchain go1.24.5
+go 1.25
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.10
 	github.com/gofiber/template/html/v2 v2.1.3
+	github.com/petaki/inertia-go v1.11.0
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sync v0.16.0
