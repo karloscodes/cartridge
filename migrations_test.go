@@ -17,7 +17,7 @@ func TestAutoMigrator(t *testing.T) {
 	t.Run("NewAutoMigrator creates migrator with models", func(t *testing.T) {
 		migrator := NewAutoMigrator(&testModel{})
 		if migrator == nil {
-			t.Error("expected non-nil migrator")
+			t.Fatal("expected non-nil migrator")
 		}
 		if len(migrator.models) != 1 {
 			t.Errorf("expected 1 model, got %d", len(migrator.models))

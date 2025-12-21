@@ -47,7 +47,7 @@ func NewGormLogger(slogger *slog.Logger, cfg *GormLoggerConfig) logger.Interface
 	}
 
 	// Determine GORM log level from slog
-	gormLevel := logger.Warn
+	var gormLevel logger.LogLevel
 	if slogger.Enabled(context.Background(), slog.LevelDebug) {
 		gormLevel = logger.Info
 	} else if slogger.Enabled(context.Background(), slog.LevelInfo) {

@@ -122,12 +122,13 @@ func setDefaults(v *viper.Viper, appName string) {
 
 func bindEnvVars(v *viper.Viper, prefix string) {
 	// Core env vars: {PREFIX}_ENV, {PREFIX}_PORT, etc.
-	v.BindEnv("environment", prefix+"_ENV")
-	v.BindEnv("port", prefix+"_PORT")
-	v.BindEnv("sessionsecret", prefix+"_SESSION_SECRET")
-	v.BindEnv("loglevel", prefix+"_LOG_LEVEL")
-	v.BindEnv("datadirectory", prefix+"_DATA_DIR")
-	v.BindEnv("debug", prefix+"_DEBUG")
+	// BindEnv errors are ignored - these bindings are simple key mappings
+	_ = v.BindEnv("environment", prefix+"_ENV")
+	_ = v.BindEnv("port", prefix+"_PORT")
+	_ = v.BindEnv("sessionsecret", prefix+"_SESSION_SECRET")
+	_ = v.BindEnv("loglevel", prefix+"_LOG_LEVEL")
+	_ = v.BindEnv("datadirectory", prefix+"_DATA_DIR")
+	_ = v.BindEnv("debug", prefix+"_DEBUG")
 }
 
 func (c *Config) validate() error {

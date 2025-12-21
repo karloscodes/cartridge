@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"testing"
 )
 
@@ -141,12 +140,8 @@ func TestConfig_InterfaceMethods(t *testing.T) {
 }
 
 func TestLoad(t *testing.T) {
-	// Clear any env vars that might interfere
-	oldEnv := os.Getenv("TESTAPP_ENV")
-	defer os.Setenv("TESTAPP_ENV", oldEnv)
-
 	t.Run("loads with default values", func(t *testing.T) {
-		os.Setenv("TESTAPP_ENV", "test")
+		t.Setenv("TESTAPP_ENV", "test")
 		cfg, err := Load("testapp")
 		if err != nil {
 			t.Fatalf("Load failed: %v", err)
@@ -164,7 +159,7 @@ func TestLoad(t *testing.T) {
 	})
 
 	t.Run("normalizes app name", func(t *testing.T) {
-		os.Setenv("MYAPP_ENV", "test")
+		t.Setenv("MYAPP_ENV", "test")
 		cfg, err := Load("  MyApp  ")
 		if err != nil {
 			t.Fatalf("Load failed: %v", err)
@@ -176,7 +171,7 @@ func TestLoad(t *testing.T) {
 	})
 
 	t.Run("uses default app name for empty", func(t *testing.T) {
-		os.Setenv("APP_ENV", "test")
+		t.Setenv("APP_ENV", "test")
 		cfg, err := Load("")
 		if err != nil {
 			t.Fatalf("Load failed: %v", err)
@@ -188,7 +183,7 @@ func TestLoad(t *testing.T) {
 	})
 
 	t.Run("returns error for invalid environment", func(t *testing.T) {
-		os.Setenv("INVALID_ENV", "invalid")
+		t.Setenv("INVALID_ENV", "invalid")
 		_, err := Load("invalid")
 		if err == nil {
 			t.Error("expected error for invalid environment")
@@ -196,8 +191,8 @@ func TestLoad(t *testing.T) {
 	})
 
 	t.Run("requires session secret in production", func(t *testing.T) {
-		os.Setenv("PRODAPP_ENV", "production")
-		os.Unsetenv("PRODAPP_SESSION_SECRET")
+		t.Setenv("PRODAPP_ENV", "production")
+		t.Setenv("PRODAPP_SESSION_SECRET", "")
 		_, err := Load("prodapp")
 		if err == nil {
 			t.Error("expected error when session secret is missing in production")

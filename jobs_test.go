@@ -61,7 +61,9 @@ func TestJobDispatcher_ProcessorError(t *testing.T) {
 	processor := &mockProcessor{err: errors.New("test error")}
 	dispatcher := NewJobDispatcher(logger, manager, 50*time.Millisecond, processor)
 
-	dispatcher.Start()
+	if err := dispatcher.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
 	time.Sleep(100 * time.Millisecond)
 	dispatcher.Stop()
 
@@ -79,7 +81,9 @@ func TestJobDispatcher_DoubleStart(t *testing.T) {
 
 	dispatcher := NewJobDispatcher(logger, manager, time.Hour, &mockProcessor{})
 
-	dispatcher.Start()
+	if err := dispatcher.Start(); err != nil {
+		t.Fatalf("first Start failed: %v", err)
+	}
 	defer dispatcher.Stop()
 
 	// Second start should be no-op
@@ -95,7 +99,9 @@ func TestJobDispatcher_DoubleStop(t *testing.T) {
 
 	dispatcher := NewJobDispatcher(logger, manager, time.Hour, &mockProcessor{})
 
-	dispatcher.Start()
+	if err := dispatcher.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
 	dispatcher.Stop()
 
 	// Second stop should be safe
@@ -111,7 +117,9 @@ func TestJobDispatcher_MultipleProcessors(t *testing.T) {
 	p2 := &mockProcessor{}
 	dispatcher := NewJobDispatcher(logger, manager, 50*time.Millisecond, p1, p2)
 
-	dispatcher.Start()
+	if err := dispatcher.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
 	time.Sleep(100 * time.Millisecond)
 	dispatcher.Stop()
 
