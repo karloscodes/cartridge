@@ -3,12 +3,10 @@ package flash
 import (
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"log/slog"
-
-	"github.com/karloscodes/cartridge/config"
 )
 
 const (
@@ -23,7 +21,7 @@ type FlashMessage struct {
 }
 
 // SetFlash stores a flash message in a cookie
-func SetFlash(c *fiber.Ctx, messageType string, message string) {
+func SetFlash(c *fiber.Ctx, messageType string, message string, secure bool) {
 	// Create flash message
 	flash := FlashMessage{
 		Type:    messageType,
@@ -40,14 +38,13 @@ func SetFlash(c *fiber.Ctx, messageType string, message string) {
 	// Encode as base64 to avoid cookie parsing issues
 	encodedData := base64.StdEncoding.EncodeToString(jsonData)
 
-	cfg := config.GetConfig()
 	// Set as cookie
 	cookie := &fiber.Cookie{
 		Name:     FlashCookieName,
 		Value:    encodedData,
 		Path:     "/",
 		MaxAge:   60, // Short-lived cookie, just 1 minute
-		Secure:   cfg.Environment == config.Production,
+		Secure:   secure,
 		HTTPOnly: true,
 		SameSite: "Lax",
 	}
