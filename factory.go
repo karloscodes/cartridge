@@ -184,7 +184,11 @@ func NewSSRApp(appName string, opts ...AppOption) (*App, error) {
 	serverCfg.Logger = logger
 	serverCfg.DBManager = dbManager
 	serverCfg.ViewsEngine = viewsEngine
-	serverCfg.StaticFS = cfg.staticFS
+	// In development mode, serve static from disk for hot-reload
+	// In production, use embedded filesystem
+	if !appCfg.IsDevelopment() && cfg.staticFS != nil {
+		serverCfg.StaticFS = cfg.staticFS
+	}
 	if cfg.errorHandler != nil {
 		serverCfg.ErrorHandler = cfg.errorHandler
 	} else {
