@@ -396,6 +396,11 @@ func (s *Server) GetLogger() Logger {
 	return s.cfg.Logger
 }
 
+// GetDBManager returns the database manager.
+func (s *Server) GetDBManager() DBManager {
+	return s.cfg.DBManager
+}
+
 // Start starts the HTTP server on the configured port.
 func (s *Server) Start() error {
 	// Add catch-all redirect if configured
