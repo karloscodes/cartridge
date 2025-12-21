@@ -374,6 +374,7 @@ func (s *Server) wrapHandler(handler HandlerFunc) fiber.Handler {
 			Logger:    s.cfg.Logger,
 			Config:    s.cfg.Config,
 			DBManager: s.cfg.DBManager,
+			Session:   s.session,
 		}
 		// Store context in locals for middleware access
 		c.Locals("cartridge_ctx", ctx)
