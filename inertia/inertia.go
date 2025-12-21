@@ -1,17 +1,17 @@
 package inertia
 
 import (
-	"encoding/json"
-	"html"
-	"os"
-	"strings"
-	"sync"
+"encoding/json"
+"html"
+"os"
+"strings"
+"sync"
 
-	"fusionaly/internal/config"
-	"github.com/karloscodes/cartridge/pkg/flash"
-
-	"github.com/gofiber/fiber/v2"
-	inertiapkg "github.com/petaki/inertia-go"
+"github.com/gofiber/fiber/v2"
+"github.com/karloscodes/cartridge/config"
+"github.com/karloscodes/cartridge/pkg/flash"
+inertiapkg "github.com/petaki/inertia-go"
+)
 )
 
 // ManifestEntry represents an entry in the Vite manifest
