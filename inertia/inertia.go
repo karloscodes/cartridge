@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/karloscodes/cartridge/config"
 	"github.com/karloscodes/cartridge/pkg/flash"
 
 	"github.com/gofiber/fiber/v2"
@@ -36,10 +35,18 @@ func readManifest() (js, css string) {
 	js = "/assets/inertia.js"
 	css = "/assets/inertia.css"
 
-	// Try to read the manifest file
-	data, err := os.ReadFile("web/dist/.vite/manifest.json")
+	// Try to read the manifest file from multiple locations
+	var data []byte
+	var err error
+
+	// Try dist/.vite/manifest.json first (production build location)
+	data, err = os.ReadFile("dist/.vite/manifest.json")
 	if err != nil {
-		return // Use fallback paths
+		// Fallback to web/dist/.vite/manifest.json
+		data, err = os.ReadFile("web/dist/.vite/manifest.json")
+		if err != nil {
+			return // Use fallback paths
+		}
 	}
 
 	var manifest map[string]ManifestEntry
@@ -57,18 +64,9 @@ func readManifest() (js, css string) {
 	return
 }
 
-// loadManifest reads the Vite manifest and extracts asset paths
-// In development mode, it reloads the manifest on every request to support hot rebuilds
-// In production, it caches the manifest for performance
+// loadManifest reads the Vite manifest and extracts asset paths.
+// Uses sync.Once to cache in production for performance.
 func loadManifest() {
-	cfg := config.GetConfig()
-	if cfg.IsDevelopment() {
-		// Always reload in development to pick up new builds
-		jsFile, cssFile = readManifest()
-		return
-	}
-
-	// Cache in production
 	manifestOnce.Do(func() {
 		jsFile, cssFile = readManifest()
 	})
