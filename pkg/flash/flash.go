@@ -20,8 +20,15 @@ type FlashMessage struct {
 	Message string `json:"message,omitempty"`
 }
 
-// SetFlash stores a flash message in a cookie
-func SetFlash(c *fiber.Ctx, messageType string, message string, secure bool) {
+// SetFlash stores a flash message in a cookie.
+// The secure parameter controls whether the cookie requires HTTPS.
+// Pass true in production, false in development.
+func SetFlash(c *fiber.Ctx, messageType string, message string, secure ...bool) {
+	// Default to false (development-friendly), callers should pass true in production
+	isSecure := false
+	if len(secure) > 0 {
+		isSecure = secure[0]
+	}
 	// Create flash message
 	flash := FlashMessage{
 		Type:    messageType,
@@ -44,7 +51,7 @@ func SetFlash(c *fiber.Ctx, messageType string, message string, secure bool) {
 		Value:    encodedData,
 		Path:     "/",
 		MaxAge:   60, // Short-lived cookie, just 1 minute
-		Secure:   secure,
+		Secure:   isSecure,
 		HTTPOnly: true,
 		SameSite: "Lax",
 	}
