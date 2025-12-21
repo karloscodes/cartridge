@@ -9,7 +9,7 @@ import (
 )
 
 func TestSecFetchSiteMiddleware(t *testing.T) {
-	t.Run("default mode allows missing header", func(t *testing.T) {
+	t.Run("blocks missing header", func(t *testing.T) {
 		app := fiber.New()
 		app.Use(SecFetchSiteMiddleware())
 		app.Post("/test", func(c *fiber.Ctx) error {
@@ -21,31 +21,13 @@ func TestSecFetchSiteMiddleware(t *testing.T) {
 
 		resp, err := app.Test(req)
 		assert.NoError(t, err)
-		assert.Equal(t, fiber.StatusOK, resp.StatusCode, "Should allow missing header in default mode")
+		assert.Equal(t, fiber.StatusForbidden, resp.StatusCode, "Should block missing header")
 	})
 
-	t.Run("strict mode blocks missing header", func(t *testing.T) {
-		app := fiber.New()
-		app.Use(SecFetchSiteMiddleware(SecFetchSiteConfig{
-			StrictMode: true,
-		}))
-		app.Post("/test", func(c *fiber.Ctx) error {
-			return c.SendStatus(fiber.StatusOK)
-		})
-
-		req := httptest.NewRequest("POST", "/test", nil)
-		// No Sec-Fetch-Site header
-
-		resp, err := app.Test(req)
-		assert.NoError(t, err)
-		assert.Equal(t, fiber.StatusForbidden, resp.StatusCode, "Should block missing header in strict mode")
-	})
-
-	t.Run("strict mode allows valid browser headers", func(t *testing.T) {
+	t.Run("allows valid browser headers", func(t *testing.T) {
 		app := fiber.New()
 		app.Use(SecFetchSiteMiddleware(SecFetchSiteConfig{
 			AllowedValues: []string{"same-origin", "same-site", "cross-site", "none"},
-			StrictMode:    true,
 		}))
 		app.Post("/test", func(c *fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)
@@ -58,7 +40,7 @@ func TestSecFetchSiteMiddleware(t *testing.T) {
 
 			resp, err := app.Test(req)
 			assert.NoError(t, err)
-			assert.Equal(t, fiber.StatusOK, resp.StatusCode, "Should allow %s in strict mode", header)
+			assert.Equal(t, fiber.StatusOK, resp.StatusCode, "Should allow %s", header)
 		}
 	})
 
@@ -66,7 +48,6 @@ func TestSecFetchSiteMiddleware(t *testing.T) {
 		app := fiber.New()
 		app.Use(SecFetchSiteMiddleware(SecFetchSiteConfig{
 			AllowedValues: []string{"same-origin"},
-			StrictMode:    true,
 		}))
 		app.Post("/test", func(c *fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)
@@ -83,8 +64,7 @@ func TestSecFetchSiteMiddleware(t *testing.T) {
 	t.Run("only validates configured methods", func(t *testing.T) {
 		app := fiber.New()
 		app.Use(SecFetchSiteMiddleware(SecFetchSiteConfig{
-			Methods:    []string{"POST"},
-			StrictMode: true,
+			Methods: []string{"POST"},
 		}))
 		app.Get("/test", func(c *fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)
@@ -103,13 +83,12 @@ func TestSecFetchSiteMiddleware(t *testing.T) {
 		postReq := httptest.NewRequest("POST", "/test", nil)
 		resp, err = app.Test(postReq)
 		assert.NoError(t, err)
-		assert.Equal(t, fiber.StatusForbidden, resp.StatusCode, "POST should be validated in strict mode")
+		assert.Equal(t, fiber.StatusForbidden, resp.StatusCode, "POST should be validated")
 	})
 
 	t.Run("Next function skips validation", func(t *testing.T) {
 		app := fiber.New()
 		app.Use(SecFetchSiteMiddleware(SecFetchSiteConfig{
-			StrictMode: true,
 			Next: func(c *fiber.Ctx) bool {
 				return c.Path() == "/skip"
 			},
@@ -141,7 +120,6 @@ func TestSecFetchSiteStrictMode(t *testing.T) {
 		app.Use(SecFetchSiteMiddleware(SecFetchSiteConfig{
 			AllowedValues: []string{"cross-site", "same-site", "same-origin", "none"},
 			Methods:       []string{"POST"},
-			StrictMode:    true,
 		}))
 		app.Post("/api/events", func(c *fiber.Ctx) error {
 			return c.SendStatus(fiber.StatusOK)

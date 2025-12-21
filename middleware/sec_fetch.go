@@ -16,12 +16,6 @@ type SecFetchSiteConfig struct {
 
 	// Next defines a function to skip this middleware when returning true.
 	Next func(c *fiber.Ctx) bool
-
-	// StrictMode when true, rejects requests without Sec-Fetch-Site header.
-	// This blocks all server-to-server requests (curl, Postman, scripts) but also
-	// blocks older browsers that don't support this header (pre-2020).
-	// Default: false (allows missing header for backward compatibility)
-	StrictMode bool
 }
 
 // DefaultSecFetchSiteConfig returns the default configuration.
@@ -32,8 +26,11 @@ func DefaultSecFetchSiteConfig() SecFetchSiteConfig {
 	}
 }
 
-// SecFetchSiteMiddleware validates the Sec-Fetch-Site header to prevent CSRF attacks.
-// Modern browsers automatically set this header, and it cannot be spoofed by JavaScript.
+// SecFetchSiteMiddleware validates the Sec-Fetch-Site header to prevent CSRF and spoofing attacks.
+// Modern browsers automatically set this header, and it cannot be spoofed by JavaScript or server-to-server tools.
+//
+// STRICT MODE: Requests without Sec-Fetch-Site header are REJECTED.
+// This blocks: curl, Postman, Python requests, Node.js fetch, older browsers (pre-2020).
 //
 // Sec-Fetch-Site values:
 //   - "same-origin": Request from the same origin (scheme + host + port)
@@ -42,6 +39,7 @@ func DefaultSecFetchSiteConfig() SecFetchSiteConfig {
 //   - "none": Direct navigation (user typed URL, bookmark, etc.)
 //
 // By default, this middleware allows "same-origin" and "none" for state-changing methods.
+// For analytics endpoints, configure AllowedValues to include "cross-site".
 func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) fiber.Handler {
 	cfg := DefaultSecFetchSiteConfig()
 	if len(config) > 0 {
@@ -76,19 +74,14 @@ func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) fiber.Handler {
 
 		secFetchSite := c.Get("Sec-Fetch-Site")
 
-		// If header is missing, the browser doesn't support it (older browsers)
-		// or it's a server-to-server request (curl, Postman, scripts).
+		// Reject if header is missing - this prevents server-to-server spoofing
+		// Blocks: curl, Postman, Python requests, Node.js fetch, etc.
+		// Also blocks older browsers (pre-2020) that don't support this header.
 		if secFetchSite == "" {
-			if cfg.StrictMode {
-				// STRICT MODE: Reject missing header to prevent server-to-server spoofing
-				// This blocks: curl, Postman, Python requests, Node.js fetch, etc.
-				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-					"error":   "forbidden",
-					"message": "browser requests only",
-				})
-			}
-			// PERMISSIVE MODE: Allow for backward compatibility with old browsers
-			return c.Next()
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error":   "forbidden",
+				"message": "browser requests only",
+			})
 		}
 
 		if !allowedSet[secFetchSite] {
