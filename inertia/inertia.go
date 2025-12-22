@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/karloscodes/cartridge/pkg/flash"
+	"github.com/karloscodes/cartridge/flash"
 
 	"github.com/gofiber/fiber/v2"
 	inertiapkg "github.com/petaki/inertia-go"
