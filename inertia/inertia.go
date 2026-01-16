@@ -27,7 +27,15 @@ var (
 	manifestOnce sync.Once
 	jsFile       string
 	cssFile      string
+	devMode      bool // When true, re-read manifest on every request
 )
+
+// SetDevMode enables or disables development mode.
+// In dev mode, the manifest is re-read on every request to pick up
+// changes from vite rebuilds without restarting the server.
+func SetDevMode(enabled bool) {
+	devMode = enabled
+}
 
 // readManifest reads the Vite manifest and returns JS and CSS paths
 func readManifest() (js, css string) {
@@ -65,8 +73,16 @@ func readManifest() (js, css string) {
 }
 
 // loadManifest reads the Vite manifest and extracts asset paths.
-// Uses sync.Once to cache in production for performance.
+// In production, uses sync.Once to cache for performance.
+// In dev mode, re-reads on every call to pick up vite rebuilds.
 func loadManifest() {
+	if devMode {
+		// In dev mode, always re-read the manifest
+		jsFile, cssFile = readManifest()
+		return
+	}
+
+	// In production, cache the manifest
 	manifestOnce.Do(func() {
 		jsFile, cssFile = readManifest()
 	})
@@ -105,7 +121,7 @@ func RenderPage(c *fiber.Ctx, component string, props map[string]interface{}) er
 // Automatically injects flash messages from context if available
 // Supports deferred props via X-Inertia-Partial-Data header
 func Render(c *fiber.Ctx, i *inertiapkg.Inertia, component string, props map[string]interface{}) error {
-	// Load asset paths from manifest (only done once)
+	// Load asset paths from manifest (cached in production, fresh in dev)
 	loadManifest()
 
 	// Build full URL with query string for proper Inertia navigation
