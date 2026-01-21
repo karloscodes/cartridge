@@ -14,9 +14,9 @@ import (
 // LogConfig configures the logger.
 type LogConfig struct {
 	// Level is the minimum log level. Defaults based on environment:
-	// - Development: "info"
-	// - Test: "info"
-	// - Production: "error"
+	// - Development: "debug" (verbose, shows GORM queries)
+	// - Test: "info" (less noise in tests)
+	// - Production: "error" (errors only)
 	// Can be overridden via LOG_LEVEL env var or this field.
 	Level string
 
@@ -110,10 +110,12 @@ func resolveLogLevel(cfg Config, configLevel string) slog.Level {
 
 	// Use defaults if not set
 	if levelStr == "" {
-		if cfg.IsDevelopment() || cfg.IsTest() {
-			levelStr = "info"
+		if cfg.IsDevelopment() {
+			levelStr = "debug" // Verbose logging in development
+		} else if cfg.IsTest() {
+			levelStr = "info" // Less noise in tests
 		} else {
-			levelStr = "error"
+			levelStr = "error" // Production: errors only by default
 		}
 	}
 
