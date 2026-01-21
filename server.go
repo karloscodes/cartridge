@@ -52,6 +52,11 @@ type ServerConfig struct {
 	EnableSecFetchSite  bool // CSRF protection via Sec-Fetch-Site header
 	EnableRequestLogger bool
 
+	// SecFetchSite configuration
+	// Allowed values for Sec-Fetch-Site header. Default: ["same-origin", "none"]
+	// For cross-origin APIs (analytics, public endpoints): ["cross-site", "same-site", "same-origin"]
+	SecFetchSiteAllowedValues []string
+
 	// Concurrency configuration (for SQLite WAL mode)
 	MaxConcurrentReads  int
 	MaxConcurrentWrites int
@@ -215,14 +220,19 @@ func (s *Server) setupGlobalMiddleware() {
 
 	// SecFetchSite CSRF protection (can be disabled per-route)
 	if s.cfg.EnableSecFetchSite {
-		s.app.Use(cartridgemiddleware.SecFetchSiteMiddleware(cartridgemiddleware.SecFetchSiteConfig{
+		secFetchCfg := cartridgemiddleware.SecFetchSiteConfig{
 			Next: func(c *fiber.Ctx) bool {
 				if skip, ok := c.Locals("skip_sec_fetch_site").(bool); ok && skip {
 					return true
 				}
 				return false
 			},
-		}))
+		}
+		// Use configured allowed values if provided
+		if len(s.cfg.SecFetchSiteAllowedValues) > 0 {
+			secFetchCfg.AllowedValues = s.cfg.SecFetchSiteAllowedValues
+		}
+		s.app.Use(cartridgemiddleware.SecFetchSiteMiddleware(secFetchCfg))
 	}
 
 	if s.cfg.EnableRequestLogger {
