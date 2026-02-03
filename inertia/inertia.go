@@ -27,7 +27,8 @@ var (
 	manifestOnce sync.Once
 	jsFile       string
 	cssFile      string
-	devMode      bool // When true, re-read manifest on every request
+	devMode      bool   // When true, re-read manifest on every request
+	pageTitle    string = "Fusionaly" // Default page title
 )
 
 // SetDevMode enables or disables development mode.
@@ -35,6 +36,11 @@ var (
 // changes from vite rebuilds without restarting the server.
 func SetDevMode(enabled bool) {
 	devMode = enabled
+}
+
+// SetTitle sets the HTML page title for server-rendered pages.
+func SetTitle(title string) {
+	pageTitle = title
 }
 
 // readManifest reads the Vite manifest and returns JS and CSS paths
@@ -209,7 +215,7 @@ func Render(c *fiber.Ctx, i *inertiapkg.Inertia, component string, props map[str
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fusionaly</title>
+    <title>` + html.EscapeString(pageTitle) + `</title>
     ` + cssLink + `
 </head>
 <body>
