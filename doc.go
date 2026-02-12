@@ -10,6 +10,64 @@
 //   - Application lifecycle management with graceful shutdown
 //   - Support for both slog and zap logging via adapters
 //
+// # Application Factories
+//
+// Cartridge provides three levels of application creation:
+//
+// ## NewApplication (Low-Level)
+//
+// Full control over all components. Use when you have custom requirements.
+//
+//	app, err := cartridge.NewApplication(cartridge.ApplicationOptions{
+//	    Config:         myConfig,
+//	    Logger:         myLogger,
+//	    DBManager:      myDBManager,
+//	    RouteMountFunc: mountRoutes,
+//	})
+//
+// ## NewSSRApp (Server-Side Rendered HTML Templates)
+//
+// For traditional SSR apps with Go HTML templates. Handles logger, DB, sessions,
+// embedded assets, and background jobs automatically.
+//
+//	app, err := cartridge.NewSSRApp("myapp",
+//	    cartridge.WithAssets(templates, static),
+//	    cartridge.WithRoutes(mountRoutes),
+//	    cartridge.WithSession("/login"),
+//	    cartridge.WithJobs(5*time.Minute, cleanupJob),
+//	)
+//
+// ## NewInertiaApp (Inertia.js SPA)
+//
+// For Inertia.js apps (React/Vue SPA with server-side routing). Handles Inertia
+// dev mode, embedded assets, cross-origin APIs, and background workers.
+//
+//	app, err := cartridge.NewInertiaApp(
+//	    cartridge.InertiaWithConfig(cfg),
+//	    cartridge.InertiaWithStaticAssets(web.Assets()),
+//	    cartridge.InertiaWithRoutes(mountRoutes),
+//	    cartridge.InertiaWithWorker(jobsManager),
+//	    cartridge.InertiaWithSession("/login"),
+//	    cartridge.InertiaWithCrossOriginAPI(),
+//	)
+//
+// # Embedded Assets
+//
+// Both NewSSRApp and NewInertiaApp support embedded assets for single-binary deployment:
+//
+//   - Production: Assets served from embedded fs.FS (no external files needed)
+//   - Development: Assets served from disk for hot-reload
+//
+// Create an embed.go in your web package:
+//
+//	//go:embed dist/assets
+//	var assetsFS embed.FS
+//
+//	func Assets() fs.FS {
+//	    sub, _ := fs.Sub(assetsFS, "dist/assets")
+//	    return sub
+//	}
+//
 // # Quick Start
 //
 // Create a new application:
