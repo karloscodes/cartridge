@@ -59,6 +59,43 @@ func homeHandler(ctx *cartridge.Context) error {
 }
 ```
 
+### Using NewInertiaApp (For Inertia.js SPAs)
+
+`NewInertiaApp` is for Inertia.js applications (React/Vue SPA with server-side routing). It handles Inertia dev mode, embedded assets, cross-origin APIs, and background workers:
+
+```go
+package main
+
+import (
+    "github.com/karloscodes/cartridge"
+    "myapp/web"
+)
+
+func main() {
+    app, err := cartridge.NewInertiaApp(
+        cartridge.InertiaWithConfig(cfg),
+        cartridge.InertiaWithStaticAssets(web.Assets()),
+        cartridge.InertiaWithRoutes(mountRoutes),
+        cartridge.InertiaWithWorker(jobsManager),
+        cartridge.InertiaWithSession("/login"),
+        cartridge.InertiaWithCrossOriginAPI(),  // For analytics/public APIs
+    )
+    if err != nil {
+        panic(err)
+    }
+
+    if err := app.Run(); err != nil {
+        panic(err)
+    }
+}
+```
+
+**Key differences from NewSSRApp:**
+- Uses `inertia.SetDevMode(true)` in development (re-reads Vite manifest)
+- `InertiaWithCrossOriginAPI()` configures SecFetchSite for cross-origin requests
+- `InertiaWithWorker()` for custom BackgroundWorker implementations
+- No template engine (Inertia renders React/Vue components)
+
 ### Using NewApplication (For Custom Setups)
 
 `NewApplication` is the lower-level constructor for full control over dependencies. Use this when you need PostgreSQL, a custom database manager, or non-SSR applications:
@@ -111,6 +148,41 @@ func main() {
     }
 }
 ```
+
+## Embedded Assets
+
+Both `NewSSRApp` and `NewInertiaApp` support embedded assets for single-binary deployment:
+
+```go
+// web/embed.go
+package web
+
+import (
+    "embed"
+    "io/fs"
+)
+
+//go:embed dist/assets
+var assetsFS embed.FS
+
+// Assets returns embedded static assets (JS, CSS, images)
+func Assets() fs.FS {
+    sub, _ := fs.Sub(assetsFS, "dist/assets")
+    return sub
+}
+
+//go:embed templates
+var templatesFS embed.FS
+
+// Templates returns embedded HTML templates (SSR only)
+func Templates() fs.FS {
+    return templatesFS
+}
+```
+
+**Behavior:**
+- **Production**: Assets served from embedded `fs.FS` (no external files needed)
+- **Development**: Assets served from disk for hot-reload with Vite
 
 ## Database Support
 
@@ -188,30 +260,36 @@ MYAPP_LOG_LEVEL=info
 MYAPP_DATA_DIR=storage
 ```
 
-## App Options (NewSSRApp)
+## App Options
+
+### NewSSRApp Options
 
 ```go
 app, err := cartridge.NewSSRApp("myapp",
-    // Custom configuration
-    cartridge.WithConfig(cfg),
+    cartridge.WithConfig(cfg),              // Custom configuration
+    cartridge.WithAssets(tmpl, static),     // Embedded templates and static files
+    cartridge.WithTemplateFuncs(myFuncs),   // Custom template functions
+    cartridge.WithErrorHandler(handler),    // Custom error handler
+    cartridge.WithSession("/login"),        // Enable session management
+    cartridge.WithJobs(2*time.Minute, p1),  // Background job processors
+    cartridge.WithRoutes(mountRoutes),      // Route mounting
+)
+```
 
-    // Embedded templates and static files
-    cartridge.WithAssets(web.Templates, web.Static),
+### NewInertiaApp Options
 
-    // Custom template functions
-    cartridge.WithTemplateFuncs(myFuncs),
-
-    // Custom error handler
-    cartridge.WithErrorHandler(myErrorHandler),
-
-    // Enable session management
-    cartridge.WithSession("/login"),
-
-    // Background job processors
-    cartridge.WithJobs(2*time.Minute, emailProcessor, webhookProcessor),
-
-    // Route mounting
-    cartridge.WithRoutes(mountRoutes),
+```go
+app, err := cartridge.NewInertiaApp(
+    cartridge.InertiaWithConfig(cfg),           // Config (required, implements FactoryConfig)
+    cartridge.InertiaWithStaticAssets(fs),      // Embedded assets (production only)
+    cartridge.InertiaWithDBManager(dbMgr),      // Custom DB manager (optional)
+    cartridge.InertiaWithRoutes(mountRoutes),   // Route mounting
+    cartridge.InertiaWithWorker(worker),        // Custom BackgroundWorker
+    cartridge.InertiaWithJobs(interval, p1),    // Job processors with interval
+    cartridge.InertiaWithSession("/login"),     // Enable session management
+    cartridge.InertiaWithCrossOriginAPI(),      // Allow cross-origin requests
+    cartridge.InertiaWithPageTitle("My App"),   // HTML page title
+    cartridge.InertiaWithCatchAllRedirect("/"), // SPA fallback redirect
 )
 ```
 
