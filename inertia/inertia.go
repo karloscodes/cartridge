@@ -29,6 +29,7 @@ var (
 	cssFile      string
 	devMode      bool   // When true, re-read manifest on every request
 	pageTitle    string = "Fusionaly" // Default page title
+	manifestData []byte // Embedded manifest data (used when filesystem not available)
 )
 
 // SetDevMode enables or disables development mode.
@@ -41,6 +42,12 @@ func SetDevMode(enabled bool) {
 // SetTitle sets the HTML page title for server-rendered pages.
 func SetTitle(title string) {
 	pageTitle = title
+}
+
+// SetManifestData sets the embedded manifest JSON data.
+// Use this when the manifest is embedded in the binary and not available on filesystem.
+func SetManifestData(data []byte) {
+	manifestData = data
 }
 
 // readManifest reads the Vite manifest and returns JS and CSS paths
@@ -59,7 +66,12 @@ func readManifest() (js, css string) {
 		// Fallback to web/dist/.vite/manifest.json
 		data, err = os.ReadFile("web/dist/.vite/manifest.json")
 		if err != nil {
-			return // Use fallback paths
+			// Use embedded manifest data if available
+			if len(manifestData) > 0 {
+				data = manifestData
+			} else {
+				return // Use fallback paths
+			}
 		}
 	}
 
