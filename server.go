@@ -113,11 +113,12 @@ func Bool(v bool) *bool { return &v }
 
 // Server is the cartridge framework server with clean route registration API.
 type Server struct {
-	app      *fiber.App
-	cfg      *ServerConfig
-	limiter  *cartridgemiddleware.ConcurrencyLimiter
-	catchAll string
-	session  *SessionManager
+	app               *fiber.App
+	cfg               *ServerConfig
+	limiter           *cartridgemiddleware.ConcurrencyLimiter
+	catchAll          string
+	session           *SessionManager
+	secFetchSkipPaths map[string]bool // paths that skip SecFetchSite validation
 }
 
 // Session returns the session manager. Returns nil if sessions are not enabled.
@@ -184,9 +185,10 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 	)
 
 	server := &Server{
-		app:     app,
-		cfg:     cfg,
-		limiter: limiter,
+		app:               app,
+		cfg:               cfg,
+		limiter:           limiter,
+		secFetchSkipPaths: make(map[string]bool),
 	}
 
 	// Setup global middleware
@@ -222,7 +224,9 @@ func (s *Server) setupGlobalMiddleware() {
 	if s.cfg.EnableSecFetchSite {
 		secFetchCfg := cartridgemiddleware.SecFetchSiteConfig{
 			Next: func(c *fiber.Ctx) bool {
-				if skip, ok := c.Locals("skip_sec_fetch_site").(bool); ok && skip {
+				// Check if this path should skip SecFetchSite validation
+				// Paths are registered when routes are mounted with EnableSecFetchSite: false
+				if s.secFetchSkipPaths[c.Path()] {
 					return true
 				}
 				return false
@@ -338,12 +342,9 @@ func (s *Server) registerRoute(method, path string, handler HandlerFunc, cfgs ..
 	handlers := make([]fiber.Handler, 0, capacity)
 
 	if routeCfg != nil {
-		// Skip SecFetchSite if explicitly disabled
+		// Skip SecFetchSite if explicitly disabled - register path for global middleware check
 		if routeCfg.EnableSecFetchSite != nil && !*routeCfg.EnableSecFetchSite {
-			handlers = append(handlers, func(c *fiber.Ctx) error {
-				c.Locals("skip_sec_fetch_site", true)
-				return c.Next()
-			})
+			s.secFetchSkipPaths[path] = true
 		}
 
 		// Add CORS if enabled (must come first for preflight handling)
