@@ -270,17 +270,16 @@ func (s *Server) setupStaticAssets() {
 			PathPrefix: "",
 		}))
 	} else {
-		// Use directory (development)
+		// Use directory (development) — no caching so rebuilds are picked up immediately
 		dir := s.cfg.StaticDirectory
 		if dir == "" {
 			dir = s.cfg.Config.GetPublicDirectory()
 		}
 		if dir != "" {
 			s.app.Static(prefix, dir, fiber.Static{
-				Compress:      true,
-				ByteRange:     true,
-				Browse:        false,
-				CacheDuration: 24 * time.Hour,
+				Compress:  true,
+				ByteRange: true,
+				Browse:    false,
 			})
 		}
 	}
