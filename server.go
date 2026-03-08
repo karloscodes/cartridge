@@ -285,25 +285,28 @@ func (s *Server) setupStaticAssets() {
 }
 
 // setupPublicFiles serves root-level public files (favicon.svg, robots.txt, etc.)
-// These are files that browsers request at the root path, not under /assets.
+// Registers explicit GET routes for each file found in PublicFS.
 func (s *Server) setupPublicFiles() {
 	if s.cfg.PublicFS == nil {
 		return
 	}
 
-	s.app.Use("/", filesystem.New(filesystem.Config{
-		Root:       http.FS(s.cfg.PublicFS),
-		Browse:     false,
-		MaxAge:     int((24 * time.Hour).Seconds()),
-		PathPrefix: "",
-		Next: func(c *fiber.Ctx) bool {
-			// Only serve actual files, fall through for app routes
-			_, err := s.cfg.PublicFS.Open(c.Path()[1:]) // strip leading /
-			return err != nil
-		},
-	}))
-}
+	entries, err := fs.ReadDir(s.cfg.PublicFS, ".")
+	if err != nil {
+		return
+	}
 
+	httpFS := http.FS(s.cfg.PublicFS)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := "/" + entry.Name()
+		s.app.Get(path, func(c *fiber.Ctx) error {
+			return filesystem.SendFile(c, httpFS, path)
+		})
+	}
+}
 // SetCatchAllRedirect configures a fallback redirect for unmatched routes.
 func (s *Server) SetCatchAllRedirect(path string) {
 	s.catchAll = path
