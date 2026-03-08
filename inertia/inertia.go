@@ -215,6 +215,14 @@ func Render(c *fiber.Ctx, i *inertiapkg.Inertia, component string, props map[str
 	// Send file directly
 	c.Set("Content-Type", "text/html")
 
+	// Cache control: dev mode never caches (prevents stale hashed asset references),
+	// production allows caching but requires revalidation to pick up new deploys.
+	if devMode {
+		c.Set("Cache-Control", "no-store")
+	} else {
+		c.Set("Cache-Control", "no-cache")
+	}
+
 	// Build CSS link tag only if we have a CSS file
 	cssLink := ""
 	if cssFile != "" {

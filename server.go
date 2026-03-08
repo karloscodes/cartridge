@@ -263,10 +263,11 @@ func (s *Server) setupStaticAssets() {
 
 	if s.cfg.StaticFS != nil {
 		// Use embedded filesystem (production)
+		// Hashed filenames from Vite provide cache busting, so cache aggressively (1 year).
 		s.app.Use(prefix, filesystem.New(filesystem.Config{
 			Root:       http.FS(s.cfg.StaticFS),
 			Browse:     false,
-			MaxAge:     int((24 * time.Hour).Seconds()),
+			MaxAge:     int((365 * 24 * time.Hour).Seconds()),
 			PathPrefix: "",
 		}))
 	} else {
