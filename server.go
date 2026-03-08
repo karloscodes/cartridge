@@ -40,9 +40,10 @@ type ServerConfig struct {
 
 	// Static assets configuration
 	EnableStaticAssets bool
-	StaticFS           fs.FS  // Embedded filesystem for static assets (production)
+	StaticFS           fs.FS  // Embedded filesystem for static assets (production), served under StaticPrefix
 	StaticDirectory    string // Directory for static assets (development)
 	StaticPrefix       string
+	PublicFS           fs.FS  // Root-level public files (favicon.svg, robots.txt), served at /
 
 	// Middleware configuration
 	EnableRequestID     bool
@@ -197,6 +198,9 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 	// Setup static assets
 	server.setupStaticAssets()
 
+	// Setup root-level public files (favicon, robots.txt, etc.)
+	server.setupPublicFiles()
+
 	return server, nil
 }
 
@@ -278,6 +282,26 @@ func (s *Server) setupStaticAssets() {
 			})
 		}
 	}
+}
+
+// setupPublicFiles serves root-level public files (favicon.svg, robots.txt, etc.)
+// These are files that browsers request at the root path, not under /assets.
+func (s *Server) setupPublicFiles() {
+	if s.cfg.PublicFS == nil {
+		return
+	}
+
+	s.app.Use("/", filesystem.New(filesystem.Config{
+		Root:       http.FS(s.cfg.PublicFS),
+		Browse:     false,
+		MaxAge:     int((24 * time.Hour).Seconds()),
+		PathPrefix: "",
+		Next: func(c *fiber.Ctx) bool {
+			// Only serve actual files, fall through for app routes
+			_, err := s.cfg.PublicFS.Open(c.Path()[1:]) // strip leading /
+			return err != nil
+		},
+	}))
 }
 
 // SetCatchAllRedirect configures a fallback redirect for unmatched routes.
