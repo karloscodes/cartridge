@@ -227,6 +227,7 @@ func Render(c *fiber.Ctx, i *inertiapkg.Inertia, component string, props map[str
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <title>` + html.EscapeString(pageTitle) + `</title>
     ` + cssLink + `
 </head>
