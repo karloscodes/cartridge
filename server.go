@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -43,7 +44,8 @@ type ServerConfig struct {
 	StaticFS           fs.FS  // Embedded filesystem for static assets (production), served under StaticPrefix
 	StaticDirectory    string // Directory for static assets (development)
 	StaticPrefix       string
-	PublicFS           fs.FS  // Root-level public files (favicon.svg, robots.txt), served at /
+	PublicFS           fs.FS  // Root-level public files (favicon.svg, robots.txt), served at / (production)
+	PublicDirectory    string // Directory for public files in development (e.g. "web/public")
 
 	// Middleware configuration
 	EnableRequestID     bool
@@ -285,18 +287,24 @@ func (s *Server) setupStaticAssets() {
 }
 
 // setupPublicFiles serves root-level public files (favicon.svg, robots.txt, etc.)
-// Registers explicit GET routes for each file found in PublicFS.
+// In production, serves from PublicFS (embedded). In development, serves from PublicDirectory (disk).
 func (s *Server) setupPublicFiles() {
-	if s.cfg.PublicFS == nil {
+	var publicFS fs.FS
+
+	if s.cfg.PublicFS != nil {
+		publicFS = s.cfg.PublicFS
+	} else if s.cfg.PublicDirectory != "" {
+		publicFS = os.DirFS(s.cfg.PublicDirectory)
+	} else {
 		return
 	}
 
-	entries, err := fs.ReadDir(s.cfg.PublicFS, ".")
+	entries, err := fs.ReadDir(publicFS, ".")
 	if err != nil {
 		return
 	}
 
-	httpFS := http.FS(s.cfg.PublicFS)
+	httpFS := http.FS(publicFS)
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
