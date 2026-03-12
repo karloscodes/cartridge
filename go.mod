@@ -1,6 +1,6 @@
 module github.com/karloscodes/cartridge
 
-go 1.25
+go 1.25.0
 
 require (
 	github.com/gofiber/fiber/v2 v2.52.12
@@ -9,7 +9,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.48.0
-	golang.org/x/sync v0.19.0
+	golang.org/x/sync v0.20.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
