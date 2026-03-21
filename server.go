@@ -120,8 +120,7 @@ type Server struct {
 	cfg               *ServerConfig
 	limiter           *cartridgemiddleware.ConcurrencyLimiter
 	catchAll          string
-	session           *SessionManager
-	secFetchSkipPaths map[string]bool // paths that skip SecFetchSite validation
+	session *SessionManager
 }
 
 // Session returns the session manager. Returns nil if sessions are not enabled.
@@ -191,7 +190,6 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 		app:               app,
 		cfg:               cfg,
 		limiter:           limiter,
-		secFetchSkipPaths: make(map[string]bool),
 	}
 
 	// Setup global middleware
@@ -226,24 +224,8 @@ func (s *Server) setupGlobalMiddleware() {
 		}))
 	}
 
-	// SecFetchSite CSRF protection (can be disabled per-route)
-	if s.cfg.EnableSecFetchSite {
-		secFetchCfg := cartridgemiddleware.SecFetchSiteConfig{
-			Next: func(c *fiber.Ctx) bool {
-				// Check if this path should skip SecFetchSite validation
-				// Paths are registered when routes are mounted with EnableSecFetchSite: false
-				if s.secFetchSkipPaths[c.Path()] {
-					return true
-				}
-				return false
-			},
-		}
-		// Use configured allowed values if provided
-		if len(s.cfg.SecFetchSiteAllowedValues) > 0 {
-			secFetchCfg.AllowedValues = s.cfg.SecFetchSiteAllowedValues
-		}
-		s.app.Use(cartridgemiddleware.SecFetchSiteMiddleware(secFetchCfg))
-	}
+	// SecFetchSite CSRF protection is applied per-route in registerRoute
+	// (not as global middleware) so routes can opt out with EnableSecFetchSite: false
 
 	if s.cfg.EnableRequestLogger {
 		s.app.Use(cartridgemiddleware.RequestLogger(s.cfg.Logger))
@@ -376,12 +358,17 @@ func (s *Server) registerRoute(method, path string, handler HandlerFunc, cfgs ..
 
 	handlers := make([]fiber.Handler, 0, capacity)
 
-	if routeCfg != nil {
-		// Skip SecFetchSite if explicitly disabled - register path for global middleware check
-		if routeCfg.EnableSecFetchSite != nil && !*routeCfg.EnableSecFetchSite {
-			s.secFetchSkipPaths[path] = true
+	// Apply SecFetchSite per-route: enabled by default, disabled with EnableSecFetchSite: false
+	skipSecFetch := routeCfg != nil && routeCfg.EnableSecFetchSite != nil && !*routeCfg.EnableSecFetchSite
+	if s.cfg.EnableSecFetchSite && !skipSecFetch {
+		secFetchCfg := cartridgemiddleware.SecFetchSiteConfig{}
+		if len(s.cfg.SecFetchSiteAllowedValues) > 0 {
+			secFetchCfg.AllowedValues = s.cfg.SecFetchSiteAllowedValues
 		}
+		handlers = append(handlers, cartridgemiddleware.SecFetchSiteMiddleware(secFetchCfg))
+	}
 
+	if routeCfg != nil {
 		// Add CORS if enabled (must come first for preflight handling)
 		if routeCfg.EnableCORS {
 			corsCfg := routeCfg.CORSConfig
