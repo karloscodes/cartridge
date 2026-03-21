@@ -141,10 +141,15 @@ func (c *Config) validate() error {
 		}
 	}
 
-	// Session secret handling
+	// Session secret handling — fall back to PRIVATE_KEY (set by matcha)
+	if c.SessionSecret == "" {
+		if pk := os.Getenv("PRIVATE_KEY"); pk != "" {
+			c.SessionSecret = pk
+		}
+	}
 	if c.IsProduction() {
 		if c.SessionSecret == "" {
-			problems = append(problems, fmt.Sprintf("%s_SESSION_SECRET is REQUIRED in production", c.envPrefix))
+			problems = append(problems, fmt.Sprintf("%s_SESSION_SECRET is REQUIRED in production (or set PRIVATE_KEY)", c.envPrefix))
 		}
 	} else if c.SessionSecret == "" {
 		c.SessionSecret = "dev-secret-do-not-use-in-production-f8e3a9c2d1b7e6a4"
