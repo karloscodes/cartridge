@@ -136,6 +136,106 @@ func TestBind(t *testing.T) {
 	})
 }
 
+func TestInput(t *testing.T) {
+	t.Run("reads a value from a JSON body", func(t *testing.T) {
+		app := fiber.New()
+		var got string
+		app.Post("/x", func(c *fiber.Ctx) error {
+			got = newTestContext(c).Input("openai_api_key")
+			return c.SendString("ok")
+		})
+
+		body := strings.NewReader(`{"openai_api_key":"sk-123"}`)
+		req, _ := http.NewRequest("POST", "/x", body)
+		req.Header.Set("Content-Type", "application/json")
+		if _, err := app.Test(req); err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if got != "sk-123" {
+			t.Errorf("expected sk-123, got %q", got)
+		}
+	})
+
+	t.Run("reads a value from a form-urlencoded body", func(t *testing.T) {
+		app := fiber.New()
+		var got string
+		app.Post("/x", func(c *fiber.Ctx) error {
+			got = newTestContext(c).Input("domain")
+			return c.SendString("ok")
+		})
+
+		form := url.Values{"domain": {"example.com"}}
+		req, _ := http.NewRequest("POST", "/x", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if _, err := app.Test(req); err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if got != "example.com" {
+			t.Errorf("expected example.com, got %q", got)
+		}
+	})
+
+	t.Run("reads a route param and a query value", func(t *testing.T) {
+		app := fiber.New()
+		var gotID, gotRange string
+		app.Get("/sites/:id", func(c *fiber.Ctx) error {
+			ctx := newTestContext(c)
+			gotID = ctx.Input("id")
+			gotRange = ctx.Input("range")
+			return c.SendString("ok")
+		})
+
+		req, _ := http.NewRequest("GET", "/sites/42?range=7d", nil)
+		if _, err := app.Test(req); err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if gotID != "42" {
+			t.Errorf("expected route param id=42, got %q", gotID)
+		}
+		if gotRange != "7d" {
+			t.Errorf("expected query range=7d, got %q", gotRange)
+		}
+	})
+
+	t.Run("renders a non-string JSON value as its literal", func(t *testing.T) {
+		app := fiber.New()
+		var got string
+		app.Post("/x", func(c *fiber.Ctx) error {
+			got = newTestContext(c).Input("count")
+			return c.SendString("ok")
+		})
+
+		body := strings.NewReader(`{"count":42}`)
+		req, _ := http.NewRequest("POST", "/x", body)
+		req.Header.Set("Content-Type", "application/json")
+		if _, err := app.Test(req); err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if got != "42" {
+			t.Errorf("expected 42, got %q", got)
+		}
+	})
+
+	t.Run("returns empty string for an absent key", func(t *testing.T) {
+		app := fiber.New()
+		var got = "sentinel"
+		app.Post("/x", func(c *fiber.Ctx) error {
+			got = newTestContext(c).Input("missing")
+			return c.SendString("ok")
+		})
+
+		body := strings.NewReader(`{"present":"yes"}`)
+		req, _ := http.NewRequest("POST", "/x", body)
+		req.Header.Set("Content-Type", "application/json")
+		if _, err := app.Test(req); err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+}
+
 func TestInertia(t *testing.T) {
 	// dataPage extracts the JSON encoded in the data-page attribute of the
 	// initial (non-Inertia) HTML response, then returns its props map.

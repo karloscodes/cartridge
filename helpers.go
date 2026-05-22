@@ -1,11 +1,50 @@
 package cartridge
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/karloscodes/cartridge/flash"
 	"github.com/karloscodes/cartridge/inertia"
 )
+
+// Input returns a single request value by key, regardless of how it arrived:
+// urlencoded/multipart form, JSON body (the Inertia protocol), route param, or
+// query string — checked in that order. Returns "" if the key is absent.
+//
+// It's the single-field counterpart to Bind: reach for Input when you need one
+// or two values, Bind when you want a typed struct. This avoids the
+// declare-struct-then-pull-fields ceremony for the common case:
+//
+//	key := strings.TrimSpace(ctx.Input("openai_api_key"))
+func (ctx *Context) Input(key string) string {
+	// Form body (urlencoded/multipart). Fiber's FormValue can't read a JSON body.
+	if v := ctx.FormValue(key); v != "" {
+		return v
+	}
+
+	// JSON body (Inertia posts JSON).
+	if ct := ctx.Get(fiber.HeaderContentType); len(ctx.Body()) > 0 && strings.HasPrefix(ct, fiber.MIMEApplicationJSON) {
+		var m map[string]any
+		if json.Unmarshal(ctx.Body(), &m) == nil {
+			if v, ok := m[key]; ok && v != nil {
+				if s, isString := v.(string); isString {
+					return s
+				}
+				return fmt.Sprint(v) // numbers/bools rendered as their literal
+			}
+		}
+	}
+
+	// Route param, then query string.
+	if v := ctx.Params(key); v != "" {
+		return v
+	}
+	return ctx.Query(key)
+}
 
 // Bind decodes request input into out, regardless of how it arrived.
 // It reads the body (Fiber's BodyParser is content-type-aware: JSON,
