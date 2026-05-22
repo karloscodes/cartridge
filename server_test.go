@@ -71,8 +71,8 @@ func TestPublicFS(t *testing.T) {
 func TestPublicDirectory(t *testing.T) {
 	// Create a temp dir with test files
 	tmpDir := t.TempDir()
-	os.WriteFile(tmpDir+"/favicon.svg", []byte("<svg>dir-test</svg>"), 0644)
-	os.WriteFile(tmpDir+"/robots.txt", []byte("User-agent: *"), 0644)
+	_ = os.WriteFile(tmpDir+"/favicon.svg", []byte("<svg>dir-test</svg>"), 0644)
+	_ = os.WriteFile(tmpDir+"/robots.txt", []byte("User-agent: *"), 0644)
 
 	cfg := DefaultServerConfig()
 	cfg.PublicDirectory = tmpDir

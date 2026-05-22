@@ -130,7 +130,7 @@ func TestMemoryStore(t *testing.T) {
 		cache.WithTTL(1*time.Hour),
 		cache.WithCleanupInterval(0), // Disable background cleanup for tests
 	)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	runStoreTests(t, store, "MemoryStore")
 }
@@ -140,7 +140,7 @@ func TestMemoryStoreExpiration(t *testing.T) {
 		cache.WithTTL(50*time.Millisecond),
 		cache.WithCleanupInterval(0),
 	)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -165,7 +165,7 @@ func TestMemoryStoreMaxEntries(t *testing.T) {
 		cache.WithMaxEntries(3),
 		cache.WithCleanupInterval(0),
 	)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -201,7 +201,7 @@ func TestDatabaseStore(t *testing.T) {
 		cache.WithCleanupInterval(0),
 	)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	runStoreTests(t, store, "DatabaseStore")
 }
@@ -217,7 +217,7 @@ func TestDatabaseStoreExpiration(t *testing.T) {
 		cache.WithCleanupInterval(0),
 	)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
@@ -248,7 +248,7 @@ func TestDatabaseStoreMaxEntries(t *testing.T) {
 		cache.WithCleanupInterval(0),
 	)
 	require.NoError(t, err)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	ctx := context.Background()
 
