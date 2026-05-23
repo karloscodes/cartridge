@@ -109,3 +109,8 @@ init-project:
 	echo "module $$name\n\ngo 1.21\n\nrequire github.com/karloscodes/cartridge v0.1.0" > go.mod; \
 	mkdir -p cmd static templates data logs; \
 	echo "Project $$name initialized!"
+
+# Scan for known reachable vulnerabilities (CVEs)
+.PHONY: vuln
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
