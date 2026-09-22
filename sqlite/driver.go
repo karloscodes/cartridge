@@ -28,33 +28,19 @@ func (d *Driver) Open(dsn string) gorm.Dialector {
 	return sqlite.Open(dsn)
 }
 
-// ConfigureDSN adds SQLite-specific options to the DSN.
+// ConfigureDSN adds the connection settings to the DSN, so the driver applies
+// them to every pooled connection (see buildDSN).
 func (d *Driver) ConfigureDSN(dsn string, cfg *database.Config) string {
-	if cfg.SQLite.TxImmediate {
-		dsn += "?_txlock=immediate"
-	}
-	return dsn
+	return buildDSN(dsn, cfg.SQLite.BusyTimeout, cfg.SQLite.EnableWAL, cfg.SQLite.TxImmediate)
 }
 
-// AfterConnect applies SQLite pragmas.
+// AfterConnect applies the one setting with no DSN form. temp_store is only a
+// hint for temporary tables and sorts.
 func (d *Driver) AfterConnect(db *gorm.DB, cfg *database.Config, logger *slog.Logger) error {
-	pragmas := []string{
-		fmt.Sprintf("PRAGMA busy_timeout = %d", cfg.SQLite.BusyTimeout),
-		"PRAGMA synchronous = NORMAL",
-		"PRAGMA temp_store = MEMORY",
+	if err := db.Exec("PRAGMA temp_store = MEMORY").Error; err != nil {
+		logger.Error("failed to apply pragma", slog.String("pragma", "temp_store"), slog.Any("error", err))
+		return fmt.Errorf("sqlite: apply pragma temp_store: %w", err)
 	}
-
-	if cfg.SQLite.EnableWAL {
-		pragmas = append(pragmas, "PRAGMA journal_mode = WAL")
-	}
-
-	for _, pragma := range pragmas {
-		if err := db.Exec(pragma).Error; err != nil {
-			logger.Error("failed to apply pragma", slog.String("pragma", pragma), slog.Any("error", err))
-			return fmt.Errorf("sqlite: apply pragma %s: %w", pragma, err)
-		}
-	}
-
 	return nil
 }
 

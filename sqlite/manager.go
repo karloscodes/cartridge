@@ -3,6 +3,7 @@ package sqlite
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -146,11 +147,7 @@ func (m *Manager) open() error {
 		return nil
 	}
 
-	// Build DSN with options
-	dsn := m.cfg.Path
-	if m.cfg.TxImmediate {
-		dsn += "?_txlock=immediate"
-	}
+	dsn := buildDSN(m.cfg.Path, m.cfg.BusyTimeout, m.cfg.EnableWAL, m.cfg.TxImmediate)
 
 	// Create GORM logger
 	gormLogger := database.NewGormLogger(m.logger.With(slog.String("component", "gorm")), nil)
@@ -192,14 +189,11 @@ func (m *Manager) open() error {
 }
 
 func (m *Manager) applyPragmas(db *gorm.DB) error {
+	// busy_timeout, synchronous, and journal_mode are in the DSN (buildDSN),
+	// so the driver applies them to every pooled connection. temp_store has
+	// no DSN form; it is only a hint for temporary tables and sorts.
 	pragmas := []string{
-		fmt.Sprintf("PRAGMA busy_timeout = %d", m.cfg.BusyTimeout),
-		"PRAGMA synchronous = NORMAL",
 		"PRAGMA temp_store = MEMORY",
-	}
-
-	if m.cfg.EnableWAL {
-		pragmas = append(pragmas, "PRAGMA journal_mode = WAL")
 	}
 
 	for _, pragma := range pragmas {
@@ -210,4 +204,26 @@ func (m *Manager) applyPragmas(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+// buildDSN adds the connection settings to the path as driver parameters. A
+// PRAGMA sent with Exec reaches only the connection that runs it; the driver
+// applies DSN parameters to every connection the pool opens.
+func buildDSN(path string, busyTimeout int, wal, txImmediate bool) string {
+	params := []string{
+		fmt.Sprintf("_busy_timeout=%d", busyTimeout),
+		"_synchronous=NORMAL",
+	}
+	if wal {
+		params = append(params, "_journal_mode=WAL")
+	}
+	if txImmediate {
+		params = append(params, "_txlock=immediate")
+	}
+
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + strings.Join(params, "&")
 }

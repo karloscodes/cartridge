@@ -1,6 +1,8 @@
 package sqlite
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -157,4 +159,51 @@ func TestManager_CheckpointWAL(t *testing.T) {
 
 		_ = m.Close()
 	})
+}
+
+func TestManager_PragmasOnEveryConnection(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "pool.db")
+	m := NewManager(Config{Path: dbPath, MaxOpenConns: 3, MaxIdleConns: 3, BusyTimeout: 4321})
+	db, err := m.Connect()
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+	sqlDB, _ := db.DB()
+
+	// Hold three connections at once, so the pool must open three.
+	ctx := context.Background()
+	var conns []*sql.Conn
+	for i := 0; i < 3; i++ {
+		conn, err := sqlDB.Conn(ctx)
+		if err != nil {
+			t.Fatalf("conn %d: %v", i, err)
+		}
+		conns = append(conns, conn)
+	}
+
+	for i, conn := range conns {
+		var timeout int
+		var journal string
+		var synchronous int
+		if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&timeout); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
+			t.Fatal(err)
+		}
+		if timeout != 4321 {
+			t.Errorf("conn %d: busy_timeout = %d, want 4321", i, timeout)
+		}
+		if journal != "wal" {
+			t.Errorf("conn %d: journal_mode = %q, want wal", i, journal)
+		}
+		if synchronous != 1 { // NORMAL
+			t.Errorf("conn %d: synchronous = %d, want 1 (NORMAL)", i, synchronous)
+		}
+		_ = conn.Close()
+	}
 }
