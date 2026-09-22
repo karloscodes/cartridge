@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -20,8 +21,9 @@ type RateLimiterConfig struct {
 	Max      int
 	Duration time.Duration
 	Skip     func(*fiber.Ctx) bool
-	Storage  fiber.Storage        // Optional: persistent storage for distributed rate limiting
-	Env      EnvironmentChecker   // Optional: environment checker to skip rate limiting in dev/test
+	Storage  fiber.Storage           // Optional: persistent storage for distributed rate limiting
+	Env      EnvironmentChecker      // Optional: environment checker to skip rate limiting in dev/test
+	Key      func(*fiber.Ctx) string // Optional: the client key; default c.IP()
 }
 
 // RateLimiterOption defines a function to modify RateLimiterConfig.
@@ -48,6 +50,16 @@ func WithDuration(duration time.Duration) RateLimiterOption {
 func WithSkip(skip func(*fiber.Ctx) bool) RateLimiterOption {
 	return func(cfg *RateLimiterConfig) {
 		cfg.Skip = skip
+	}
+}
+
+// WithKeyGenerator sets how requests are grouped into one budget. The default
+// is c.IP(). Behind a proxy that appends to X-Forwarded-For, c.IP() returns
+// the leftmost entry, which the client controls; pass a function that returns
+// the real client address instead.
+func WithKeyGenerator(key func(*fiber.Ctx) string) RateLimiterOption {
+	return func(cfg *RateLimiterConfig) {
+		cfg.Key = key
 	}
 }
 
@@ -101,12 +113,15 @@ func RateLimiter(options ...RateLimiterOption) fiber.Handler {
 		Storage:    cfg.Storage, // nil = in-memory (default)
 		KeyGenerator: func(c *fiber.Ctx) string {
 			// Use utils.CopyString to avoid memory issues with pooled contexts
+			if cfg.Key != nil {
+				return utils.CopyString(cfg.Key(c))
+			}
 			return utils.CopyString(c.IP())
 		},
 		LimitReached: func(c *fiber.Ctx) error {
 			// Set Retry-After header for well-behaved clients
 			c.Set("Retry-After", "60") // Suggest retry after 60 seconds
-			c.Set("X-RateLimit-Limit", string(rune(cfg.Max)))
+			c.Set("X-RateLimit-Limit", strconv.Itoa(cfg.Max))
 			c.Set("X-RateLimit-Remaining", "0")
 
 			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
