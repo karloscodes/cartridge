@@ -38,7 +38,7 @@ func crossSitePost(t *testing.T, srv *Server, path string) int {
 }
 
 func TestRouteSecFetchSite(t *testing.T) {
-	ok := func(c *Context) error { return c.Ctx.SendString("ok") }
+	ok := func(c *Context) error { return c.SendString("ok") }
 
 	t.Run("a route can opt in when the server default is off", func(t *testing.T) {
 		srv := newTestServer(t, func(c *ServerConfig) { c.EnableSecFetchSite = false })
@@ -75,7 +75,7 @@ func TestTrustedProxies(t *testing.T) {
 			c.ProxyHeader = "X-Forwarded-For"
 			c.TrustedProxies = trusted
 		})
-		srv.Get("/ip", func(c *Context) error { return c.Ctx.SendString(c.Ctx.IP()) })
+		srv.Get("/ip", func(c *Context) error { return c.SendString(c.IP()) })
 
 		req, _ := http.NewRequest("GET", "/ip", nil)
 		req.Header.Set("X-Forwarded-For", "203.0.113.7")
