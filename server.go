@@ -103,8 +103,9 @@ type RouteConfig struct {
 	// WriteConcurrency enables write concurrency limiting for this route.
 	WriteConcurrency bool
 
-	// EnableSecFetchSite controls CSRF protection. Default true (nil = enabled).
-	// Set to Bool(false) for public/cross-origin routes.
+	// EnableSecFetchSite controls CSRF protection for this route. nil follows
+	// ServerConfig.EnableSecFetchSite. Bool(false) opts out (public or
+	// cross-origin routes); Bool(true) opts in even when the server default is off.
 	EnableSecFetchSite *bool
 
 	// CustomMiddleware are additional middleware to run before the handler.
@@ -161,7 +162,11 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 		fiberCfg.ProxyHeader = cfg.ProxyHeader
 	}
 	if len(cfg.TrustedProxies) > 0 {
+		// Fiber ignores TrustedProxies unless the check is on, and then
+		// trusts ProxyHeader from any client, which lets anyone set their
+		// own IP (and dodge IP-keyed rate limits).
 		fiberCfg.TrustedProxies = cfg.TrustedProxies
+		fiberCfg.EnableTrustedProxyCheck = true
 	}
 
 	// Add custom views engine if provided
@@ -358,9 +363,14 @@ func (s *Server) registerRoute(method, path string, handler HandlerFunc, cfgs ..
 
 	handlers := make([]fiber.Handler, 0, capacity)
 
-	// Apply SecFetchSite per-route: enabled by default, disabled with EnableSecFetchSite: false
-	skipSecFetch := routeCfg != nil && routeCfg.EnableSecFetchSite != nil && !*routeCfg.EnableSecFetchSite
-	if s.cfg.EnableSecFetchSite && !skipSecFetch {
+	// Apply SecFetchSite per-route. The server default decides, and a route's
+	// EnableSecFetchSite overrides it either way: Bool(false) opts a route
+	// out, Bool(true) opts it in even when the server default is off.
+	secFetch := s.cfg.EnableSecFetchSite
+	if routeCfg != nil && routeCfg.EnableSecFetchSite != nil {
+		secFetch = *routeCfg.EnableSecFetchSite
+	}
+	if secFetch {
 		secFetchCfg := cartridgemiddleware.SecFetchSiteConfig{}
 		if len(s.cfg.SecFetchSiteAllowedValues) > 0 {
 			secFetchCfg.AllowedValues = s.cfg.SecFetchSiteAllowedValues
