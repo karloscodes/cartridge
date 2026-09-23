@@ -1,386 +1,355 @@
-# Cartridge - Go Web Framework
+# Cartridge
 
-An opinionated, batteries-included Go web framework built on [Fiber](https://gofiber.io) for server-side rendered applications.
+An opinionated Go web framework on top of [Fiber](https://gofiber.io) and [GORM](https://gorm.io). It targets monolithic apps that ship as one binary with SQLite: config, logging, sessions, CSRF protection, background jobs, and embedded assets come wired in.
 
-> **Note**: This module is under active development and APIs may change.
-
-## Features
-
-- **SSR-first** - Server-side rendering with Go templates
-- **Multiple databases** - SQLite (with WAL) or PostgreSQL support
-- **Session management** - Secure cookie-based sessions with HMAC signing
-- **Background jobs** - Simple job dispatcher for async processing
-- **Structured logging** - JSON/text logging with log rotation
-- **Middleware** - Rate limiting, concurrency control, security headers
-
-## Quick Start
+> **Note:** Cartridge is pre-1.0. APIs can change between minor versions.
 
 ```bash
 go get github.com/karloscodes/cartridge
 ```
 
-### Using NewSSRApp (Recommended for SQLite)
+Requires Go 1.26+.
 
-`NewSSRApp` is the high-level factory for SSR applications with SQLite:
+## Pick a constructor
 
-```go
-package main
+| Constructor | Use it for | Database |
+|---|---|---|
+| `NewSSRApp` | Go `html/template` apps (with or without HTMX) | SQLite, managed for you |
+| `NewInertiaApp` | React/Vue frontends through Inertia.js | SQLite, or your own `DBManager` |
+| `NewApplication` | Full control: PostgreSQL, custom config, custom server | Anything that implements `DBManager` |
 
-import (
-    "time"
-    "github.com/karloscodes/cartridge"
-    "myapp/web"
-)
+## Quick start (SSR)
 
-func main() {
-    app, err := cartridge.NewSSRApp("myapp",
-        cartridge.WithAssets(web.Templates, web.Static),
-        cartridge.WithSession("/login"),
-        cartridge.WithRoutes(func(s *cartridge.Server) {
-            s.Get("/", homeHandler)
-            s.Get("/users", usersHandler)
-        }),
-    )
-    if err != nil {
-        panic(err)
-    }
+Layout that `NewSSRApp` expects:
 
-    if err := app.MigrateDatabase(myMigrator); err != nil {
-        panic(err)
-    }
-
-    if err := app.Run(); err != nil {
-        panic(err)
-    }
-}
-
-func homeHandler(ctx *cartridge.Context) error {
-    return ctx.Render("home", fiber.Map{"title": "Welcome"})
-}
+```
+myapp/
+├── main.go
+└── web/
+    ├── embed.go
+    ├── templates/home.html
+    └── static/app.css      # served at /assets/app.css
 ```
 
-### Using NewInertiaApp (For Inertia.js SPAs)
-
-`NewInertiaApp` is for Inertia.js applications (React/Vue SPA with server-side routing). It handles Inertia dev mode, embedded assets, cross-origin APIs, and background workers:
+`web/embed.go`:
 
 ```go
-package main
-
-import (
-    "github.com/karloscodes/cartridge"
-    "myapp/web"
-)
-
-func main() {
-    app, err := cartridge.NewInertiaApp(
-        cartridge.InertiaWithConfig(cfg),
-        cartridge.InertiaWithStaticAssets(web.Assets()),
-        cartridge.InertiaWithRoutes(mountRoutes),
-        cartridge.InertiaWithWorker(jobsManager),
-        cartridge.InertiaWithSession("/login"),
-        cartridge.InertiaWithCrossOriginAPI(),  // For analytics/public APIs
-    )
-    if err != nil {
-        panic(err)
-    }
-
-    if err := app.Run(); err != nil {
-        panic(err)
-    }
-}
-```
-
-**Key differences from NewSSRApp:**
-- Uses `inertia.SetDevMode(true)` in development (re-reads Vite manifest)
-- `InertiaWithCrossOriginAPI()` configures SecFetchSite for cross-origin requests
-- `InertiaWithWorker()` for custom BackgroundWorker implementations
-- No template engine (Inertia renders React/Vue components)
-
-### Using NewApplication (For Custom Setups)
-
-`NewApplication` is the lower-level constructor for full control over dependencies. Use this when you need PostgreSQL, a custom database manager, or non-SSR applications:
-
-```go
-package main
-
-import (
-    "log/slog"
-    "github.com/karloscodes/cartridge"
-    "github.com/karloscodes/cartridge/database"
-    "github.com/karloscodes/cartridge/postgres"
-)
-
-func main() {
-    // Create your own dependencies
-    logger := slog.Default()
-
-    // Use PostgreSQL
-    dbManager := database.NewManager(
-        postgres.NewDriver(),
-        &database.Config{
-            DSN:          "host=localhost user=app dbname=myapp",
-            MaxOpenConns: 25,
-            MaxIdleConns: 5,
-            Postgres: database.PostgresOptions{
-                SSLMode:  "disable",
-                Timezone: "UTC",
-            },
-        },
-        logger,
-    )
-
-    // Create application with custom dependencies
-    app, err := cartridge.NewApplication(cartridge.ApplicationOptions{
-        Config:    myConfig,    // implements cartridge.Config interface
-        Logger:    logger,
-        DBManager: dbManager,   // implements cartridge.DBManager interface
-        RouteMountFunc: func(s *cartridge.Server) {
-            s.Get("/", homeHandler)
-            s.Post("/api/items", createItemHandler)
-        },
-    })
-    if err != nil {
-        panic(err)
-    }
-
-    if err := app.Run(); err != nil {
-        panic(err)
-    }
-}
-```
-
-## Embedded Assets
-
-Both `NewSSRApp` and `NewInertiaApp` support embedded assets for single-binary deployment:
-
-```go
-// web/embed.go
 package web
 
 import (
-    "embed"
-    "io/fs"
+	"embed"
+	"io/fs"
 )
-
-//go:embed dist/assets
-var assetsFS embed.FS
-
-// Assets returns embedded static assets (JS, CSS, images)
-func Assets() fs.FS {
-    sub, _ := fs.Sub(assetsFS, "dist/assets")
-    return sub
-}
 
 //go:embed templates
 var templatesFS embed.FS
 
-// Templates returns embedded HTML templates (SSR only)
-func Templates() fs.FS {
-    return templatesFS
+//go:embed static
+var staticFS embed.FS
+
+// Template names are relative to templates/, so "home" resolves to templates/home.html.
+func Templates() fs.FS { sub, _ := fs.Sub(templatesFS, "templates"); return sub }
+func Static() fs.FS    { sub, _ := fs.Sub(staticFS, "static"); return sub }
+```
+
+`main.go`:
+
+```go
+package main
+
+import (
+	"log"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/karloscodes/cartridge"
+
+	"myapp/web"
+)
+
+type Note struct {
+	ID   uint
+	Body string
+}
+
+func main() {
+	app, err := cartridge.NewSSRApp("myapp",
+		cartridge.WithAssets(web.Templates(), web.Static()),
+		cartridge.WithRoutes(func(s *cartridge.Server) {
+			s.Get("/", home)
+			s.Post("/notes", createNote, &cartridge.RouteConfig{WriteConcurrency: true})
+		}),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := app.MigrateDatabase(cartridge.NewAutoMigrator(&Note{})); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Fatal(app.Run()) // blocks; shuts down gracefully on SIGINT/SIGTERM
+}
+
+func home(ctx *cartridge.Context) error {
+	var notes []Note
+	if err := ctx.DB().Find(&notes).Error; err != nil {
+		return err
+	}
+	return ctx.Render("home", fiber.Map{"Notes": notes})
+}
+
+func createNote(ctx *cartridge.Context) error {
+	note := Note{Body: ctx.Input("body")}
+	if err := ctx.DB().Create(&note).Error; err != nil {
+		return err
+	}
+	return ctx.FlashSuccess("Saved").RedirectBack("/")
 }
 ```
 
-**Behavior:**
-- **Production**: Assets served from embedded `fs.FS` (no external files needed)
-- **Development**: Assets served from disk for hot-reload with Vite
+Run it:
 
-## Database Support
+```bash
+MYAPP_ENV=development go run .
+```
 
-Cartridge supports multiple databases through a pluggable driver interface.
+`MYAPP_ENV` defaults to `production`. Production refuses to start without a session secret, so set the env var for local work.
 
-### SQLite (Default)
+### What you get by default
 
-SQLite is the default for `NewSSRApp`. It uses WAL mode and immediate transactions for optimal concurrency:
+- Request ID, panic recovery, security headers (Helmet), and compression.
+- Request logging. Development logs text to stdout. Production logs JSON to stdout and to a rotated file in `storage/logs`.
+- CSRF protection on every route through the `Sec-Fetch-Site` header. No tokens needed.
+- SQLite in WAL mode with `busy_timeout` and immediate transactions.
+- Development reads templates and static files from `web/` on disk and reloads templates on each request. Other environments use the embedded files.
+
+## Configuration
+
+`NewSSRApp` reads env vars with the upper-cased app name as the prefix. It also reads a `.env` file in the working directory.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MYAPP_ENV` | `production` | `development`, `production`, or `test` |
+| `MYAPP_PORT` | `8080` | |
+| `MYAPP_SESSION_SECRET` | none | Required in production. Falls back to `PRIVATE_KEY`. |
+| `MYAPP_LOG_LEVEL` | `error` (`info` in dev/test) | `debug`, `info`, `warn`, `error` |
+| `MYAPP_DATA_DIR` | `storage` | Holds the database file |
+| `MYAPP_DEBUG` | `false` | |
+
+The SQLite file is `<data dir>/<app>.<env>.db`, for example `storage/myapp.production.db`. Each environment gets its own file.
+
+To add your own settings, load the config yourself and pass it in:
 
 ```go
-import "github.com/karloscodes/cartridge/sqlite"
+cfg, err := config.Load("myapp") // github.com/karloscodes/cartridge/config
+app, err := cartridge.NewSSRApp("myapp", cartridge.WithConfig(cfg))
+```
 
-dbManager := sqlite.NewManager(sqlite.Config{
-    Path:         "storage/app.db",
-    MaxOpenConns: 1,              // SQLite works best with 1 connection
-    MaxIdleConns: 1,
-    BusyTimeout:  5000,           // ms
-    EnableWAL:    true,           // Write-Ahead Logging (default: true)
-    TxImmediate:  true,           // Immediate transaction locks (default: true)
-    Logger:       logger,
+## Handlers
+
+Every handler has one signature: `func(*cartridge.Context) error`. `Context` embeds `*fiber.Ctx`, so all Fiber methods work. It adds:
+
+| Member | What it does |
+|---|---|
+| `ctx.DB()` | GORM session bound to the request context |
+| `ctx.Input("key")` | One value from form, JSON body, route param, or query, in that order |
+| `ctx.Bind(&dst)` | Decodes the body (JSON, form, multipart), then overlays params and query |
+| `ctx.FlashSuccess/FlashError/FlashInfo(msg)` | Sets a one-time flash cookie. Returns `ctx` for chaining. |
+| `ctx.RedirectBack("/fallback")` | 302 to the `Referer`, or to the fallback |
+| `ctx.Inertia("Page", props)` | Renders an Inertia page and injects the flash message |
+| `ctx.Logger`, `ctx.Config`, `ctx.Session` | App dependencies |
+
+Post/Redirect/Get in one line:
+
+```go
+return ctx.FlashError("Invalid domain").RedirectBack("/websites")
+```
+
+## Routes
+
+`s.Get`, `Post`, `Put`, `Patch`, `Delete`, `Head`, and `Options` take an optional `*RouteConfig`:
+
+```go
+s.Post("/api/events", ingest, &cartridge.RouteConfig{
+	WriteConcurrency:   true,                  // queue writes (max 8 at once) to protect SQLite
+	EnableCORS:         true,                  // allows any origin unless CORSConfig is set
+	EnableSecFetchSite: cartridge.Bool(false), // turn off CSRF check for a public endpoint
+	CustomMiddleware:   []fiber.Handler{middleware.RateLimiter(middleware.WithMax(10))},
+})
+```
+
+For anything Fiber can do that `Server` does not wrap, use `s.App()` to reach the `*fiber.App`.
+
+## Sessions
+
+`WithSession(loginPath)` turns on signed cookie sessions (HMAC-SHA256). The cookie is `<app>_session`, and it is `Secure` in production.
+
+```go
+cartridge.WithSession("/login"),
+cartridge.WithRoutes(func(s *cartridge.Server) {
+	auth := &cartridge.RouteConfig{
+		CustomMiddleware: []fiber.Handler{s.Session().Middleware()},
+	}
+	s.Get("/login", showLogin)
+	s.Post("/login", login)
+	s.Get("/dashboard", dashboard, auth)
+}),
+```
+
+```go
+func login(ctx *cartridge.Context) error {
+	user, ok := authenticate(ctx.Input("email"), ctx.Input("password"))
+	if !ok {
+		return ctx.FlashError("Wrong email or password").RedirectBack("/login")
+	}
+	if err := ctx.Session.SetSession(ctx.Ctx, user.ID); err != nil {
+		return err
+	}
+	return ctx.Redirect("/dashboard")
+}
+
+func dashboard(ctx *cartridge.Context) error {
+	userID, _ := ctx.Session.GetUserID(ctx.Ctx)
+	// ...
+}
+```
+
+The middleware redirects anonymous users to the login path. HTMX requests get a `401` instead. Call `ctx.Session.ClearSession(ctx.Ctx)` to log out. Use `crypto.GeneratePasswordHash` and `crypto.VerifyPassword` (bcrypt) for passwords.
+
+## Background jobs
+
+A processor runs on a fixed interval. `JobContext` gives it a logger and a `*gorm.DB`:
+
+```go
+type SendEmails struct{}
+
+func (SendEmails) ProcessBatch(ctx *cartridge.JobContext) error {
+	var pending []Email
+	if err := ctx.DB.Where("sent_at IS NULL").Limit(50).Find(&pending).Error; err != nil {
+		return err
+	}
+	// send, then mark sent...
+	return nil
+}
+
+cartridge.WithJobs(time.Minute, SendEmails{}),
+cartridge.WithJobs(time.Hour, PruneSessions{}), // each call gets its own schedule
+```
+
+Jobs start with `app.Run()` and stop during graceful shutdown.
+
+## Database
+
+### Migrations
+
+`NewAutoMigrator` wraps GORM's `AutoMigrate`. For anything else, implement `Migrator`:
+
+```go
+type Migrator interface {
+	Migrate(db *gorm.DB) error
+}
+```
+
+`app.MigrateDatabase` runs the migrator, then checkpoints the SQLite WAL.
+
+### Writes under load
+
+Use `sqlite.PerformWrite` for writes that can collide. It retries `SQLITE_BUSY` with backoff:
+
+```go
+err := sqlite.PerformWrite(ctx.Logger, ctx.DB(), func(tx *gorm.DB) error {
+	return tx.Create(&event).Error
 })
 ```
 
 ### PostgreSQL
 
-For PostgreSQL, use the generic database manager with the PostgreSQL driver:
+Use `NewApplication` with the generic manager and the Postgres driver:
 
 ```go
-import (
-    "github.com/karloscodes/cartridge/database"
-    "github.com/karloscodes/cartridge/postgres"
-)
+dbManager := database.NewManager(postgres.NewDriver(), &database.Config{
+	DSN:          "host=localhost user=app dbname=myapp",
+	MaxOpenConns: 25,
+	MaxIdleConns: 5,
+	Postgres:     database.PostgresOptions{SSLMode: "disable", Timezone: "UTC"},
+}, logger)
 
-dbManager := database.NewManager(
-    postgres.NewDriver(),
-    &database.Config{
-        DSN:          "host=localhost port=5432 user=app password=secret dbname=myapp",
-        MaxOpenConns: 25,
-        MaxIdleConns: 5,
-        Postgres: database.PostgresOptions{
-            SSLMode:    "prefer",    // disable, prefer, require
-            Timezone:   "UTC",
-            SearchPath: "public",    // optional schema
-        },
-    },
-    logger,
-)
+app, err := cartridge.NewApplication(cartridge.ApplicationOptions{
+	Config:         cfg,       // implements cartridge.Config
+	Logger:         logger,
+	DBManager:      dbManager, // implements cartridge.DBManager
+	RouteMountFunc: mountRoutes,
+})
 ```
 
-### Custom Database Drivers
+To support another database, implement `database.Driver`.
 
-Implement the `database.Driver` interface for other databases:
-
-```go
-type Driver interface {
-    Name() string
-    Open(dsn string) gorm.Dialector
-    ConfigureDSN(dsn string, cfg *Config) string
-    AfterConnect(db *gorm.DB, cfg *Config, logger *slog.Logger) error
-    Close(db *gorm.DB, logger *slog.Logger) error
-    SupportsCheckpoint() bool
-    Checkpoint(db *gorm.DB, mode string) error
-}
-```
-
-## Configuration
-
-Cartridge reads configuration from environment variables with the app name as prefix:
-
-```bash
-MYAPP_ENV=production          # development, production, test
-MYAPP_PORT=8080
-MYAPP_SESSION_SECRET=xxx      # Required in production
-MYAPP_LOG_LEVEL=info
-MYAPP_DATA_DIR=storage
-```
-
-## App Options
-
-### NewSSRApp Options
-
-```go
-app, err := cartridge.NewSSRApp("myapp",
-    cartridge.WithConfig(cfg),              // Custom configuration
-    cartridge.WithAssets(tmpl, static),     // Embedded templates and static files
-    cartridge.WithTemplateFuncs(myFuncs),   // Custom template functions
-    cartridge.WithErrorHandler(handler),    // Custom error handler
-    cartridge.WithSession("/login"),        // Enable session management
-    cartridge.WithJobs(2*time.Minute, p1),  // Background job processors
-    cartridge.WithRoutes(mountRoutes),      // Route mounting
-)
-```
-
-### NewInertiaApp Options
+## Inertia.js
 
 ```go
 app, err := cartridge.NewInertiaApp(
-    cartridge.InertiaWithConfig(cfg),           // Config (required, implements FactoryConfig)
-    cartridge.InertiaWithStaticAssets(fs),      // Embedded assets (production only)
-    cartridge.InertiaWithDBManager(dbMgr),      // Custom DB manager (optional)
-    cartridge.InertiaWithRoutes(mountRoutes),   // Route mounting
-    cartridge.InertiaWithWorker(worker),        // Custom BackgroundWorker
-    cartridge.InertiaWithJobs(interval, p1),    // Job processors with interval
-    cartridge.InertiaWithSession("/login"),     // Enable session management
-    cartridge.InertiaWithCrossOriginAPI(),      // Allow cross-origin requests
-    cartridge.InertiaWithPageTitle("My App"),   // HTML page title
-    cartridge.InertiaWithCatchAllRedirect("/"), // SPA fallback redirect
+	cartridge.InertiaWithConfig(cfg), // must implement cartridge.FactoryConfig; *config.Config does
+	cartridge.InertiaWithStaticAssets(web.Assets()),
+	cartridge.InertiaWithRoutes(mountRoutes),
+	cartridge.InertiaWithSession("/login"),
+	cartridge.InertiaWithJobs(time.Minute, SendEmails{}),
+	cartridge.InertiaWithPageTitle("My App"),
 )
 ```
 
-## Database Migrations
-
 ```go
-// Create a migrator with your models
-migrator := cartridge.NewAutoMigrator(
-    &User{},
-    &Post{},
-    &Comment{},
-)
-
-// Run migrations (connects, migrates, checkpoints WAL for SQLite)
-if err := app.MigrateDatabase(migrator); err != nil {
-    panic(err)
+func dashboard(ctx *cartridge.Context) error {
+	return ctx.Inertia("Dashboard", inertia.Props{
+		"stats":  loadStats(ctx),
+		"events": inertia.Defer(func() any { return loadEvents(ctx) }), // loads after first paint
+	})
 }
 ```
 
-## Session Management
+In development, Cartridge re-reads the Vite manifest on each request. Other options:
+
+- `InertiaWithCrossOriginAPI()` accepts cross-site requests. Use it for tracking scripts and public APIs.
+- `InertiaWithCatchAllRedirect("/")` redirects unknown paths.
+- `InertiaWithWorker(w)` adds any `BackgroundWorker` (`Start() error`, `Stop()`).
+- `InertiaWithDBManager(m)` replaces the default SQLite manager.
+
+## Other packages
+
+| Package | Contents |
+|---|---|
+| `config` | Env-based config loader used by `NewSSRApp` |
+| `middleware` | `RateLimiter`, `SecFetchSiteMiddleware`, `Helmet`, `Recover`, `RequestLogger`, concurrency limiter |
+| `cache` | Generic TTL cache (`NewCache`), GORM-backed cache, memory and database `Store`s |
+| `crypto` | AES-GCM `Encrypt`/`Decrypt`, bcrypt password helpers |
+| `flash` | Low-level flash cookie helpers behind `ctx.Flash*` |
+| `inertia` | Inertia rendering, deferred props, Vite manifest |
+| `sqlite`, `postgres`, `database` | Connection managers and drivers |
+| `testsupport` | In-memory test DB and test server |
+
+## Testing your app
+
+`testsupport` starts a server on an in-memory SQLite database, with no mocks:
 
 ```go
-// In your login handler
-func loginHandler(ctx *cartridge.Context) error {
-    // Validate credentials...
+func TestHome(t *testing.T) {
+	ts := testsupport.NewTestServer(t, testsupport.TestServerOptions{
+		Models:         []any{&Note{}},
+		RouteMountFunc: func(s *cartridge.Server) { s.Get("/", home) },
+	})
 
-    session := ctx.Ctx.Locals("session").(*cartridge.SessionManager)
-    if err := session.SetSession(ctx.Ctx, userID); err != nil {
-        return err
-    }
-    return ctx.Redirect("/dashboard")
-}
+	resp := ts.Get("/")
 
-// Protected routes use session middleware
-authConfig := &cartridge.RouteConfig{
-    CustomMiddleware: []fiber.Handler{session.Middleware()},
+	assert.Equal(t, 200, resp.StatusCode)
 }
-s.Get("/dashboard", dashboardHandler, authConfig)
 ```
 
-## Background Jobs
+## Contributing
 
-Jobs run on a fixed interval and process batches of work:
-
-```go
-// Implement the Processor interface
-type EmailProcessor struct{}
-
-func (p *EmailProcessor) ProcessBatch(ctx *cartridge.JobContext) error {
-    ctx.Logger.Info("processing pending emails")
-
-    var pending []Email
-    if err := ctx.DB.Where("sent_at IS NULL").Find(&pending).Error; err != nil {
-        return err
-    }
-
-    for _, email := range pending {
-        // Send email...
-        ctx.DB.Model(&email).Update("sent_at", time.Now())
-    }
-    return nil
-}
-
-// Register processors with interval
-app, _ := cartridge.NewSSRApp("myapp",
-    cartridge.WithJobs(2*time.Minute, &EmailProcessor{}, &WebhookProcessor{}),
-)
-```
-
-## Interfaces
-
-Cartridge uses interfaces for dependency injection, making it easy to swap implementations:
-
-```go
-// Config abstracts runtime configuration
-type Config interface {
-    IsDevelopment() bool
-    IsProduction() bool
-    IsTest() bool
-    GetPort() string
-    GetPublicDirectory() string
-    GetAssetsPrefix() string
-}
-
-// DBManager abstracts database connection management
-type DBManager interface {
-    GetConnection() *gorm.DB
-    Connect() (*gorm.DB, error)
-}
+```bash
+make test   # go test ./...
+make lint
 ```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).
