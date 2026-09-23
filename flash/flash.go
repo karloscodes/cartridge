@@ -11,7 +11,7 @@ import (
 
 const (
 	// Cookie name for flash messages
-	FlashCookieName = "fusionaly_flash"
+	FlashCookieName = "flash"
 )
 
 // FlashMessage represents a temporary message to be displayed to the user

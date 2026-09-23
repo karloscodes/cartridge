@@ -395,6 +395,49 @@ func TestFlashAndRedirectBack(t *testing.T) {
 		}
 		assertFlashCookie(t, resp, "info", "Heads up")
 	})
+
+	t.Run("flash cookie is Secure only in production", func(t *testing.T) {
+		for _, tc := range []struct {
+			cfg        Config
+			wantSecure bool
+		}{
+			{&testConfig{}, false},
+			{&prodConfig{}, true},
+		} {
+			app := fiber.New()
+			app.Post("/x", func(c *fiber.Ctx) error {
+				return (&Context{Ctx: c, Config: tc.cfg}).FlashSuccess("Saved").RedirectBack("/")
+			})
+			req, _ := http.NewRequest("POST", "/x", nil)
+
+			resp, err := app.Test(req)
+
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			cookie := findCookie(resp, flash.FlashCookieName)
+			if cookie == nil {
+				t.Fatal("expected a flash cookie")
+			}
+			if cookie.Secure != tc.wantSecure {
+				t.Errorf("Secure = %v, want %v", cookie.Secure, tc.wantSecure)
+			}
+		}
+	})
+}
+
+type prodConfig struct{ testConfig }
+
+func (c *prodConfig) IsProduction() bool { return true }
+func (c *prodConfig) IsTest() bool       { return false }
+
+func findCookie(resp *http.Response, name string) *http.Cookie {
+	for _, c := range resp.Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
 }
 
 // --- test helpers ---

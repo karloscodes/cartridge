@@ -85,20 +85,26 @@ func (ctx *Context) Inertia(component string, props inertia.Props) error {
 
 // FlashError sets an "error" flash message and returns ctx for chaining.
 func (ctx *Context) FlashError(message string) *Context {
-	flash.SetFlash(ctx.Ctx, "error", message)
+	ctx.setFlash("error", message)
 	return ctx
 }
 
 // FlashSuccess sets a "success" flash message and returns ctx for chaining.
 func (ctx *Context) FlashSuccess(message string) *Context {
-	flash.SetFlash(ctx.Ctx, "success", message)
+	ctx.setFlash("success", message)
 	return ctx
 }
 
 // FlashInfo sets an "info" flash message and returns ctx for chaining.
 func (ctx *Context) FlashInfo(message string) *Context {
-	flash.SetFlash(ctx.Ctx, "info", message)
+	ctx.setFlash("info", message)
 	return ctx
+}
+
+// setFlash marks the flash cookie Secure in production, like the session cookie.
+func (ctx *Context) setFlash(messageType, message string) {
+	secure := ctx.Config != nil && ctx.Config.IsProduction()
+	flash.SetFlash(ctx.Ctx, messageType, message, secure)
 }
 
 // RedirectBack issues a 302 to the Referer header, or to fallback if there's
