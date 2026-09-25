@@ -45,6 +45,9 @@ type SessionManager struct {
 type SessionData struct {
 	UserID    string    `json:"user_id"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// IssuedAt lets an app end sessions created before a password change.
+	// Cookies created before this field existed decode with the zero time.
+	IssuedAt time.Time `json:"issued_at,omitempty"`
 }
 
 // NewSessionManager creates a session manager with the given configuration.
@@ -75,9 +78,11 @@ func NewSessionManager(cfg SessionConfig) *SessionManager {
 
 // SetSession creates a session cookie for the given user ID.
 func (sm *SessionManager) SetSession(c *fiber.Ctx, userID uint) error {
+	now := time.Now()
 	sessionData := SessionData{
 		UserID:    strconv.FormatUint(uint64(userID), 10),
-		ExpiresAt: time.Now().Add(sm.ttl),
+		ExpiresAt: now.Add(sm.ttl),
+		IssuedAt:  now,
 	}
 
 	jsonData, err := json.Marshal(sessionData)
@@ -172,6 +177,23 @@ func (sm *SessionManager) GetUserID(c *fiber.Ctx) (uint, bool) {
 	}
 
 	return uint(userID), true
+}
+
+// IssuedAt returns when the current session was created. It returns false
+// when there is no valid session. Sessions created by older versions have
+// the zero time.
+func (sm *SessionManager) IssuedAt(c *fiber.Ctx) (time.Time, bool) {
+	token := c.Cookies(sm.cookieName)
+	if token == "" {
+		return time.Time{}, false
+	}
+
+	sessionData, err := sm.verify(token)
+	if err != nil || time.Now().After(sessionData.ExpiresAt) {
+		return time.Time{}, false
+	}
+
+	return sessionData.IssuedAt, true
 }
 
 // Middleware returns a Fiber middleware that requires authentication.

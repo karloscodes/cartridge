@@ -3,9 +3,13 @@ package cartridge
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 func TestNewSessionManager(t *testing.T) {
@@ -173,4 +177,54 @@ func TestDifferentSecrets(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected verification to succeed with same secret: %v", err)
 	}
+}
+
+func TestSessionIssuedAt(t *testing.T) {
+	sm := NewSessionManager(SessionConfig{Secret: "test-secret-key-32-characters-xx"})
+	app := fiber.New()
+	app.Get("/login", func(c *fiber.Ctx) error { return sm.SetSession(c, 7) })
+	app.Get("/issued", func(c *fiber.Ctx) error {
+		issued, ok := sm.IssuedAt(c)
+		if !ok {
+			return c.SendStatus(fiber.StatusUnauthorized)
+		}
+		return c.SendString(issued.UTC().Format(time.RFC3339Nano))
+	})
+
+	t.Run("reports when the session was created", func(t *testing.T) {
+		before := time.Now()
+		loginResp, err := app.Test(httptest.NewRequest("GET", "/login", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest("GET", "/issued", nil)
+		for _, cookie := range loginResp.Cookies() {
+			req.AddCookie(cookie)
+		}
+
+		resp, err := app.Test(req)
+
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		issued, err := time.Parse(time.RFC3339Nano, string(body))
+		if err != nil {
+			t.Fatalf("status %d, body %q: %v", resp.StatusCode, body, err)
+		}
+		if issued.Before(before.Add(-time.Second)) || issued.After(time.Now().Add(time.Second)) {
+			t.Errorf("issued at %v, expected close to now", issued)
+		}
+	})
+
+	t.Run("reports no session without a cookie", func(t *testing.T) {
+		resp, err := app.Test(httptest.NewRequest("GET", "/issued", nil))
+
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != fiber.StatusUnauthorized {
+			t.Errorf("expected 401, got %d", resp.StatusCode)
+		}
+	})
 }
