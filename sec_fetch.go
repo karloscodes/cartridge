@@ -2,6 +2,7 @@ package cartridge
 
 import (
 	"net/http"
+	"net/url"
 )
 
 // SecFetchSiteConfig configures the Sec-Fetch-Site middleware.
@@ -74,9 +75,16 @@ func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) HandlerFunc {
 
 		secFetchSite := c.Get("Sec-Fetch-Site")
 
-		// Reject if header is missing - this prevents server-to-server spoofing
-		// Blocks: curl, Postman, Python requests, Node.js fetch, etc.
-		// Also blocks older browsers (pre-2020) that don't support this header.
+		// Browsers send Sec-Fetch-Site only to HTTPS and localhost. Over plain
+		// HTTP they still send Origin on every POST, so an Origin that matches
+		// the host counts as same-origin. A cross-site Origin without the
+		// header stays blocked: that is what a spoofing tool sends.
+		if secFetchSite == "" && sameOrigin(c.Get("Origin"), c.Hostname()) {
+			secFetchSite = "same-origin"
+		}
+
+		// Reject when both headers are missing: curl, Postman, Python requests,
+		// Node.js fetch, and other server-to-server tools.
 		if secFetchSite == "" {
 			return c.Status(http.StatusForbidden).JSON(Map{
 				"error":   "forbidden",
@@ -93,4 +101,10 @@ func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) HandlerFunc {
 
 		return c.Next()
 	}
+}
+
+// sameOrigin reports whether the Origin header names host.
+func sameOrigin(origin, host string) bool {
+	u, err := url.Parse(origin)
+	return origin != "" && err == nil && u.Host != "" && u.Host == host
 }

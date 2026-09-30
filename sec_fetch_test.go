@@ -24,6 +24,52 @@ func TestSecFetchSiteMiddleware(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode, "Should block missing header")
 	})
 
+	t.Run("without the header, falls back to the Origin header", func(t *testing.T) {
+		// Browsers send Sec-Fetch-Site only to HTTPS and localhost. Over plain
+		// HTTP they still send Origin on a POST.
+		app := newTestApp(t)
+		app.Use(SecFetchSiteMiddleware())
+		app.Post("/login", func(c *Context) error { return c.SendStatus(http.StatusOK) })
+		post := func(origin string) int {
+			req, _ := http.NewRequest("POST", "http://hq.lan:8092/login", nil)
+			req.Host = "hq.lan:8092"
+			if origin != "" {
+				req.Header.Set("Origin", origin)
+			}
+			resp, _ := app.Test(req)
+			return resp.StatusCode
+		}
+
+		sameOrigin := post("http://hq.lan:8092")
+		otherSite := post("http://evil.example")
+		otherPort := post("http://hq.lan:9999")
+		noOrigin := post("")
+
+		if sameOrigin != http.StatusOK {
+			t.Errorf("same Origin = %d, want 200", sameOrigin)
+		}
+		if otherSite != http.StatusForbidden || otherPort != http.StatusForbidden {
+			t.Errorf("other origins = %d, %d, want 403", otherSite, otherPort)
+		}
+		if noOrigin != http.StatusForbidden {
+			t.Errorf("no Origin = %d, want 403", noOrigin)
+		}
+	})
+
+	t.Run("the Origin fallback never allows a cross-site Origin", func(t *testing.T) {
+		app := newTestApp(t)
+		app.Use(SecFetchSiteMiddleware(SecFetchSiteConfig{AllowedValues: []string{"cross-site", "same-origin"}}))
+		app.Post("/events", func(c *Context) error { return c.SendStatus(http.StatusOK) })
+		req, _ := http.NewRequest("POST", "/events", nil)
+		req.Header.Set("Origin", "https://blog.example.com")
+
+		resp, _ := app.Test(req)
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("status = %d, want 403", resp.StatusCode)
+		}
+	})
+
 	t.Run("allows valid browser headers", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Use(SecFetchSiteMiddleware(SecFetchSiteConfig{
@@ -136,7 +182,9 @@ func TestSecFetchSiteStrictMode(t *testing.T) {
 		for _, ua := range userAgents {
 			req := httptest.NewRequest("POST", "/api/events", nil)
 			req.Header.Set("User-Agent", ua)
-			req.Header.Set("Origin", "https://example.com") // Even with spoofed origin
+			// A tool can set any header, so this check cannot stop a tool that
+			// copies the target's own Origin. It stops a forged cross-site request.
+			req.Header.Set("Origin", "https://other.example")
 
 			resp, err := app.Test(req)
 			assert.NoError(t, err)
