@@ -1,6 +1,8 @@
 package inertia
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"html"
 	"os"
@@ -10,7 +12,6 @@ import (
 	"github.com/karloscodes/cartridge/flash"
 
 	"github.com/gofiber/fiber/v2"
-	inertiapkg "github.com/petaki/inertia-go"
 )
 
 // ManifestEntry represents an entry in the Vite manifest
@@ -27,9 +28,10 @@ var (
 	manifestOnce sync.Once
 	jsFile       string
 	cssFile      string
-	devMode      bool   // When true, re-read manifest on every request
+	assetVersion string               // Hash of the built asset paths, sent as the Inertia version
+	devMode      bool                 // When true, re-read manifest on every request
 	pageTitle    string = "Fusionaly" // Default page title
-	manifestData []byte // Embedded manifest data (used when filesystem not available)
+	manifestData []byte               // Embedded manifest data (used when filesystem not available)
 )
 
 // SetDevMode enables or disables development mode.
@@ -97,13 +99,28 @@ func loadManifest() {
 	if devMode {
 		// In dev mode, always re-read the manifest
 		jsFile, cssFile = readManifest()
+		assetVersion = versionFor(jsFile, cssFile)
 		return
 	}
 
 	// In production, cache the manifest
 	manifestOnce.Do(func() {
 		jsFile, cssFile = readManifest()
+		assetVersion = versionFor(jsFile, cssFile)
 	})
+}
+
+// versionFor derives the Inertia asset version from the built asset paths.
+// Vite puts a content hash in each file name, so a new build gives a new version.
+func versionFor(js, css string) string {
+	sum := sha256.Sum256([]byte(js + "|" + css))
+	return hex.EncodeToString(sum[:8])
+}
+
+// Version returns the current Inertia asset version.
+func Version() string {
+	loadManifest()
+	return assetVersion
 }
 
 // Props is a type alias for map[string]interface{} to make handler code cleaner
@@ -130,15 +147,14 @@ func DeferGroup(callback func() interface{}, group string) DeferredProp {
 // RenderPage is a convenience wrapper that creates an Inertia instance and renders a component
 // Usage: return inertia.RenderPage(c, "Dashboard", props)
 func RenderPage(c *fiber.Ctx, component string, props map[string]interface{}) error {
-	i := inertiapkg.New("web/dist/inertia.html", "app", "v1")
-	return Render(c, i, component, props)
+	return Render(c, component, props)
 }
 
 // Render sends an Inertia response
 // Automatically detects if request is Inertia (AJAX) or initial page load
 // Automatically injects flash messages from context if available
 // Supports deferred props via X-Inertia-Partial-Data header
-func Render(c *fiber.Ctx, i *inertiapkg.Inertia, component string, props map[string]interface{}) error {
+func Render(c *fiber.Ctx, component string, props map[string]interface{}) error {
 	// Load asset paths from manifest (cached in production, fresh in dev)
 	loadManifest()
 
@@ -146,6 +162,15 @@ func Render(c *fiber.Ctx, i *inertiapkg.Inertia, component string, props map[str
 	fullURL := c.Path()
 	if queryString := string(c.Request().URI().QueryString()); queryString != "" {
 		fullURL = fullURL + "?" + queryString
+	}
+
+	// Stale client after a deploy: ask it to do a full page load of the new assets.
+	// Check before reading the flash, so the flash survives for the reloaded page.
+	if c.Get("X-Inertia") != "" && c.Method() == fiber.MethodGet {
+		if v := c.Get("X-Inertia-Version"); v != "" && v != assetVersion {
+			c.Set("X-Inertia-Location", fullURL)
+			return c.SendStatus(fiber.StatusConflict)
+		}
 	}
 
 	// Auto-inject flash message if not already set
@@ -170,7 +195,7 @@ func Render(c *fiber.Ctx, i *inertiapkg.Inertia, component string, props map[str
 				"component": component,
 				"props":     resolvedProps,
 				"url":       fullURL,
-				"version":   "v1",
+				"version":   assetVersion,
 			})
 		}
 
@@ -181,7 +206,7 @@ func Render(c *fiber.Ctx, i *inertiapkg.Inertia, component string, props map[str
 			"component": component,
 			"props":     resolvedProps,
 			"url":       fullURL,
-			"version":   "v1",
+			"version":   assetVersion,
 		}
 
 		// Add deferred props metadata if any exist
@@ -199,7 +224,7 @@ func Render(c *fiber.Ctx, i *inertiapkg.Inertia, component string, props map[str
 		"component": component,
 		"props":     resolvedProps,
 		"url":       fullURL,
-		"version":   "v1", // Static version for now
+		"version":   assetVersion,
 	}
 
 	// Add deferred props metadata if any exist

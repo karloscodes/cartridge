@@ -5,7 +5,6 @@ go 1.26
 require (
 	github.com/gofiber/fiber/v2 v2.52.14
 	github.com/gofiber/template/html/v2 v2.1.3
-	github.com/petaki/inertia-go v1.14.0
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.52.0
