@@ -4,9 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"time"
-
-	"github.com/gofiber/fiber/v2"
 )
 
 const (
@@ -23,39 +22,26 @@ type FlashMessage struct {
 // SetFlash stores a flash message in a cookie.
 // The secure parameter controls whether the cookie requires HTTPS.
 // Pass true in production, false in development.
-func SetFlash(c *fiber.Ctx, messageType string, message string, secure ...bool) {
+func SetFlash(w http.ResponseWriter, messageType string, message string, secure ...bool) {
 	// Default to false (development-friendly), callers should pass true in production
-	isSecure := false
-	if len(secure) > 0 {
-		isSecure = secure[0]
-	}
-	// Create flash message
-	flash := FlashMessage{
-		Type:    messageType,
-		Message: message,
-	}
+	isSecure := len(secure) > 0 && secure[0]
 
-	// Serialize to JSON
-	jsonData, err := json.Marshal(flash)
+	jsonData, err := json.Marshal(FlashMessage{Type: messageType, Message: message})
 	if err != nil {
 		slog.Default().Error("Failed to marshal flash message", slog.Any("error", err))
 		return
 	}
 
 	// Encode as base64 to avoid cookie parsing issues
-	encodedData := base64.StdEncoding.EncodeToString(jsonData)
-
-	// Set as cookie
-	cookie := &fiber.Cookie{
+	http.SetCookie(w, &http.Cookie{
 		Name:     FlashCookieName,
-		Value:    encodedData,
+		Value:    base64.StdEncoding.EncodeToString(jsonData),
 		Path:     "/",
 		MaxAge:   60, // Short-lived cookie, just 1 minute
 		Secure:   isSecure,
-		HTTPOnly: true,
-		SameSite: "Lax",
-	}
-	c.Cookie(cookie)
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
 
 	slog.Default().Debug("Flash message set",
 		slog.String("type", messageType),
@@ -63,33 +49,29 @@ func SetFlash(c *fiber.Ctx, messageType string, message string, secure ...bool) 
 }
 
 // GetFlash retrieves and clears the flash message
-func GetFlash(c *fiber.Ctx) *FlashMessage {
-	// Get the flash cookie
-	encodedData := c.Cookies(FlashCookieName)
-	if encodedData == "" {
+func GetFlash(w http.ResponseWriter, r *http.Request) *FlashMessage {
+	cookie, err := r.Cookie(FlashCookieName)
+	if err != nil || cookie.Value == "" {
 		return &FlashMessage{}
 	}
 
 	// Clear the cookie immediately by setting an expired cookie
-	expiredCookie := &fiber.Cookie{
+	http.SetCookie(w, &http.Cookie{
 		Name:     FlashCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
-		Expires:  time.Now().Add(-24 * time.Hour), // Expired cookie
-		HTTPOnly: true,
-		SameSite: "Lax",
-	}
-	c.Cookie(expiredCookie)
+		Expires:  time.Now().Add(-24 * time.Hour),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
 
-	// Decode from base64
-	jsonData, err := base64.StdEncoding.DecodeString(encodedData)
+	jsonData, err := base64.StdEncoding.DecodeString(cookie.Value)
 	if err != nil {
 		slog.Default().Error("Failed to decode flash message", slog.Any("error", err))
 		return &FlashMessage{}
 	}
 
-	// Unmarshal JSON
 	var flash FlashMessage
 	if err := json.Unmarshal(jsonData, &flash); err != nil {
 		slog.Default().Error("Failed to unmarshal flash message", slog.Any("error", err))

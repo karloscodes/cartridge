@@ -3,9 +3,8 @@ package cartridge
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
-
-	"github.com/gofiber/fiber/v2"
 
 	"github.com/karloscodes/cartridge/flash"
 	"github.com/karloscodes/cartridge/inertia"
@@ -21,13 +20,13 @@ import (
 //
 //	key := strings.TrimSpace(ctx.Input("openai_api_key"))
 func (ctx *Context) Input(key string) string {
-	// Form body (urlencoded/multipart). Fiber's FormValue can't read a JSON body.
+	// Form body (urlencoded/multipart). FormValue can't read a JSON body.
 	if v := ctx.FormValue(key); v != "" {
 		return v
 	}
 
 	// JSON body (Inertia posts JSON).
-	if ct := ctx.Get(fiber.HeaderContentType); len(ctx.Body()) > 0 && strings.HasPrefix(ct, fiber.MIMEApplicationJSON) {
+	if ct := ctx.Get("Content-Type"); len(ctx.Body()) > 0 && strings.HasPrefix(ct, "application/json") {
 		var m map[string]any
 		if json.Unmarshal(ctx.Body(), &m) == nil {
 			if v, ok := m[key]; ok && v != nil {
@@ -47,7 +46,7 @@ func (ctx *Context) Input(key string) string {
 }
 
 // Bind decodes request input into out, regardless of how it arrived.
-// It reads the body (Fiber's BodyParser is content-type-aware: JSON,
+// It reads the body (BodyParser is content-type-aware: JSON,
 // x-www-form-urlencoded, multipart), then overlays route params and query
 // values. Use this instead of FormValue so handlers don't break when the
 // frontend posts JSON (e.g. the Inertia protocol) vs a form.
@@ -75,12 +74,12 @@ func (ctx *Context) Inertia(component string, props inertia.Props) error {
 	}
 
 	if _, exists := props["flash"]; !exists {
-		if msg := flash.GetFlash(ctx.Ctx); msg != nil {
+		if msg := flash.GetFlash(ctx.Response(), ctx.Request()); msg != nil {
 			props["flash"] = msg
 		}
 	}
 
-	return inertia.RenderPage(ctx.Ctx, component, props)
+	return inertia.RenderPage(ctx.Response(), ctx.Request(), component, props)
 }
 
 // FlashError sets an "error" flash message and returns ctx for chaining.
@@ -104,7 +103,7 @@ func (ctx *Context) FlashInfo(message string) *Context {
 // setFlash marks the flash cookie Secure in production, like the session cookie.
 func (ctx *Context) setFlash(messageType, message string) {
 	secure := ctx.Config != nil && ctx.Config.IsProduction()
-	flash.SetFlash(ctx.Ctx, messageType, message, secure)
+	flash.SetFlash(ctx.Response(), messageType, message, secure)
 }
 
 // RedirectBack issues a 302 to the Referer header, or to fallback if there's
@@ -117,5 +116,5 @@ func (ctx *Context) RedirectBack(fallback string) error {
 	if loc == "" {
 		loc = fallback
 	}
-	return ctx.Redirect(loc, fiber.StatusFound)
+	return ctx.Redirect(loc, http.StatusFound)
 }

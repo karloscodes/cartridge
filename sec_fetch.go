@@ -1,7 +1,7 @@
-package middleware
+package cartridge
 
 import (
-	"github.com/gofiber/fiber/v2"
+	"net/http"
 )
 
 // SecFetchSiteConfig configures the Sec-Fetch-Site middleware.
@@ -15,7 +15,7 @@ type SecFetchSiteConfig struct {
 	Methods []string
 
 	// Next defines a function to skip this middleware when returning true.
-	Next func(c *fiber.Ctx) bool
+	Next func(c *Context) bool
 }
 
 // DefaultSecFetchSiteConfig returns the default configuration.
@@ -40,7 +40,7 @@ func DefaultSecFetchSiteConfig() SecFetchSiteConfig {
 //
 // By default, this middleware allows "same-origin" and "none" for state-changing methods.
 // For analytics endpoints, configure AllowedValues to include "cross-site".
-func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) fiber.Handler {
+func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) HandlerFunc {
 	cfg := DefaultSecFetchSiteConfig()
 	if len(config) > 0 {
 		cfg = config[0]
@@ -62,7 +62,7 @@ func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) fiber.Handler {
 		allowedSet[v] = true
 	}
 
-	return func(c *fiber.Ctx) error {
+	return func(c *Context) error {
 		if cfg.Next != nil && cfg.Next(c) {
 			return c.Next()
 		}
@@ -78,14 +78,14 @@ func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) fiber.Handler {
 		// Blocks: curl, Postman, Python requests, Node.js fetch, etc.
 		// Also blocks older browsers (pre-2020) that don't support this header.
 		if secFetchSite == "" {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			return c.Status(http.StatusForbidden).JSON(Map{
 				"error":   "forbidden",
 				"message": "browser requests only",
 			})
 		}
 
 		if !allowedSet[secFetchSite] {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			return c.Status(http.StatusForbidden).JSON(Map{
 				"error":   "forbidden",
 				"message": "cross-site request blocked",
 			})

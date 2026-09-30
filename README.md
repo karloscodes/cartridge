@@ -1,6 +1,6 @@
 # Cartridge
 
-An opinionated Go web framework on top of [Fiber](https://gofiber.io) and [GORM](https://gorm.io). It targets monolithic apps that ship as one binary with SQLite: config, logging, sessions, CSRF protection, background jobs, and embedded assets come wired in.
+An opinionated Go web framework on top of `net/http` and [GORM](https://gorm.io). It targets monolithic apps that ship as one binary with SQLite: config, logging, sessions, CSRF protection, background jobs, and embedded assets come wired in.
 
 > **Note:** Cartridge is pre-1.0. APIs can change between minor versions.
 
@@ -60,7 +60,6 @@ package main
 import (
 	"log"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/karloscodes/cartridge"
 
 	"myapp/web"
@@ -95,7 +94,7 @@ func home(ctx *cartridge.Context) error {
 	if err := ctx.DB().Find(&notes).Error; err != nil {
 		return err
 	}
-	return ctx.Render("home", fiber.Map{"Notes": notes})
+	return ctx.Render("home", cartridge.Map{"Notes": notes})
 }
 
 func createNote(ctx *cartridge.Context) error {
@@ -147,7 +146,7 @@ app, err := cartridge.NewSSRApp("myapp", cartridge.WithConfig(cfg))
 
 ## Handlers
 
-Every handler has one signature: `func(*cartridge.Context) error`. `Context` embeds `*fiber.Ctx`, so all Fiber methods work. It adds:
+Every handler and middleware has one signature: `func(*cartridge.Context) error`. Middleware calls `ctx.Next()`. `Context` wraps the `http.ResponseWriter` and `*http.Request` (`ctx.Response()`, `ctx.Request()`), and keeps the Fiber-style methods from cartridge v0: `Params`, `Query`, `Get`, `Set`, `Cookies`, `Cookie`, `Locals`, `Status(...).JSON(...)`, `SendString`, `Redirect`, and more. It adds:
 
 | Member | What it does |
 |---|---|
@@ -174,11 +173,11 @@ s.Post("/api/events", ingest, &cartridge.RouteConfig{
 	WriteConcurrency:   true,                  // queue writes (max 8 at once) to protect SQLite
 	EnableCORS:         true,                  // allows any origin unless CORSConfig is set
 	EnableSecFetchSite: cartridge.Bool(false), // turn off CSRF check for a public endpoint
-	CustomMiddleware:   []fiber.Handler{middleware.RateLimiter(middleware.WithMax(10))},
+	CustomMiddleware:   []cartridge.HandlerFunc{middleware.RateLimiter(middleware.WithMax(10))},
 })
 ```
 
-For anything Fiber can do that `Server` does not wrap, use `s.App()` to reach the `*fiber.App`.
+`Server` is an `http.Handler`. `s.Use(mw)` adds middleware to every route. A CORS route without its own OPTIONS route gets one that answers browser preflight requests. Route paths use `:param` and a trailing `*`, as in v0.
 
 ## Sessions
 
@@ -188,7 +187,7 @@ For anything Fiber can do that `Server` does not wrap, use `s.App()` to reach th
 cartridge.WithSession("/login"),
 cartridge.WithRoutes(func(s *cartridge.Server) {
 	auth := &cartridge.RouteConfig{
-		CustomMiddleware: []fiber.Handler{s.Session().Middleware()},
+		CustomMiddleware: []cartridge.HandlerFunc{s.Session().Middleware()},
 	}
 	s.Get("/login", showLogin)
 	s.Post("/login", login)

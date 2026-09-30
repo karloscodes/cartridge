@@ -1,4 +1,4 @@
-// Package cartridge provides a minimal, opinionated web framework built on GoFiber.
+// Package cartridge provides a minimal, opinionated web framework built on net/http.
 //
 // Cartridge is designed for building web applications with a clean, type-safe API
 // and sensible defaults. It provides:
@@ -98,7 +98,7 @@
 //
 // The Context provides access to:
 //
-//   - All Fiber HTTP methods via embedded *fiber.Ctx
+//   - The request and response (Request, Response) and Fiber-style helpers (Params, Query, JSON, ...)
 //   - Logger for request logging
 //   - Config for runtime configuration
 //   - DB() for database access with request context

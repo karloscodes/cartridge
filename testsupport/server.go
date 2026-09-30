@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
-
 	"github.com/karloscodes/cartridge"
 )
 
@@ -32,7 +30,6 @@ type TestServerOptions struct {
 type TestServer struct {
 	t         *testing.T
 	Server    *cartridge.Server
-	App       *fiber.App
 	DB        *TestDBManager
 	Logger    *slog.Logger
 	Config    *TestConfig
@@ -87,7 +84,6 @@ func NewTestServer(t *testing.T, opts ...TestServerOptions) *TestServer {
 	ts := &TestServer{
 		t:         t,
 		Server:    server,
-		App:       server.App(),
 		DB:        dbManager,
 		Logger:    logger,
 		Config:    config,
@@ -109,7 +105,7 @@ func (ts *TestServer) Request(method, path string, body ...string) *http.Respons
 	req := httptest.NewRequest(method, path, bodyReader)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := ts.App.Test(req, -1)
+	resp, err := ts.Server.Test(req)
 	if err != nil {
 		ts.t.Fatalf("testsupport: request failed: %v", err)
 	}

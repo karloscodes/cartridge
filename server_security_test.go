@@ -30,7 +30,7 @@ func crossSitePost(t *testing.T, srv *Server, path string) int {
 
 	req, _ := http.NewRequest("POST", path, nil)
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	resp, err := srv.app.Test(req)
+	resp, err := srv.Test(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestTrustedProxies(t *testing.T) {
 
 		req, _ := http.NewRequest("GET", "/ip", nil)
 		req.Header.Set("X-Forwarded-For", "203.0.113.7")
-		resp, err := srv.app.Test(req)
+		resp, err := srv.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
@@ -94,7 +94,7 @@ func TestTrustedProxies(t *testing.T) {
 	})
 
 	t.Run("the proxy header is used from a trusted peer", func(t *testing.T) {
-		// app.Test connects from 0.0.0.0.
+		// Server.Test connects from 0.0.0.0.
 		if ip := clientIP(t, []string{"0.0.0.0"}); ip != "203.0.113.7" {
 			t.Errorf("IP = %s, want the forwarded client IP", ip)
 		}

@@ -4,12 +4,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/gofiber/fiber/v2"
 )
 
 func TestNewSessionManager(t *testing.T) {
@@ -181,12 +180,12 @@ func TestDifferentSecrets(t *testing.T) {
 
 func TestSessionIssuedAt(t *testing.T) {
 	sm := NewSessionManager(SessionConfig{Secret: "test-secret-key-32-characters-xx"})
-	app := fiber.New()
-	app.Get("/login", func(c *fiber.Ctx) error { return sm.SetSession(c, 7) })
-	app.Get("/issued", func(c *fiber.Ctx) error {
+	app := newTestApp(t)
+	app.Get("/login", func(c *Context) error { return sm.SetSession(c, 7) })
+	app.Get("/issued", func(c *Context) error {
 		issued, ok := sm.IssuedAt(c)
 		if !ok {
-			return c.SendStatus(fiber.StatusUnauthorized)
+			return c.SendStatus(http.StatusUnauthorized)
 		}
 		return c.SendString(issued.UTC().Format(time.RFC3339Nano))
 	})
@@ -223,7 +222,7 @@ func TestSessionIssuedAt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if resp.StatusCode != fiber.StatusUnauthorized {
+		if resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("expected 401, got %d", resp.StatusCode)
 		}
 	})

@@ -1,12 +1,13 @@
+// Package middleware holds optional middleware for cartridge routes.
 package middleware
 
 import (
+	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/limiter"
-	"github.com/gofiber/fiber/v2/utils"
+	"github.com/karloscodes/cartridge"
 )
 
 // EnvironmentChecker provides methods to check the runtime environment.
@@ -20,10 +21,9 @@ type EnvironmentChecker interface {
 type RateLimiterConfig struct {
 	Max      int
 	Duration time.Duration
-	Skip     func(*fiber.Ctx) bool
-	Storage  fiber.Storage           // Optional: persistent storage for distributed rate limiting
-	Env      EnvironmentChecker      // Optional: environment checker to skip rate limiting in dev/test
-	Key      func(*fiber.Ctx) string // Optional: the client key; default c.IP()
+	Skip     func(*cartridge.Context) bool
+	Env      EnvironmentChecker              // Optional: environment checker to skip rate limiting in dev/test
+	Key      func(*cartridge.Context) string // Optional: the client key; default c.IP()
 }
 
 // RateLimiterOption defines a function to modify RateLimiterConfig.
@@ -46,29 +46,20 @@ func WithDuration(duration time.Duration) RateLimiterOption {
 }
 
 // WithSkip configures a predicate to skip rate limiting when it returns true.
-// Example: WithSkip(func(c *fiber.Ctx) bool { return c.Get("X-API-Key") == "admin" })
-func WithSkip(skip func(*fiber.Ctx) bool) RateLimiterOption {
+// Example: WithSkip(func(c *cartridge.Context) bool { return c.Get("X-API-Key") == "admin" })
+func WithSkip(skip func(*cartridge.Context) bool) RateLimiterOption {
 	return func(cfg *RateLimiterConfig) {
 		cfg.Skip = skip
 	}
 }
 
 // WithKeyGenerator sets how requests are grouped into one budget. The default
-// is c.IP(). Behind a proxy that appends to X-Forwarded-For, c.IP() returns
-// the leftmost entry, which the client controls; pass a function that returns
-// the real client address instead.
-func WithKeyGenerator(key func(*fiber.Ctx) string) RateLimiterOption {
+// is c.IP(). Behind a proxy that appends to X-Forwarded-For, the leftmost
+// entry is what the client sent; pass a function that returns the real client
+// address instead.
+func WithKeyGenerator(key func(*cartridge.Context) string) RateLimiterOption {
 	return func(cfg *RateLimiterConfig) {
 		cfg.Key = key
-	}
-}
-
-// WithStorage configures persistent storage for distributed rate limiting.
-// Use this with Redis or other fiber.Storage implementations for multi-instance deployments.
-// Example: WithStorage(myRedisStorage)
-func WithStorage(storage fiber.Storage) RateLimiterOption {
-	return func(cfg *RateLimiterConfig) {
-		cfg.Storage = storage
 	}
 }
 
@@ -82,14 +73,14 @@ func WithEnv(env EnvironmentChecker) RateLimiterOption {
 	}
 }
 
-// RateLimiter creates a rate limiting middleware with customizable options.
+// RateLimiter creates a fixed-window rate limiting middleware.
 // By default, limits to 50 requests per second per IP address.
-// Uses in-memory storage by default - use WithStorage() for distributed setups.
+// Counts live in memory, so each process has its own budget.
 //
 // Example usage:
 //
 //	RateLimiter(WithMax(100), WithDuration(time.Minute))  // 100 req/min
-func RateLimiter(options ...RateLimiterOption) fiber.Handler {
+func RateLimiter(options ...RateLimiterOption) cartridge.HandlerFunc {
 	cfg := RateLimiterConfig{
 		Max:      50,
 		Duration: time.Second,
@@ -107,41 +98,77 @@ func RateLimiter(options ...RateLimiterOption) fiber.Handler {
 		cfg.Duration = time.Second
 	}
 
-	limiterConfig := limiter.Config{
-		Max:        cfg.Max,
-		Expiration: cfg.Duration,
-		Storage:    cfg.Storage, // nil = in-memory (default)
-		KeyGenerator: func(c *fiber.Ctx) string {
-			// Use utils.CopyString to avoid memory issues with pooled contexts
-			if cfg.Key != nil {
-				return utils.CopyString(cfg.Key(c))
-			}
-			return utils.CopyString(c.IP())
-		},
-		LimitReached: func(c *fiber.Ctx) error {
-			// Set Retry-After header for well-behaved clients
-			c.Set("Retry-After", "60") // Suggest retry after 60 seconds
-			c.Set("X-RateLimit-Limit", strconv.Itoa(cfg.Max))
-			c.Set("X-RateLimit-Remaining", "0")
+	store := &windowStore{window: cfg.Duration, entries: map[string]*window{}}
+	limit := strconv.Itoa(cfg.Max)
 
-			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+	return func(c *cartridge.Context) error {
+		// Skip rate limiting in dev/test environments (convention over configuration)
+		if cfg.Env != nil && (cfg.Env.IsTest() || cfg.Env.IsDevelopment()) {
+			return c.Next()
+		}
+		if cfg.Skip != nil && cfg.Skip(c) {
+			return c.Next()
+		}
+
+		key := c.IP()
+		if cfg.Key != nil {
+			key = cfg.Key(c)
+		}
+		hits, resetIn := store.hit(key, time.Now())
+		remaining := cfg.Max - hits
+
+		c.Set("X-RateLimit-Limit", limit)
+		if remaining < 0 {
+			// Retry-After for well-behaved clients
+			c.Set("Retry-After", "60")
+			c.Set("X-RateLimit-Remaining", "0")
+			return c.Status(http.StatusTooManyRequests).JSON(cartridge.Map{
 				"error":       "Too Many Requests",
 				"message":     "Rate limit exceeded. Please try again later.",
 				"retry_after": 60,
 			})
-		},
-		Next: func(c *fiber.Ctx) bool {
-			// Skip rate limiting in dev/test environments (convention over configuration)
-			if cfg.Env != nil && (cfg.Env.IsTest() || cfg.Env.IsDevelopment()) {
-				return true
+		}
+
+		c.Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+		c.Set("X-RateLimit-Reset", strconv.Itoa(int(resetIn.Seconds())))
+		return c.Next()
+	}
+}
+
+// windowStore counts hits per key in fixed time windows.
+type windowStore struct {
+	mu        sync.Mutex
+	window    time.Duration
+	entries   map[string]*window
+	lastSweep time.Time
+}
+
+type window struct {
+	hits    int
+	resetAt time.Time
+}
+
+// hit records one request for key. It returns the hits in the current
+// window and the time until the window resets.
+func (s *windowStore) hit(key string, now time.Time) (int, time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Drop expired windows once per window, so the map does not grow forever.
+	if now.Sub(s.lastSweep) >= s.window {
+		for k, e := range s.entries {
+			if !now.Before(e.resetAt) {
+				delete(s.entries, k)
 			}
-			// Check custom skip function
-			if cfg.Skip != nil {
-				return cfg.Skip(c)
-			}
-			return false
-		},
+		}
+		s.lastSweep = now
 	}
 
-	return limiter.New(limiterConfig)
+	e, ok := s.entries[key]
+	if !ok || !now.Before(e.resetAt) {
+		e = &window{resetAt: now.Add(s.window)}
+		s.entries[key] = e
+	}
+	e.hits++
+	return e.hits, e.resetAt.Sub(now)
 }

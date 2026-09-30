@@ -1,21 +1,40 @@
 package cartridge
 
 import (
+	"errors"
 	"fmt"
+	"html"
 	"log/slog"
-
-	"github.com/gofiber/fiber/v2"
+	"net/http"
 )
+
+// Error is an HTTP error with a status code. Return one from a handler to
+// choose the response status.
+type Error struct {
+	Code    int
+	Message string
+}
+
+func (e *Error) Error() string { return e.Message }
+
+// NewError creates an Error. The message defaults to the status text.
+func NewError(code int, message ...string) *Error {
+	msg := http.StatusText(code)
+	if len(message) > 0 {
+		msg = message[0]
+	}
+	return &Error{Code: code, Message: msg}
+}
+
+// ErrorHandler turns an error from a handler chain into a response.
+type ErrorHandler func(*Context, error) error
 
 // DefaultErrorHandler returns a production-ready error handler.
 // It returns JSON for API requests and simple HTML for browser requests.
 // For custom error pages with templates, use WithErrorHandler to provide your own.
-func DefaultErrorHandler(logger *slog.Logger, isDev bool) fiber.ErrorHandler {
-	return func(c *fiber.Ctx, err error) error {
-		code := fiber.StatusInternalServerError
-		if e, ok := err.(*fiber.Error); ok {
-			code = e.Code
-		}
+func DefaultErrorHandler(logger *slog.Logger, isDev bool) ErrorHandler {
+	return func(c *Context, err error) error {
+		code := errorCode(err)
 
 		logger.Error("request failed",
 			slog.Any("error", err),
@@ -25,8 +44,8 @@ func DefaultErrorHandler(logger *slog.Logger, isDev bool) fiber.ErrorHandler {
 		)
 
 		// JSON error response for API requests
-		if c.Accepts(fiber.MIMEApplicationJSON) == fiber.MIMEApplicationJSON {
-			return c.Status(code).JSON(fiber.Map{
+		if c.Accepts("application/json") == "application/json" {
+			return c.Status(code).JSON(Map{
 				"error":   ErrorCodeName(code),
 				"message": err.Error(),
 			})
@@ -37,30 +56,40 @@ func DefaultErrorHandler(logger *slog.Logger, isDev bool) fiber.ErrorHandler {
 		if isDev {
 			errorMsg = err.Error()
 		}
+		c.Set("Content-Type", "text/html; charset=utf-8")
 		return c.Status(code).SendString(errorHTML(code, ErrorCodeName(code), errorMsg))
 	}
+}
+
+// errorCode returns the status of an *Error, or 500.
+func errorCode(err error) int {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Code
+	}
+	return http.StatusInternalServerError
 }
 
 // ErrorCodeName returns a human-readable name for common HTTP status codes.
 func ErrorCodeName(code int) string {
 	switch code {
-	case fiber.StatusBadRequest:
+	case http.StatusBadRequest:
 		return "Bad Request"
-	case fiber.StatusUnauthorized:
+	case http.StatusUnauthorized:
 		return "Unauthorized"
-	case fiber.StatusForbidden:
+	case http.StatusForbidden:
 		return "Forbidden"
-	case fiber.StatusNotFound:
+	case http.StatusNotFound:
 		return "Not Found"
-	case fiber.StatusMethodNotAllowed:
+	case http.StatusMethodNotAllowed:
 		return "Method Not Allowed"
-	case fiber.StatusTooManyRequests:
+	case http.StatusTooManyRequests:
 		return "Too Many Requests"
-	case fiber.StatusInternalServerError:
+	case http.StatusInternalServerError:
 		return "Internal Server Error"
-	case fiber.StatusBadGateway:
+	case http.StatusBadGateway:
 		return "Bad Gateway"
-	case fiber.StatusServiceUnavailable:
+	case http.StatusServiceUnavailable:
 		return "Service Unavailable"
 	default:
 		return "Error"
@@ -71,7 +100,7 @@ func ErrorCodeName(code int) string {
 func errorHTML(code int, title, message string) string {
 	details := ""
 	if message != "" {
-		details = fmt.Sprintf(`<p style="color:#666;font-size:14px;margin-top:20px;font-family:monospace;background:#f5f5f5;padding:10px;border-radius:4px;">%s</p>`, message)
+		details = fmt.Sprintf(`<p style="color:#666;font-size:14px;margin-top:20px;font-family:monospace;background:#f5f5f5;padding:10px;border-radius:4px;">%s</p>`, html.EscapeString(message))
 	}
 
 	return fmt.Sprintf(`<!DOCTYPE html>

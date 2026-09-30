@@ -3,22 +3,27 @@ package inertia
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
-
-	"github.com/gofiber/fiber/v2"
 )
+
+// newApp returns a function that serves a request with RenderPage.
+func newApp() func(*http.Request) (*http.Response, error) {
+	return func(req *http.Request) (*http.Response, error) {
+		rec := httptest.NewRecorder()
+		err := RenderPage(rec, req, "TestComponent", map[string]interface{}{"foo": "bar"})
+		return rec.Result(), err
+	}
+}
 
 func TestRenderSetsCacheControlInDevMode(t *testing.T) {
 	SetDevMode(true)
 	defer SetDevMode(false)
 
-	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
-		return RenderPage(c, "TestComponent", map[string]interface{}{"foo": "bar"})
-	})
+	app := newApp()
 
 	req, _ := http.NewRequest("GET", "/test", nil)
-	resp, err := app.Test(req)
+	resp, err := app(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -32,13 +37,10 @@ func TestRenderSetsCacheControlInDevMode(t *testing.T) {
 func TestRenderSetsCacheControlInProductionMode(t *testing.T) {
 	SetDevMode(false)
 
-	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
-		return RenderPage(c, "TestComponent", map[string]interface{}{"foo": "bar"})
-	})
+	app := newApp()
 
 	req, _ := http.NewRequest("GET", "/test", nil)
-	resp, err := app.Test(req)
+	resp, err := app(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -51,16 +53,13 @@ func TestRenderSetsCacheControlInProductionMode(t *testing.T) {
 
 func TestRenderAssetVersion(t *testing.T) {
 	SetDevMode(false)
-	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
-		return RenderPage(c, "TestComponent", map[string]interface{}{"foo": "bar"})
-	})
+	app := newApp()
 
 	t.Run("sends the asset hash as the version", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/test", nil)
 		req.Header.Set("X-Inertia", "true")
 
-		resp, err := app.Test(req)
+		resp, err := app(req)
 
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
@@ -79,7 +78,7 @@ func TestRenderAssetVersion(t *testing.T) {
 		req.Header.Set("X-Inertia", "true")
 		req.Header.Set("X-Inertia-Version", Version())
 
-		resp, _ := app.Test(req)
+		resp, _ := app(req)
 
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected 200, got %d", resp.StatusCode)
@@ -91,7 +90,7 @@ func TestRenderAssetVersion(t *testing.T) {
 		req.Header.Set("X-Inertia", "true")
 		req.Header.Set("X-Inertia-Version", "stale")
 
-		resp, _ := app.Test(req)
+		resp, _ := app(req)
 
 		if resp.StatusCode != http.StatusConflict {
 			t.Errorf("expected 409, got %d", resp.StatusCode)
@@ -105,7 +104,7 @@ func TestRenderAssetVersion(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/test", nil)
 		req.Header.Set("X-Inertia-Version", "stale")
 
-		resp, _ := app.Test(req)
+		resp, _ := app(req)
 
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected 200, got %d", resp.StatusCode)

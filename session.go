@@ -7,11 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/gofiber/fiber/v2"
 )
 
 // SessionConfig configures the session manager.
@@ -77,7 +76,7 @@ func NewSessionManager(cfg SessionConfig) *SessionManager {
 }
 
 // SetSession creates a session cookie for the given user ID.
-func (sm *SessionManager) SetSession(c *fiber.Ctx, userID uint) error {
+func (sm *SessionManager) SetSession(c *Context, userID uint) error {
 	now := time.Now()
 	sessionData := SessionData{
 		UserID:    strconv.FormatUint(uint64(userID), 10),
@@ -95,7 +94,7 @@ func (sm *SessionManager) SetSession(c *fiber.Ctx, userID uint) error {
 		return err
 	}
 
-	c.Cookie(&fiber.Cookie{
+	c.Cookie(&Cookie{
 		Name:     sm.cookieName,
 		Value:    token,
 		Path:     "/",
@@ -113,9 +112,9 @@ func (sm *SessionManager) SetSession(c *fiber.Ctx, userID uint) error {
 }
 
 // ClearSession removes the session cookie.
-func (sm *SessionManager) ClearSession(c *fiber.Ctx) {
+func (sm *SessionManager) ClearSession(c *Context) {
 	c.ClearCookie(sm.cookieName)
-	c.Cookie(&fiber.Cookie{
+	c.Cookie(&Cookie{
 		Name:     sm.cookieName,
 		Value:    "",
 		Path:     "/",
@@ -129,7 +128,7 @@ func (sm *SessionManager) ClearSession(c *fiber.Ctx) {
 }
 
 // IsAuthenticated checks if the request has a valid session.
-func (sm *SessionManager) IsAuthenticated(c *fiber.Ctx) bool {
+func (sm *SessionManager) IsAuthenticated(c *Context) bool {
 	token := c.Cookies(sm.cookieName)
 	if token == "" {
 		return false
@@ -156,7 +155,7 @@ func (sm *SessionManager) IsAuthenticated(c *fiber.Ctx) bool {
 
 // GetUserID retrieves the user ID from the session cookie.
 // Returns 0 and false if not authenticated.
-func (sm *SessionManager) GetUserID(c *fiber.Ctx) (uint, bool) {
+func (sm *SessionManager) GetUserID(c *Context) (uint, bool) {
 	token := c.Cookies(sm.cookieName)
 	if token == "" {
 		return 0, false
@@ -182,7 +181,7 @@ func (sm *SessionManager) GetUserID(c *fiber.Ctx) (uint, bool) {
 // IssuedAt returns when the current session was created. It returns false
 // when there is no valid session. Sessions created by older versions have
 // the zero time.
-func (sm *SessionManager) IssuedAt(c *fiber.Ctx) (time.Time, bool) {
+func (sm *SessionManager) IssuedAt(c *Context) (time.Time, bool) {
 	token := c.Cookies(sm.cookieName)
 	if token == "" {
 		return time.Time{}, false
@@ -196,15 +195,15 @@ func (sm *SessionManager) IssuedAt(c *fiber.Ctx) (time.Time, bool) {
 	return sessionData.IssuedAt, true
 }
 
-// Middleware returns a Fiber middleware that requires authentication.
+// Middleware returns a middleware that requires authentication.
 // Unauthenticated requests are redirected to LoginPath.
 // HTMX requests receive a 401 status instead.
-func (sm *SessionManager) Middleware() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+func (sm *SessionManager) Middleware() HandlerFunc {
+	return func(c *Context) error {
 		if !sm.IsAuthenticated(c) {
 			// For HTMX requests, respond with 401
 			if c.Get("HX-Request") == "true" {
-				return c.Status(fiber.StatusUnauthorized).SendString("authentication required")
+				return c.Status(http.StatusUnauthorized).SendString("authentication required")
 			}
 			return c.Redirect(sm.loginPath)
 		}

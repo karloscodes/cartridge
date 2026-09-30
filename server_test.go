@@ -1,13 +1,13 @@
 package cartridge
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"testing"
 	"testing/fstest"
 
-	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
 
@@ -30,13 +30,13 @@ func TestPublicFS(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	srv.app.Get("/dashboard", func(c *fiber.Ctx) error {
+	srv.Get("/dashboard", func(c *Context) error {
 		return c.SendString("dashboard")
 	})
 
 	t.Run("serves favicon.svg at root", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/favicon.svg", nil)
-		resp, err := srv.app.Test(req)
+		resp, err := srv.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
@@ -47,7 +47,7 @@ func TestPublicFS(t *testing.T) {
 
 	t.Run("serves robots.txt at root", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/robots.txt", nil)
-		resp, err := srv.app.Test(req)
+		resp, err := srv.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
@@ -58,7 +58,7 @@ func TestPublicFS(t *testing.T) {
 
 	t.Run("falls through to app routes", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/dashboard", nil)
-		resp, err := srv.app.Test(req)
+		resp, err := srv.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
@@ -87,13 +87,13 @@ func TestPublicDirectory(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	srv.app.Get("/dashboard", func(c *fiber.Ctx) error {
+	srv.Get("/dashboard", func(c *Context) error {
 		return c.SendString("dashboard")
 	})
 
 	t.Run("serves files from directory", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/favicon.svg", nil)
-		resp, err := srv.app.Test(req)
+		resp, err := srv.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
@@ -104,7 +104,7 @@ func TestPublicDirectory(t *testing.T) {
 
 	t.Run("falls through to app routes", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/dashboard", nil)
-		resp, err := srv.app.Test(req)
+		resp, err := srv.Test(req)
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
@@ -115,6 +115,22 @@ func TestPublicDirectory(t *testing.T) {
 }
 
 // Minimal test implementations
+
+// newTestApp returns a server with the built-in middleware turned off, for
+// tests of one handler or middleware.
+func newTestApp(t *testing.T) *Server {
+	t.Helper()
+	cfg := &ServerConfig{
+		Config:    &testConfig{},
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DBManager: &testDBManager{},
+	}
+	srv, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	return srv
+}
 
 type testConfig struct{}
 

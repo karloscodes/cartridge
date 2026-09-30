@@ -1,12 +1,13 @@
 package cartridge
 
 import (
+	"errors"
+	"io"
 	"log/slog"
-	"os"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/gofiber/fiber/v2"
 )
 
 func TestErrorCodeName(t *testing.T) {
@@ -14,15 +15,15 @@ func TestErrorCodeName(t *testing.T) {
 		code     int
 		expected string
 	}{
-		{fiber.StatusBadRequest, "Bad Request"},
-		{fiber.StatusUnauthorized, "Unauthorized"},
-		{fiber.StatusForbidden, "Forbidden"},
-		{fiber.StatusNotFound, "Not Found"},
-		{fiber.StatusMethodNotAllowed, "Method Not Allowed"},
-		{fiber.StatusTooManyRequests, "Too Many Requests"},
-		{fiber.StatusInternalServerError, "Internal Server Error"},
-		{fiber.StatusBadGateway, "Bad Gateway"},
-		{fiber.StatusServiceUnavailable, "Service Unavailable"},
+		{http.StatusBadRequest, "Bad Request"},
+		{http.StatusUnauthorized, "Unauthorized"},
+		{http.StatusForbidden, "Forbidden"},
+		{http.StatusNotFound, "Not Found"},
+		{http.StatusMethodNotAllowed, "Method Not Allowed"},
+		{http.StatusTooManyRequests, "Too Many Requests"},
+		{http.StatusInternalServerError, "Internal Server Error"},
+		{http.StatusBadGateway, "Bad Gateway"},
+		{http.StatusServiceUnavailable, "Service Unavailable"},
 		{418, "Error"}, // Unknown code
 	}
 
@@ -67,12 +68,53 @@ func TestErrorHTML(t *testing.T) {
 }
 
 func TestDefaultErrorHandler(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	newApp := func(isDev bool, err error) *Server {
+		app := newTestApp(t)
+		app.cfg.ErrorHandler = DefaultErrorHandler(logger, isDev)
+		app.Get("/fail", func(c *Context) error { return err })
+		return app
+	}
 
-	t.Run("returns fiber.ErrorHandler", func(t *testing.T) {
-		handler := DefaultErrorHandler(logger, false)
-		if handler == nil {
-			t.Error("expected non-nil error handler")
+	t.Run("uses the status of a returned Error", func(t *testing.T) {
+		app := newApp(false, NewError(http.StatusForbidden, "nope"))
+
+		resp, _ := app.Test(httptest.NewRequest("GET", "/fail", nil))
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("expected 403, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("answers API clients with JSON", func(t *testing.T) {
+		app := newApp(false, errors.New("boom"))
+		req := httptest.NewRequest("GET", "/fail", nil)
+		req.Header.Set("Accept", "application/json")
+
+		resp, _ := app.Test(req)
+
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Errorf("expected 500, got %d", resp.StatusCode)
+		}
+		if !strings.Contains(string(body), `"error":"Internal Server Error"`) {
+			t.Errorf("expected a JSON error, got %s", body)
+		}
+	})
+
+	t.Run("answers browsers with an escaped HTML page", func(t *testing.T) {
+		app := newApp(true, errors.New("<script>x</script>"))
+		req := httptest.NewRequest("GET", "/fail", nil)
+		req.Header.Set("Accept", "text/html")
+
+		resp, _ := app.Test(req)
+
+		body, _ := io.ReadAll(resp.Body)
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Errorf("expected text/html, got %q", ct)
+		}
+		if strings.Contains(string(body), "<script>x</script>") {
+			t.Error("expected the error message to be escaped")
 		}
 	})
 }

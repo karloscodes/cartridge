@@ -5,13 +5,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"html"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
 
 	"github.com/karloscodes/cartridge/flash"
-
-	"github.com/gofiber/fiber/v2"
 )
 
 // ManifestEntry represents an entry in the Vite manifest
@@ -145,53 +144,51 @@ func DeferGroup(callback func() interface{}, group string) DeferredProp {
 }
 
 // RenderPage is a convenience wrapper that creates an Inertia instance and renders a component
-// Usage: return inertia.RenderPage(c, "Dashboard", props)
-func RenderPage(c *fiber.Ctx, component string, props map[string]interface{}) error {
-	return Render(c, component, props)
+// Usage: return inertia.RenderPage(w, r, "Dashboard", props)
+func RenderPage(w http.ResponseWriter, r *http.Request, component string, props map[string]interface{}) error {
+	return Render(w, r, component, props)
 }
 
 // Render sends an Inertia response
 // Automatically detects if request is Inertia (AJAX) or initial page load
 // Automatically injects flash messages from context if available
 // Supports deferred props via X-Inertia-Partial-Data header
-func Render(c *fiber.Ctx, component string, props map[string]interface{}) error {
+func Render(w http.ResponseWriter, r *http.Request, component string, props map[string]interface{}) error {
 	// Load asset paths from manifest (cached in production, fresh in dev)
 	loadManifest()
 
 	// Build full URL with query string for proper Inertia navigation
-	fullURL := c.Path()
-	if queryString := string(c.Request().URI().QueryString()); queryString != "" {
-		fullURL = fullURL + "?" + queryString
-	}
+	fullURL := r.URL.RequestURI()
 
 	// Stale client after a deploy: ask it to do a full page load of the new assets.
 	// Check before reading the flash, so the flash survives for the reloaded page.
-	if c.Get("X-Inertia") != "" && c.Method() == fiber.MethodGet {
-		if v := c.Get("X-Inertia-Version"); v != "" && v != assetVersion {
-			c.Set("X-Inertia-Location", fullURL)
-			return c.SendStatus(fiber.StatusConflict)
+	if r.Header.Get("X-Inertia") != "" && r.Method == http.MethodGet {
+		if v := r.Header.Get("X-Inertia-Version"); v != "" && v != assetVersion {
+			w.Header().Set("X-Inertia-Location", fullURL)
+			w.WriteHeader(http.StatusConflict)
+			return nil
 		}
 	}
 
 	// Auto-inject flash message if not already set
 	if _, exists := props["flash"]; !exists {
-		props["flash"] = flash.GetFlash(c)
+		props["flash"] = flash.GetFlash(w, r)
 	}
 
 	// Check if this is an Inertia request (subsequent navigation)
-	if c.Get("X-Inertia") != "" {
+	if r.Header.Get("X-Inertia") != "" {
 		// Set required Inertia response headers
-		c.Set("X-Inertia", "true")
-		c.Set("Vary", "X-Inertia")
+		w.Header().Set("X-Inertia", "true")
+		w.Header().Set("Vary", "X-Inertia")
 
 		// Check for partial reload (deferred props request)
-		partialData := c.Get("X-Inertia-Partial-Data")
-		partialComponent := c.Get("X-Inertia-Partial-Component")
+		partialData := r.Header.Get("X-Inertia-Partial-Data")
+		partialComponent := r.Header.Get("X-Inertia-Partial-Component")
 
 		// If this is a partial reload request, only return requested props
 		if partialData != "" && (partialComponent == "" || partialComponent == component) {
 			resolvedProps := resolveProps(props, partialData, partialComponent, component)
-			return c.JSON(fiber.Map{
+			return writeJSON(w, map[string]interface{}{
 				"component": component,
 				"props":     resolvedProps,
 				"url":       fullURL,
@@ -202,7 +199,7 @@ func Render(c *fiber.Ctx, component string, props map[string]interface{}) error 
 		// For full Inertia navigation, exclude deferred props and include deferredProps metadata
 		resolvedProps, deferredKeys := resolvePropsForInitialLoad(props)
 
-		response := fiber.Map{
+		response := map[string]interface{}{
 			"component": component,
 			"props":     resolvedProps,
 			"url":       fullURL,
@@ -214,7 +211,7 @@ func Render(c *fiber.Ctx, component string, props map[string]interface{}) error 
 			response["deferredProps"] = deferredKeys
 		}
 
-		return c.JSON(response)
+		return writeJSON(w, response)
 	}
 
 	// Initial page load - exclude deferred props and collect their names
@@ -238,14 +235,14 @@ func Render(c *fiber.Ctx, component string, props map[string]interface{}) error 
 	}
 
 	// Send file directly
-	c.Set("Content-Type", "text/html")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	// Cache control: dev mode never caches (prevents stale hashed asset references),
 	// production allows caching but requires revalidation to pick up new deploys.
 	if devMode {
-		c.Set("Cache-Control", "no-store")
+		w.Header().Set("Cache-Control", "no-store")
 	} else {
-		c.Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-cache")
 	}
 
 	// Build CSS link tag only if we have a CSS file
@@ -270,7 +267,19 @@ func Render(c *fiber.Ctx, component string, props map[string]interface{}) error 
 </body>
 </html>`
 
-	return c.SendString(htmlContent)
+	_, err = w.Write([]byte(htmlContent))
+	return err
+}
+
+// writeJSON sends v as a JSON body.
+func writeJSON(w http.ResponseWriter, v interface{}) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, err = w.Write(data)
+	return err
 }
 
 // resolveProps handles partial reload requests for deferred props

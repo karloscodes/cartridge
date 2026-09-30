@@ -9,19 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
-
 	"github.com/karloscodes/cartridge/flash"
 )
-
-// newTestContext builds a *Context wired to the given fiber.Ctx, matching how
-// Server.wrapHandler constructs it for real requests.
-func newTestContext(c *fiber.Ctx) *Context {
-	return &Context{
-		Ctx:    c,
-		Config: &testConfig{},
-	}
-}
 
 func TestBind(t *testing.T) {
 	type input struct {
@@ -31,10 +20,10 @@ func TestBind(t *testing.T) {
 	}
 
 	t.Run("binds a JSON body", func(t *testing.T) {
-		app := fiber.New()
+		app := newTestApp(t)
 		var got input
-		app.Post("/users", func(c *fiber.Ctx) error {
-			return newTestContext(c).Bind(&got)
+		app.Post("/users", func(c *Context) error {
+			return c.Bind(&got)
 		})
 
 		body := strings.NewReader(`{"name":"Ada","age":36}`)
@@ -54,10 +43,10 @@ func TestBind(t *testing.T) {
 	})
 
 	t.Run("binds a form-urlencoded body", func(t *testing.T) {
-		app := fiber.New()
+		app := newTestApp(t)
 		var got input
-		app.Post("/users", func(c *fiber.Ctx) error {
-			return newTestContext(c).Bind(&got)
+		app.Post("/users", func(c *Context) error {
+			return c.Bind(&got)
 		})
 
 		form := url.Values{"name": {"Grace"}, "age": {"45"}}
@@ -77,10 +66,10 @@ func TestBind(t *testing.T) {
 	})
 
 	t.Run("overlays route params and query values", func(t *testing.T) {
-		app := fiber.New()
+		app := newTestApp(t)
 		var got input
-		app.Post("/users/:id", func(c *fiber.Ctx) error {
-			return newTestContext(c).Bind(&got)
+		app.Post("/users/:id", func(c *Context) error {
+			return c.Bind(&got)
 		})
 
 		body := strings.NewReader(`{"name":"Ada"}`)
@@ -106,11 +95,11 @@ func TestBind(t *testing.T) {
 	})
 
 	t.Run("empty body is not an error", func(t *testing.T) {
-		app := fiber.New()
+		app := newTestApp(t)
 		var got input
 		var bindErr error
-		app.Get("/users/:id", func(c *fiber.Ctx) error {
-			bindErr = newTestContext(c).Bind(&got)
+		app.Get("/users/:id", func(c *Context) error {
+			bindErr = c.Bind(&got)
 			return c.SendString("ok")
 		})
 
@@ -138,10 +127,10 @@ func TestBind(t *testing.T) {
 
 func TestInput(t *testing.T) {
 	t.Run("reads a value from a JSON body", func(t *testing.T) {
-		app := fiber.New()
+		app := newTestApp(t)
 		var got string
-		app.Post("/x", func(c *fiber.Ctx) error {
-			got = newTestContext(c).Input("openai_api_key")
+		app.Post("/x", func(c *Context) error {
+			got = c.Input("openai_api_key")
 			return c.SendString("ok")
 		})
 
@@ -157,10 +146,10 @@ func TestInput(t *testing.T) {
 	})
 
 	t.Run("reads a value from a form-urlencoded body", func(t *testing.T) {
-		app := fiber.New()
+		app := newTestApp(t)
 		var got string
-		app.Post("/x", func(c *fiber.Ctx) error {
-			got = newTestContext(c).Input("domain")
+		app.Post("/x", func(c *Context) error {
+			got = c.Input("domain")
 			return c.SendString("ok")
 		})
 
@@ -176,10 +165,10 @@ func TestInput(t *testing.T) {
 	})
 
 	t.Run("reads a route param and a query value", func(t *testing.T) {
-		app := fiber.New()
+		app := newTestApp(t)
 		var gotID, gotRange string
-		app.Get("/sites/:id", func(c *fiber.Ctx) error {
-			ctx := newTestContext(c)
+		app.Get("/sites/:id", func(c *Context) error {
+			ctx := c
 			gotID = ctx.Input("id")
 			gotRange = ctx.Input("range")
 			return c.SendString("ok")
@@ -198,10 +187,10 @@ func TestInput(t *testing.T) {
 	})
 
 	t.Run("renders a non-string JSON value as its literal", func(t *testing.T) {
-		app := fiber.New()
+		app := newTestApp(t)
 		var got string
-		app.Post("/x", func(c *fiber.Ctx) error {
-			got = newTestContext(c).Input("count")
+		app.Post("/x", func(c *Context) error {
+			got = c.Input("count")
 			return c.SendString("ok")
 		})
 
@@ -217,10 +206,10 @@ func TestInput(t *testing.T) {
 	})
 
 	t.Run("returns empty string for an absent key", func(t *testing.T) {
-		app := fiber.New()
+		app := newTestApp(t)
 		var got = "sentinel"
-		app.Post("/x", func(c *fiber.Ctx) error {
-			got = newTestContext(c).Input("missing")
+		app.Post("/x", func(c *Context) error {
+			got = c.Input("missing")
 			return c.SendString("ok")
 		})
 
@@ -264,9 +253,9 @@ func TestInertia(t *testing.T) {
 	}
 
 	t.Run("injects flash prop when a flash exists", func(t *testing.T) {
-		app := fiber.New()
-		app.Get("/page", func(c *fiber.Ctx) error {
-			return newTestContext(c).Inertia("Dashboard", nil)
+		app := newTestApp(t)
+		app.Get("/page", func(c *Context) error {
+			return c.Inertia("Dashboard", nil)
 		})
 
 		req, _ := http.NewRequest("GET", "/page", nil)
@@ -290,9 +279,9 @@ func TestInertia(t *testing.T) {
 	})
 
 	t.Run("flash prop is empty when no flash exists", func(t *testing.T) {
-		app := fiber.New()
-		app.Get("/page", func(c *fiber.Ctx) error {
-			return newTestContext(c).Inertia("Dashboard", nil)
+		app := newTestApp(t)
+		app.Get("/page", func(c *Context) error {
+			return c.Inertia("Dashboard", nil)
 		})
 
 		req, _ := http.NewRequest("GET", "/page", nil)
@@ -316,9 +305,9 @@ func TestInertia(t *testing.T) {
 	})
 
 	t.Run("does not overwrite a caller-supplied flash prop", func(t *testing.T) {
-		app := fiber.New()
-		app.Get("/page", func(c *fiber.Ctx) error {
-			return newTestContext(c).Inertia("Dashboard", map[string]interface{}{"flash": "custom"})
+		app := newTestApp(t)
+		app.Get("/page", func(c *Context) error {
+			return c.Inertia("Dashboard", map[string]interface{}{"flash": "custom"})
 		})
 
 		req, _ := http.NewRequest("GET", "/page", nil)
@@ -339,9 +328,9 @@ func TestInertia(t *testing.T) {
 
 func TestFlashAndRedirectBack(t *testing.T) {
 	t.Run("FlashError chains into RedirectBack to Referer", func(t *testing.T) {
-		app := fiber.New()
-		app.Post("/admin/websites", func(c *fiber.Ctx) error {
-			return newTestContext(c).FlashError("Invalid domain").RedirectBack("/admin/websites")
+		app := newTestApp(t)
+		app.Post("/admin/websites", func(c *Context) error {
+			return c.FlashError("Invalid domain").RedirectBack("/admin/websites")
 		})
 
 		req, _ := http.NewRequest("POST", "/admin/websites", nil)
@@ -351,7 +340,7 @@ func TestFlashAndRedirectBack(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
-		if resp.StatusCode != fiber.StatusFound {
+		if resp.StatusCode != http.StatusFound {
 			t.Errorf("expected 302, got %d", resp.StatusCode)
 		}
 		if loc := resp.Header.Get("Location"); loc != "/admin/websites/new" {
@@ -361,9 +350,9 @@ func TestFlashAndRedirectBack(t *testing.T) {
 	})
 
 	t.Run("RedirectBack falls back when Referer is absent", func(t *testing.T) {
-		app := fiber.New()
-		app.Post("/admin/websites", func(c *fiber.Ctx) error {
-			return newTestContext(c).FlashSuccess("Saved").RedirectBack("/admin/websites")
+		app := newTestApp(t)
+		app.Post("/admin/websites", func(c *Context) error {
+			return c.FlashSuccess("Saved").RedirectBack("/admin/websites")
 		})
 
 		req, _ := http.NewRequest("POST", "/admin/websites", nil)
@@ -372,7 +361,7 @@ func TestFlashAndRedirectBack(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
-		if resp.StatusCode != fiber.StatusFound {
+		if resp.StatusCode != http.StatusFound {
 			t.Errorf("expected 302, got %d", resp.StatusCode)
 		}
 		if loc := resp.Header.Get("Location"); loc != "/admin/websites" {
@@ -382,9 +371,9 @@ func TestFlashAndRedirectBack(t *testing.T) {
 	})
 
 	t.Run("FlashInfo sets an info flash", func(t *testing.T) {
-		app := fiber.New()
-		app.Post("/x", func(c *fiber.Ctx) error {
-			return newTestContext(c).FlashInfo("Heads up").RedirectBack("/")
+		app := newTestApp(t)
+		app.Post("/x", func(c *Context) error {
+			return c.FlashInfo("Heads up").RedirectBack("/")
 		})
 
 		req, _ := http.NewRequest("POST", "/x", nil)
@@ -404,9 +393,10 @@ func TestFlashAndRedirectBack(t *testing.T) {
 			{&testConfig{}, false},
 			{&prodConfig{}, true},
 		} {
-			app := fiber.New()
-			app.Post("/x", func(c *fiber.Ctx) error {
-				return (&Context{Ctx: c, Config: tc.cfg}).FlashSuccess("Saved").RedirectBack("/")
+			app := newTestApp(t)
+			app.Post("/x", func(c *Context) error {
+				c.Config = tc.cfg
+				return c.FlashSuccess("Saved").RedirectBack("/")
 			})
 			req, _ := http.NewRequest("POST", "/x", nil)
 

@@ -1,16 +1,13 @@
 package cartridge
 
 import (
-	"bytes"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"log/slog"
-	"net/http"
+	"os"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	html "github.com/gofiber/template/html/v2"
 	"gorm.io/gorm"
 
 	"github.com/karloscodes/cartridge/config"
@@ -65,7 +62,7 @@ type appConfig struct {
 	templatesFS   fs.FS
 	staticFS      fs.FS
 	templateFuncs template.FuncMap
-	errorHandler  fiber.ErrorHandler
+	errorHandler  ErrorHandler
 	init          func(*App)
 	routes        func(*Server)
 	jobGroups     []jobGroup
@@ -95,7 +92,7 @@ func WithTemplateFuncs(funcs template.FuncMap) AppOption {
 }
 
 // WithErrorHandler sets a custom error handler.
-func WithErrorHandler(handler fiber.ErrorHandler) AppOption {
+func WithErrorHandler(handler ErrorHandler) AppOption {
 	return func(c *appConfig) {
 		c.errorHandler = handler
 	}
@@ -257,43 +254,11 @@ func NewSSRApp(appName string, opts ...AppOption) (*App, error) {
 }
 
 // createViewsEngine creates the template engine with provided functions.
-func createViewsEngine(cfg *config.Config, templatesFS fs.FS, funcs template.FuncMap) *html.Engine {
-	var engine *html.Engine
-
+// Production reads the embedded templates; development reads web/templates
+// from disk and reloads them on every render.
+func createViewsEngine(cfg *config.Config, templatesFS fs.FS, funcs template.FuncMap) *HTMLViews {
 	if !cfg.IsDevelopment() && templatesFS != nil {
-		engine = html.NewFileSystem(http.FS(templatesFS), ".html")
-	} else {
-		engine = html.New("web/templates", ".html")
+		return NewHTMLViews(templatesFS, funcs, false)
 	}
-
-	// Add render function (needs engine access)
-	engine.AddFunc("render", func(name string, data any) (template.HTML, error) {
-		if !engine.Loaded {
-			if err := engine.Load(); err != nil {
-				return "", err
-			}
-		}
-		tpl := engine.Templates.Lookup(name)
-		if tpl == nil {
-			return "", fmt.Errorf("template %q not found", name)
-		}
-		var buf bytes.Buffer
-		if err := tpl.Execute(&buf, data); err != nil {
-			return "", err
-		}
-		return template.HTML(buf.String()), nil
-	})
-
-	// Add provided template functions
-	for name, fn := range funcs {
-		engine.AddFunc(name, fn)
-	}
-
-	// Development mode settings
-	engine.Debug(cfg.IsDevelopment())
-	if cfg.IsDevelopment() {
-		engine.Reload(true)
-	}
-
-	return engine
+	return NewHTMLViews(os.DirFS("web/templates"), funcs, true)
 }

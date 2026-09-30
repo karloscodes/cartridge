@@ -1,21 +1,13 @@
-package middleware
+package cartridge
 
 import (
 	"context"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"net/http"
+
 	"golang.org/x/sync/semaphore"
 )
-
-// Logger is a local interface for logging to avoid import cycles.
-// Any logger implementing Debug/Info/Warn/Error with key-value pairs works.
-type Logger interface {
-	Debug(msg string, keysAndValues ...any)
-	Info(msg string, keysAndValues ...any)
-	Warn(msg string, keysAndValues ...any)
-	Error(msg string, keysAndValues ...any)
-}
 
 // ConcurrencyLimiter manages concurrent read and write operations.
 // This is particularly useful for SQLite with WAL mode, which allows
@@ -24,11 +16,19 @@ type ConcurrencyLimiter struct {
 	readSem  *semaphore.Weighted
 	writeSem *semaphore.Weighted
 	timeout  time.Duration
-	logger   Logger
+	logger   limiterLogger
+}
+
+// limiterLogger is the logging the limiter needs. *slog.Logger satisfies it.
+type limiterLogger interface {
+	Debug(msg string, args ...any)
+	Info(msg string, args ...any)
+	Warn(msg string, args ...any)
+	Error(msg string, args ...any)
 }
 
 // NewConcurrencyLimiter creates a limiter with the provided thresholds.
-func NewConcurrencyLimiter(readLimit, writeLimit int64, timeout time.Duration, logger Logger) *ConcurrencyLimiter {
+func NewConcurrencyLimiter(readLimit, writeLimit int64, timeout time.Duration, logger limiterLogger) *ConcurrencyLimiter {
 	return &ConcurrencyLimiter{
 		readSem:  semaphore.NewWeighted(readLimit),
 		writeSem: semaphore.NewWeighted(writeLimit),
@@ -59,10 +59,10 @@ func (cl *ConcurrencyLimiter) ReleaseWrite() {
 
 // WriteConcurrencyLimitMiddleware limits concurrent write operations to protect database integrity.
 // For SQLite with WAL mode, this prevents write contention while allowing reasonable concurrency.
-func WriteConcurrencyLimitMiddleware(limiter *ConcurrencyLimiter) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+func WriteConcurrencyLimitMiddleware(limiter *ConcurrencyLimiter) HandlerFunc {
+	return func(c *Context) error {
 		// Skip for OPTIONS (CORS preflight)
-		if c.Method() == fiber.MethodOptions {
+		if c.Method() == http.MethodOptions {
 			return c.Next()
 		}
 
@@ -72,7 +72,7 @@ func WriteConcurrencyLimitMiddleware(limiter *ConcurrencyLimiter) fiber.Handler 
 				"path", c.Path(),
 				"error", err,
 			)
-			return c.Status(fiber.StatusRequestTimeout).JSON(fiber.Map{
+			return c.Status(http.StatusRequestTimeout).JSON(Map{
 				"error":   "Request Timeout",
 				"message": "Request was canceled",
 			})
@@ -95,14 +95,14 @@ func WriteConcurrencyLimitMiddleware(limiter *ConcurrencyLimiter) fiber.Handler 
 
 			// Return appropriate error based on context
 			if ctx.Err() == context.DeadlineExceeded {
-				return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				return c.Status(http.StatusServiceUnavailable).JSON(Map{
 					"error":       "Service Unavailable",
 					"message":     "Server is at capacity processing writes, please retry",
 					"retry_after": "1",
 				})
 			}
 
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			return c.Status(http.StatusServiceUnavailable).JSON(Map{
 				"error":   "Service Unavailable",
 				"message": "Write operation could not be queued",
 			})
