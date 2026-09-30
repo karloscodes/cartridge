@@ -322,8 +322,10 @@ func (s *Server) registerRoute(method, path string, handler HandlerFunc, cfgs ..
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.buildOnce.Do(s.build)
 
-	// Like Fiber, "/admin/" matches the route "/admin".
-	if p := r.URL.Path; len(p) > 1 && strings.HasSuffix(p, "/") {
+	// Like Fiber, "/admin/" matches the route "/admin". Trim the slash only
+	// when no route but the fallback matches, so "/assets/" still reaches the
+	// "/assets/" subtree instead of redirecting to itself.
+	if p := r.URL.Path; len(p) > 1 && strings.HasSuffix(p, "/") && s.onlyFallbackMatches(r) {
 		r.URL.Path = strings.TrimRight(p, "/")
 		if r.URL.Path == "" {
 			r.URL.Path = "/"
@@ -331,6 +333,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawPath = ""
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+// fallbackPattern is the pattern of the 404 or catch-all route.
+const fallbackPattern = "/"
+
+// onlyFallbackMatches reports whether no route but the fallback matches r.
+func (s *Server) onlyFallbackMatches(r *http.Request) bool {
+	_, pattern := s.mux.Handler(r)
+	return pattern == fallbackPattern
 }
 
 // Test serves req in memory and returns the response, like Fiber's app.Test:
@@ -372,11 +383,11 @@ func (s *Server) build() {
 	}
 
 	if s.catchAll != "" {
-		mux.Handle("/", s.chain(nil, func(c *Context) error {
+		mux.Handle(fallbackPattern, s.chain(nil, func(c *Context) error {
 			return c.Redirect(s.catchAll, http.StatusTemporaryRedirect)
 		}))
 	} else {
-		mux.Handle("/", s.chain(nil, func(c *Context) error {
+		mux.Handle(fallbackPattern, s.chain(nil, func(c *Context) error {
 			return NewError(http.StatusNotFound, "Cannot "+c.Method()+" "+c.Path())
 		}))
 	}

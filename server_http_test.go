@@ -56,6 +56,17 @@ func TestRouting(t *testing.T) {
 		}
 	})
 
+	t.Run("a wildcard route matches its bare prefix without a redirect", func(t *testing.T) {
+		app := newTestApp(t)
+		app.Get("/files/*", func(c *Context) error { return c.SendString("files:" + c.Params("*")) })
+
+		resp, _ := app.Test(httptest.NewRequest("GET", "/files/", nil))
+
+		if got := body(t, resp); resp.StatusCode != http.StatusOK || got != "files:" {
+			t.Errorf("got %d %q, want 200 %q", resp.StatusCode, got, "files:")
+		}
+	})
+
 	t.Run("the root route matches only the root", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Get("/", func(c *Context) error { return c.SendString("home") })
@@ -443,6 +454,14 @@ func TestStaticAssets(t *testing.T) {
 
 		if resp.StatusCode != http.StatusOK || body(t, resp) != "body{}" {
 			t.Errorf("status = %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("the prefix with a slash is a 404, not a redirect", func(t *testing.T) {
+		resp, _ := newApp().Test(httptest.NewRequest("GET", "/assets/", nil))
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("status = %d to %q, want 404", resp.StatusCode, resp.Header.Get("Location"))
 		}
 	})
 
