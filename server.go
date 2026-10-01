@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
@@ -151,6 +152,7 @@ type Server struct {
 
 	buildOnce  sync.Once
 	mux        *http.ServeMux
+	notFound   http.Handler
 	mu         sync.Mutex
 	httpServer *http.Server
 }
@@ -332,6 +334,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		r.URL.RawPath = ""
 	}
+	// ServeMux auto-redirects an unclean path ("//x", "/a/../b", "/a//b") to
+	// its cleaned form with a 307. Fiber 404'd these, so match that: serve the
+	// not-found handler instead of leaking a redirect before the middleware runs.
+	// Compare against the cleaned path, but allow one trailing slash: that is
+	// matched separately (Fiber let "/admin/" hit "/admin", "/files/" hit the
+	// "/files/*" subtree). "//x", "/a/../b", "/a//b" still 404.
+	if p := strings.TrimSuffix(r.URL.Path, "/"); p != "" && p != path.Clean(p) {
+		s.notFound.ServeHTTP(w, r)
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -382,16 +394,18 @@ func (s *Server) build() {
 		}
 	}
 
+	notFound := s.chain(nil, func(c *Context) error {
+		return NewError(http.StatusNotFound, "Cannot "+c.Method()+" "+c.Path())
+	})
 	if s.catchAll != "" {
 		mux.Handle(fallbackPattern, s.chain(nil, func(c *Context) error {
 			return c.Redirect(s.catchAll, http.StatusTemporaryRedirect)
 		}))
 	} else {
-		mux.Handle(fallbackPattern, s.chain(nil, func(c *Context) error {
-			return NewError(http.StatusNotFound, "Cannot "+c.Method()+" "+c.Path())
-		}))
+		mux.Handle(fallbackPattern, notFound)
 	}
 
+	s.notFound = notFound
 	s.mux = mux
 }
 

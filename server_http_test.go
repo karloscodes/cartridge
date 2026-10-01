@@ -45,6 +45,21 @@ func TestRouting(t *testing.T) {
 		}
 	})
 
+	t.Run("returns 404 for an unclean path instead of redirecting", func(t *testing.T) {
+		app := newTestApp(t)
+		app.Get("/login", func(c *Context) error { return c.SendString("login") })
+		app.Get("/admin", func(c *Context) error { return c.SendString("admin") })
+
+		for _, path := range []string{"//evil.example/", "//login", "/admin/../login", "/./admin", "/a//b"} {
+			req := httptest.NewRequest("GET", "http://x"+path, nil)
+			req.URL.Path = path // keep the unclean path; httptest may clean the URL
+			resp, _ := app.Test(req)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("%s = %d, want 404 (no auto-redirect, like Fiber)", path, resp.StatusCode)
+			}
+		}
+	})
+
 	t.Run("matches a path with a trailing slash", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Get("/admin", func(c *Context) error { return c.SendString("admin") })
