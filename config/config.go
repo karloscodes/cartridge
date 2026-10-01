@@ -6,9 +6,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
-
-	"github.com/spf13/viper"
 )
 
 // Environment constants.
@@ -34,11 +34,11 @@ type Config struct {
 	Debug bool `mapstructure:"debug"`
 
 	// Logging configuration.
-	LogLevel         string `mapstructure:"loglevel"`
-	LogsDirectory    string `mapstructure:"logsdirectory"`
-	LogsMaxSizeMB    int    `mapstructure:"logsmaxsizeinmb"`
-	LogsMaxBackups   int    `mapstructure:"logsmaxbackups"`
-	LogsMaxAgeDays   int    `mapstructure:"logsmaxageindays"`
+	LogLevel       string `mapstructure:"loglevel"`
+	LogsDirectory  string `mapstructure:"logsdirectory"`
+	LogsMaxSizeMB  int    `mapstructure:"logsmaxsizeinmb"`
+	LogsMaxBackups int    `mapstructure:"logsmaxbackups"`
+	LogsMaxAgeDays int    `mapstructure:"logsmaxageindays"`
 
 	// Session configuration.
 	SessionSecret  string `mapstructure:"sessionsecret"`
@@ -55,12 +55,25 @@ type Config struct {
 	envPrefix string
 }
 
+// envVars maps the keys that read a prefixed env var to its suffix, for
+// example "port" reads {PREFIX}_PORT.
+var envVars = map[string]string{
+	"environment":   "_ENV",
+	"port":          "_PORT",
+	"sessionsecret": "_SESSION_SECRET",
+	"loglevel":      "_LOG_LEVEL",
+	"datadirectory": "_DATA_DIR",
+	"debug":         "_DEBUG",
+}
+
 // Load creates a new Config for the given app name.
 // It reads from environment variables prefixed with the uppercase app name.
 // Example: Load("formlander") reads FORMLANDER_ENV, FORMLANDER_PORT, etc.
+//
+// A .env file in the working directory can set any field by its key, in
+// any case, for example PORT=3000 or SESSIONTIMEOUTSECONDS=60. A prefixed
+// env var wins over the .env file. An empty env var counts as unset.
 func Load(appName string) (*Config, error) {
-	v := viper.New()
-
 	// Normalize app name
 	appName = strings.ToLower(strings.TrimSpace(appName))
 	if appName == "" {
@@ -68,22 +81,20 @@ func Load(appName string) (*Config, error) {
 	}
 	prefix := strings.ToUpper(appName)
 
-	// Read .env file if present
-	v.SetConfigName(".env")
-	v.SetConfigType("env")
-	v.AddConfigPath(".")
-	_ = v.ReadInConfig()
+	cfg := defaults(appName)
+	cfg.envPrefix = prefix
 
-	// Set defaults
-	setDefaults(v, appName)
-
-	// Bind environment variables
-	v.SetEnvPrefix(prefix)
-	bindEnvVars(v, prefix)
-
-	cfg := &Config{envPrefix: prefix}
-	if err := v.Unmarshal(cfg); err != nil {
-		return nil, fmt.Errorf("config: unmarshal: %w", err)
+	values := map[string]string{}
+	for key, val := range readDotEnv(".env") {
+		values[strings.ToLower(key)] = val
+	}
+	for key, suffix := range envVars {
+		if val := os.Getenv(prefix + suffix); val != "" {
+			values[key] = val
+		}
+	}
+	if err := cfg.set(values); err != nil {
+		return nil, err
 	}
 
 	// Resolve database path
@@ -100,35 +111,57 @@ func Load(appName string) (*Config, error) {
 	return cfg, nil
 }
 
-func setDefaults(v *viper.Viper, appName string) {
-	v.SetDefault("appname", appName)
-	v.SetDefault("environment", Production)
-	v.SetDefault("port", "8080")
-	v.SetDefault("debug", false)
-
-	v.SetDefault("loglevel", "error")
-	v.SetDefault("logsdirectory", "storage/logs")
-	v.SetDefault("logsmaxsizeinmb", 20)
-	v.SetDefault("logsmaxbackups", 10)
-	v.SetDefault("logsmaxageindays", 30)
-
-	v.SetDefault("sessiontimeoutseconds", 604800) // 1 week
-
-	v.SetDefault("datadirectory", "storage")
-	v.SetDefault("databasefilename", appName+".db")
-	v.SetDefault("databasemaxopenconns", 0)
-	v.SetDefault("databasemaxidleconns", 0)
+func defaults(appName string) *Config {
+	return &Config{
+		AppName:          appName,
+		Environment:      Production,
+		Port:             "8080",
+		LogLevel:         "error",
+		LogsDirectory:    "storage/logs",
+		LogsMaxSizeMB:    20,
+		LogsMaxBackups:   10,
+		LogsMaxAgeDays:   30,
+		SessionTimeout:   604800, // 1 week
+		DataDirectory:    "storage",
+		DatabaseFilename: appName + ".db",
+	}
 }
 
-func bindEnvVars(v *viper.Viper, prefix string) {
-	// Core env vars: {PREFIX}_ENV, {PREFIX}_PORT, etc.
-	// BindEnv errors are ignored - these bindings are simple key mappings
-	_ = v.BindEnv("environment", prefix+"_ENV")
-	_ = v.BindEnv("port", prefix+"_PORT")
-	_ = v.BindEnv("sessionsecret", prefix+"_SESSION_SECRET")
-	_ = v.BindEnv("loglevel", prefix+"_LOG_LEVEL")
-	_ = v.BindEnv("datadirectory", prefix+"_DATA_DIR")
-	_ = v.BindEnv("debug", prefix+"_DEBUG")
+// set writes values to the fields named by their mapstructure tags. An
+// empty int is 0 and an empty bool is false.
+func (c *Config) set(values map[string]string) error {
+	v := reflect.ValueOf(c).Elem()
+	for _, field := range reflect.VisibleFields(v.Type()) {
+		key := field.Tag.Get("mapstructure")
+		raw, ok := values[key]
+		if !ok || key == "-" {
+			continue
+		}
+		f := v.FieldByIndex(field.Index)
+		switch f.Kind() {
+		case reflect.String:
+			f.SetString(raw)
+		case reflect.Bool:
+			b := false
+			if raw != "" {
+				var err error
+				if b, err = strconv.ParseBool(raw); err != nil {
+					return fmt.Errorf("config: %s: %q is not a bool", key, raw)
+				}
+			}
+			f.SetBool(b)
+		case reflect.Int:
+			var n int64
+			if raw != "" {
+				var err error
+				if n, err = strconv.ParseInt(raw, 0, 64); err != nil {
+					return fmt.Errorf("config: %s: %q is not an integer", key, raw)
+				}
+			}
+			f.SetInt(n)
+		}
+	}
+	return nil
 }
 
 func (c *Config) validate() error {

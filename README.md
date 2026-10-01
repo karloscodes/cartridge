@@ -130,7 +130,7 @@ MYAPP_ENV=development go run .
 
 ## Configuration
 
-`config.Load("myapp")` reads env vars with the upper-cased app name as the prefix. It also reads a `.env` file in the working directory.
+`config.Load("myapp")` reads env vars with the upper-cased app name as the prefix. It also reads a `.env` file in the working directory. In `.env`, use the field keys without the prefix, in any case: `ENVIRONMENT=development`, `PORT=3000`, `SESSIONTIMEOUTSECONDS=60`. An env var wins over `.env`.
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -389,6 +389,7 @@ Other changes:
 - Without templates in `WithAssets`, `NewApp` sets no views engine. Before, it read `web/templates` from disk.
 - `Context.IP()` skips proxy header entries it cannot read, and reads entries with a port or quotes. When no entry qualifies, it returns the peer.
 - `Run` returns the error when the server fails after it binds the port, and stops the workers.
+- `config.Load` no longer uses viper. The env vars, the `.env` format, and the defaults stay the same. Cartridge now has 31 modules in `go list -m all` instead of 42.
 
 ## Contributing
 
