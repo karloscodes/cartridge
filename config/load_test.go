@@ -291,6 +291,13 @@ SESSIONSECRET=from-file
 			{"an env var without quotes", "PORT=${PINAPP_HOME_PROBE}\n", "/home/probe"},
 			{"no expansion in single quotes", "PORT='$PINAPP_HOME_PROBE'\n", "$PINAPP_HOME_PROBE"},
 			{"a malformed line ignores the whole file", "garbage line\nPORT=1\n", "8080"},
+			{"an unclosed quote ignores the whole file", "PORT=\"4000\n", "8080"},
+			{"the env wins over an earlier .env key", "PINAPP_HOME_PROBE=x\nPORT=$PINAPP_HOME_PROBE\n", "/home/probe"},
+			{"an escaped dollar", "PORT=\\$PINAPP_HOME_PROBE\n", "$PINAPP_HOME_PROBE"},
+			{"lowercase names do not expand", "a=x\nPORT=${a}\n", "${a}"},
+			{"CRLF line ends", "PORT=4000\r\nDEBUG=true\r\n", "4000"},
+			{"a double-quoted value over two lines", "PORT=\"40\n00\"\n", "40\n00"},
+			{"a UTF-8 byte order mark", "\xEF\xBB\xBFPORT=4000\n", "4000"},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
