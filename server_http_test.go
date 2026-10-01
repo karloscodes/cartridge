@@ -172,6 +172,38 @@ func TestContextResponses(t *testing.T) {
 		}
 	})
 
+	t.Run("Inertia redirect after PUT, PATCH or DELETE is a 303", func(t *testing.T) {
+		app := newTestApp(t)
+		for _, m := range []string{"PUT", "PATCH", "DELETE"} {
+			app.registerRoute(m, "/items/:id", func(c *Context) error { return c.Redirect("/items") })
+		}
+		app.Post("/items", func(c *Context) error { return c.Redirect("/items") })
+		send := func(method string, inertia bool) int {
+			path := "/items/1"
+			if method == "POST" {
+				path = "/items"
+			}
+			req := httptest.NewRequest(method, path, nil)
+			if inertia {
+				req.Header.Set("X-Inertia", "true")
+			}
+			resp, _ := app.Test(req)
+			return resp.StatusCode
+		}
+
+		for _, m := range []string{"PUT", "PATCH", "DELETE"} {
+			if got := send(m, true); got != http.StatusSeeOther {
+				t.Errorf("Inertia %s redirect = %d, want 303", m, got)
+			}
+		}
+		if got := send("DELETE", false); got != http.StatusFound {
+			t.Errorf("plain DELETE redirect = %d, want 302", got)
+		}
+		if got := send("POST", true); got != http.StatusFound {
+			t.Errorf("Inertia POST redirect = %d, want 302", got)
+		}
+	})
+
 	t.Run("Query and Cookies fall back to a default", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Get("/x", func(c *Context) error {

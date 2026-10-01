@@ -31,7 +31,16 @@ var (
 	devMode      bool                 // When true, re-read manifest on every request
 	pageTitle    string = "Fusionaly" // Default page title
 	manifestData []byte               // Embedded manifest data (used when filesystem not available)
+	scriptPage   bool                 // Send the first page in a JSON script element (Inertia v3)
 )
+
+// SetScriptElement chooses how the first page reaches the client. Inertia v3
+// reads it from <script data-page="app" type="application/json">; v2 reads
+// the data-page attribute on the root div, which stays the default so apps on
+// the v2 client keep working.
+func SetScriptElement(enabled bool) {
+	scriptPage = enabled
+}
 
 // SetDevMode enables or disables development mode.
 // In dev mode, the manifest is re-read on every request to pick up
@@ -165,6 +174,7 @@ func Render(w http.ResponseWriter, r *http.Request, component string, props map[
 	if r.Header.Get("X-Inertia") != "" && r.Method == http.MethodGet {
 		if v := r.Header.Get("X-Inertia-Version"); v != "" && v != assetVersion {
 			w.Header().Set("X-Inertia-Location", fullURL)
+			w.Header().Set("X-Inertia-Version", assetVersion)
 			w.WriteHeader(http.StatusConflict)
 			return nil
 		}
@@ -175,19 +185,31 @@ func Render(w http.ResponseWriter, r *http.Request, component string, props map[
 		props["flash"] = flash.GetFlash(w, r)
 	}
 
+	// The protocol expects an errors object on every page.
+	if _, exists := props["errors"]; !exists {
+		props["errors"] = map[string]interface{}{}
+	}
+
+	// HTML and JSON answers share a URL; caches must keep them apart.
+	w.Header().Set("Vary", "X-Inertia")
+
 	// Check if this is an Inertia request (subsequent navigation)
 	if r.Header.Get("X-Inertia") != "" {
 		// Set required Inertia response headers
 		w.Header().Set("X-Inertia", "true")
-		w.Header().Set("Vary", "X-Inertia")
 
 		// Check for partial reload (deferred props request)
 		partialData := r.Header.Get("X-Inertia-Partial-Data")
+		partialExcept := r.Header.Get("X-Inertia-Partial-Except")
 		partialComponent := r.Header.Get("X-Inertia-Partial-Component")
 
-		// If this is a partial reload request, only return requested props
-		if partialData != "" && (partialComponent == "" || partialComponent == component) {
+		// A partial reload returns only the requested props, minus the excluded ones.
+		if (partialData != "" || partialExcept != "") && (partialComponent == "" || partialComponent == component) {
 			resolvedProps := resolveProps(props, partialData, partialComponent, component)
+			for _, key := range strings.Split(partialExcept, ",") {
+				delete(resolvedProps, strings.TrimSpace(key))
+			}
+			resolvedProps["errors"] = props["errors"]
 			return writeJSON(w, map[string]interface{}{
 				"component": component,
 				"props":     resolvedProps,
@@ -251,7 +273,15 @@ func Render(w http.ResponseWriter, r *http.Request, component string, props map[
 		cssLink = `<link rel="stylesheet" href="` + cssFile + `">`
 	}
 
-	// Use manifest-resolved asset paths and HTML-escape the JSON to prevent attribute injection
+	// v3 reads the page from a JSON script element. json.Marshal already
+	// escapes < > &, and escaping / as well keeps "</script>" out of the body.
+	// v2 reads the HTML-escaped data-page attribute on the root div.
+	root := `<div id="app" data-page='` + html.EscapeString(string(pageJSON)) + `'></div>`
+	if scriptPage {
+		root = `<script data-page="app" type="application/json">` +
+			strings.ReplaceAll(string(pageJSON), "/", `\/`) + `</script><div id="app"></div>`
+	}
+
 	htmlContent := `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -262,7 +292,7 @@ func Render(w http.ResponseWriter, r *http.Request, component string, props map[
     ` + cssLink + `
 </head>
 <body>
-    <div id="app" data-page='` + html.EscapeString(string(pageJSON)) + `'></div>
+    ` + root + `
     <script type="module" src="` + jsFile + `"></script>
 </body>
 </html>`

@@ -387,6 +387,14 @@ func (ctx *Context) Redirect(location string, status ...int) error {
 	if len(status) > 0 {
 		ctx.status = status[0]
 	}
+	// Inertia needs a 303 after PUT, PATCH or DELETE: a 302 lets the browser
+	// repeat the original method on the redirect target.
+	if ctx.status == http.StatusFound && ctx.Get("X-Inertia") != "" {
+		switch ctx.Method() {
+		case http.MethodPut, http.MethodPatch, http.MethodDelete:
+			ctx.status = http.StatusSeeOther
+		}
+	}
 	ctx.w.Header().Set("Location", location)
 	ctx.writeHeader()
 	return nil

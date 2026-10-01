@@ -2,8 +2,10 @@ package inertia
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -122,4 +124,122 @@ func TestVersionFor(t *testing.T) {
 	if a != versionFor("/assets/inertia-abc.js", "/assets/inertia-abc.css") {
 		t.Error("expected the same build to give the same version")
 	}
+}
+
+// render serves req with the given props and returns the response and body.
+func render(t *testing.T, req *http.Request, props map[string]interface{}) (*http.Response, string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	if err := RenderPage(rec, req, "Page", props); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	return resp, string(body)
+}
+
+func TestInitialPageMarkup(t *testing.T) {
+	hostile := `</script><script>alert(1)</script>`
+
+	t.Run("by default the page goes in the data-page attribute (Inertia v2 clients)", func(t *testing.T) {
+		_, body := render(t, httptest.NewRequest("GET", "/x", nil), map[string]interface{}{"name": "ok"})
+
+		if !strings.Contains(body, `<div id="app" data-page='`) {
+			t.Errorf("expected the data-page attribute, got:\n%s", body)
+		}
+		if strings.Contains(body, `type="application/json"`) {
+			t.Error("did not expect the v3 page script by default")
+		}
+	})
+
+	t.Run("with the script element, the page goes in a JSON script before the root div (Inertia v3)", func(t *testing.T) {
+		SetScriptElement(true)
+		defer SetScriptElement(false)
+
+		_, body := render(t, httptest.NewRequest("GET", "/x", nil), map[string]interface{}{"name": hostile, "path": "/a/b"})
+
+		open := `<script data-page="app" type="application/json">`
+		start := strings.Index(body, open)
+		end := strings.Index(body, `</script><div id="app"></div>`)
+		if start < 0 || end < start {
+			t.Fatalf("expected the page script followed by the root div, got:\n%s", body)
+		}
+		raw := body[start+len(open) : end]
+		if strings.Contains(raw, "</") {
+			t.Errorf("the script body can close the tag early: %s", raw)
+		}
+		if strings.Contains(raw, "&#") || strings.Contains(raw, "&lt;") {
+			t.Errorf("the script body must not use HTML entities: %s", raw)
+		}
+		if !strings.Contains(raw, `\/a\/b`) {
+			t.Errorf("expected every / escaped as \\/: %s", raw)
+		}
+		var page struct {
+			Component string
+			Props     map[string]interface{}
+		}
+		if err := json.Unmarshal([]byte(raw), &page); err != nil {
+			t.Fatalf("the script body is not valid JSON: %v", err)
+		}
+		if page.Props["name"] != hostile || page.Props["path"] != "/a/b" {
+			t.Errorf("props did not round-trip: %v", page.Props)
+		}
+	})
+}
+
+func TestPageProtocol(t *testing.T) {
+	inertiaReq := func(method, path string, headers map[string]string) *http.Request {
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("X-Inertia", "true")
+		req.Header.Set("X-Inertia-Version", Version())
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		return req
+	}
+	decode := func(t *testing.T, body string) map[string]interface{} {
+		t.Helper()
+		var page struct{ Props map[string]interface{} }
+		if err := json.Unmarshal([]byte(body), &page); err != nil {
+			t.Fatalf("decode: %v (%s)", err, body)
+		}
+		return page.Props
+	}
+
+	t.Run("props always carry an errors object", func(t *testing.T) {
+		_, body := render(t, inertiaReq("GET", "/x", nil), map[string]interface{}{"a": 1})
+
+		errs, ok := decode(t, body)["errors"].(map[string]interface{})
+		if !ok || len(errs) != 0 {
+			t.Errorf("errors = %#v, want {}", decode(t, body)["errors"])
+		}
+	})
+
+	t.Run("a stale version gets 409 with the current version", func(t *testing.T) {
+		resp, _ := render(t, inertiaReq("GET", "/x", map[string]string{"X-Inertia-Version": "stale"}), map[string]interface{}{})
+
+		if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Inertia-Version") != Version() {
+			t.Errorf("got %d, X-Inertia-Version=%q, want 409 and %q", resp.StatusCode, resp.Header.Get("X-Inertia-Version"), Version())
+		}
+	})
+
+	t.Run("a partial reload can exclude props", func(t *testing.T) {
+		_, body := render(t, inertiaReq("GET", "/x", map[string]string{
+			"X-Inertia-Partial-Component": "Page",
+			"X-Inertia-Partial-Except":    "b",
+		}), map[string]interface{}{"a": 1, "b": 2})
+
+		props := decode(t, body)
+		if props["a"] == nil || props["b"] != nil {
+			t.Errorf("props = %v, want a without b", props)
+		}
+	})
+
+	t.Run("the HTML response varies on X-Inertia", func(t *testing.T) {
+		resp, _ := render(t, httptest.NewRequest("GET", "/x", nil), map[string]interface{}{})
+
+		if resp.Header.Get("Vary") != "X-Inertia" {
+			t.Errorf("Vary = %q, want X-Inertia", resp.Header.Get("Vary"))
+		}
+	})
 }
