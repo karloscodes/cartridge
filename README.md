@@ -116,9 +116,10 @@ MYAPP_ENV=development go run .
 
 ### What you get by default
 
-- Request ID, panic recovery, security headers (Helmet), and compression.
+- Request ID, panic recovery, security headers, and compression. Set `ServerConfig.ContentSecurityPolicy` to send a CSP. Production sends HSTS over https.
 - Request logging. Development logs text to stdout. Production logs JSON to stdout and to a rotated file in `storage/logs`.
-- CSRF protection on every route through the `Sec-Fetch-Site` header. No tokens needed.
+- CSRF protection on every POST, PUT, PATCH, and DELETE route through the `Sec-Fetch-Site` header. No tokens needed. GET, HEAD, and OPTIONS are never checked, so keep them free of side effects. This is CSRF protection, not client authentication: curl can send any header.
+- Error responses that show the client only the status text, or the `Message` of a `cartridge.NewError` with a code below 500. The full error goes to the log.
 - SQLite in WAL mode with `busy_timeout` and immediate transactions.
 - Development reads templates and static files from `web/` on disk and reloads templates on each request. Other environments use the embedded files.
 
@@ -130,7 +131,7 @@ MYAPP_ENV=development go run .
 |---|---|---|
 | `MYAPP_ENV` | `production` | `development`, `production`, or `test` |
 | `MYAPP_PORT` | `8080` | |
-| `MYAPP_SESSION_SECRET` | none | Required in production. Falls back to `PRIVATE_KEY`. |
+| `MYAPP_SESSION_SECRET` | none | Required in production, at least 32 bytes. Falls back to `PRIVATE_KEY`. |
 | `MYAPP_LOG_LEVEL` | `error` (`info` in dev/test) | `debug`, `info`, `warn`, `error` |
 | `MYAPP_DATA_DIR` | `storage` | Holds the database file |
 | `MYAPP_DEBUG` | `false` | |
@@ -152,9 +153,10 @@ Every handler and middleware has one signature: `func(*cartridge.Context) error`
 |---|---|
 | `ctx.DB()` | GORM session bound to the request context |
 | `ctx.Input("key")` | One value from form, JSON body, route param, or query, in that order |
-| `ctx.Bind(&dst)` | Decodes the body (JSON, form, multipart), then overlays params and query |
+| `ctx.Bind(&dst)` | Decodes the body only (JSON, form, multipart). Form fields need a `form` tag. Returns a 400, 413, or 415 `*Error` |
+| `ctx.QueryParser(&dst)`, `ctx.ParamsParser(&dst)` | Decode the query or route params. Fields need a `query` or `params` tag |
 | `ctx.FlashSuccess/FlashError/FlashInfo(msg)` | Sets a one-time flash cookie. Returns `ctx` for chaining. |
-| `ctx.RedirectBack("/fallback")` | 302 to the `Referer`, or to the fallback |
+| `ctx.RedirectBack("/fallback")` | 302 to the `Referer` path on this host, or to the fallback |
 | `ctx.Inertia("Page", props)` | Renders an Inertia page and injects the flash message |
 | `ctx.Logger`, `ctx.Config`, `ctx.Session` | App dependencies |
 
@@ -179,9 +181,30 @@ s.Post("/api/events", ingest, &cartridge.RouteConfig{
 
 `Server` is an `http.Handler`. `s.Use(mw)` adds middleware to every route. A CORS route without its own OPTIONS route gets one that answers browser preflight requests. Route paths use `:param` and a trailing `*`, as in v0.
 
+### Behind a proxy
+
+`ctx.IP()` and `ctx.Protocol()` ignore proxy headers unless the direct peer is a trusted proxy. Name your proxies:
+
+```go
+cfg.ProxyHeader = "X-Forwarded-For"
+cfg.TrustedProxies = []string{"10.0.0.0/8", "127.0.0.1"}
+```
+
+`ctx.IP()` reads the header from right to left and returns the first address that is not a trusted proxy. Without `TrustedProxies`, every client behind the proxy shares the proxy's IP, and `ctx.BaseURL()` says `http`.
+
+### Streams and WriteTimeout
+
+`ServerConfig.WriteTimeout` (30s by default) cuts off long responses. A stream (server-sent events, a large download) lifts it per request:
+
+```go
+http.NewResponseController(ctx.Response()).SetWriteDeadline(time.Time{})
+```
+
 ## Sessions
 
-`WithSession(loginPath)` turns on signed cookie sessions (HMAC-SHA256). The cookie is `<app>_session`, and it is `Secure` in production.
+`WithSession(loginPath)` turns on signed cookie sessions (HMAC-SHA256). The cookie is `<app>_session`, and it is `Secure` in production. The secret must be at least 32 bytes.
+
+Built by hand, `cartridge.NewSessionManager(cartridge.SessionConfig{...})` returns an error for a short secret. Its cookie is `Secure` unless you set `Insecure: true` for local http development.
 
 ```go
 cartridge.WithSession("/login"),
@@ -201,19 +224,19 @@ func login(ctx *cartridge.Context) error {
 	if !ok {
 		return ctx.FlashError("Wrong email or password").RedirectBack("/login")
 	}
-	if err := ctx.Session.SetSession(ctx.Ctx, user.ID); err != nil {
+	if err := ctx.Session.SetSession(ctx, user.ID); err != nil {
 		return err
 	}
 	return ctx.Redirect("/dashboard")
 }
 
 func dashboard(ctx *cartridge.Context) error {
-	userID, _ := ctx.Session.GetUserID(ctx.Ctx)
+	userID, _ := ctx.Session.GetUserID(ctx)
 	// ...
 }
 ```
 
-The middleware redirects anonymous users to the login path. HTMX requests get a `401` instead. Call `ctx.Session.ClearSession(ctx.Ctx)` to log out. Use `crypto.GeneratePasswordHash` and `crypto.VerifyPassword` (bcrypt) for passwords.
+The middleware redirects anonymous users to the login path. HTMX requests get a `401` instead. Call `ctx.Session.ClearSession(ctx)` to log out. Use `crypto.GeneratePasswordHash` and `crypto.VerifyPassword` (bcrypt) for passwords.
 
 ## Background jobs
 
@@ -316,8 +339,9 @@ In development, Cartridge re-reads the Vite manifest on each request. Other opti
 
 | Package | Contents |
 |---|---|
+| `cartridge` | `SecFetchSiteMiddleware`, `SecurityHeaders`, `Recover`, `RequestID`, `RequestLogger`, `Compress`, `CORS`, write concurrency limiter |
 | `config` | Env-based config loader used by `NewSSRApp` |
-| `middleware` | `RateLimiter`, `SecFetchSiteMiddleware`, `Helmet`, `Recover`, `RequestLogger`, concurrency limiter |
+| `middleware` | `RateLimiter` |
 | `cache` | Generic TTL cache (`NewCache`), GORM-backed cache, memory and database `Store`s |
 | `crypto` | AES-GCM `Encrypt`/`Decrypt`, bcrypt password helpers |
 | `flash` | Low-level flash cookie helpers behind `ctx.Flash*` |
@@ -327,18 +351,18 @@ In development, Cartridge re-reads the Vite manifest on each request. Other opti
 
 ## Testing your app
 
-`testsupport` starts a server on an in-memory SQLite database, with no mocks:
+`testsupport` starts a server on an in-memory SQLite database, with no mocks. Its requests send `Sec-Fetch-Site: same-origin`, as a browser does, so they pass CSRF protection. It has no views engine, so test handlers that do not call `ctx.Render`:
 
 ```go
-func TestHome(t *testing.T) {
+func TestCreateNote(t *testing.T) {
 	ts := testsupport.NewTestServer(t, testsupport.TestServerOptions{
 		Models:         []any{&Note{}},
-		RouteMountFunc: func(s *cartridge.Server) { s.Get("/", home) },
+		RouteMountFunc: func(s *cartridge.Server) { s.Post("/notes", createNote) },
 	})
 
-	resp := ts.Get("/")
+	resp := ts.PostForm("/notes", url.Values{"body": {"Hello"}})
 
-	assert.Equal(t, 200, resp.StatusCode)
+	assert.Equal(t, http.StatusFound, resp.StatusCode)
 }
 ```
 
