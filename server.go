@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -545,37 +546,62 @@ func (s *Server) GetDBManager() DBManager {
 	return s.cfg.DBManager
 }
 
-// Start starts the HTTP server on the configured port. It returns nil after
-// a graceful Shutdown.
+// Start starts the HTTP server on the configured port. It blocks, and
+// returns nil after a graceful Shutdown.
 func (s *Server) Start() error {
+	ln, err := s.listen()
+	if err != nil {
+		return err
+	}
+	return s.serve(ln)
+}
+
+// StartAsync binds the port, then serves in a goroutine. It returns the
+// bind error, for example when the port is in use.
+func (s *Server) StartAsync() error {
+	ln, err := s.listen()
+	if err != nil {
+		return err
+	}
+	go func() {
+		if err := s.serve(ln); err != nil {
+			s.cfg.Logger.Error("Server error", "error", err)
+		}
+	}()
+	return nil
+}
+
+// listen builds the http.Server and binds the configured port.
+func (s *Server) listen() (net.Listener, error) {
 	s.buildOnce.Do(s.build)
 
 	port := s.cfg.Config.GetPort()
+	ln, err := net.Listen("tcp", ":"+port)
+	if err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	s.httpServer = &http.Server{
-		Addr:              ":" + port,
 		Handler:           s,
 		ReadTimeout:       s.cfg.ReadTimeout,
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      s.cfg.WriteTimeout,
 	}
-	srv := s.httpServer
 	s.mu.Unlock()
 
 	s.cfg.Logger.Info("Server started and ready to accept requests", "port", port)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
+	return ln, nil
 }
 
-// StartAsync starts the server in a goroutine.
-func (s *Server) StartAsync() error {
-	go func() {
-		if err := s.Start(); err != nil {
-			s.cfg.Logger.Error("Server error", "error", err)
-		}
-	}()
+// serve accepts connections on ln until Shutdown.
+func (s *Server) serve(ln net.Listener) error {
+	s.mu.Lock()
+	srv := s.httpServer
+	s.mu.Unlock()
+	if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
 	return nil
 }
 

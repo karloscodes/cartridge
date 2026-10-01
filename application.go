@@ -2,7 +2,6 @@ package cartridge
 
 import (
 	"context"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -98,36 +97,48 @@ func (a *Application) AddWorker(w BackgroundWorker) {
 	a.workers = append(a.workers, w)
 }
 
-// Start launches background workers and the HTTP server.
+// Start launches background workers and the HTTP server. It blocks until
+// the server stops. Use Run to also handle SIGINT and SIGTERM.
 func (a *Application) Start() error {
-	// Start all background workers first
-	for _, w := range a.workers {
-		if err := w.Start(); err != nil {
-			// Stop any already started workers
-			a.stopWorkers()
-			return err
-		}
+	if err := a.startWorkers(); err != nil {
+		return err
 	}
 	return a.Server.Start()
 }
 
-// StartAsync launches the HTTP server asynchronously.
+// StartAsync launches background workers and the HTTP server, and returns
+// once the port is bound. It returns the bind error, if any.
 func (a *Application) StartAsync() error {
-	// Start all background workers first
-	for _, w := range a.workers {
+	if err := a.startWorkers(); err != nil {
+		return err
+	}
+	if err := a.Server.StartAsync(); err != nil {
+		a.stopWorkers()
+		return err
+	}
+	return nil
+}
+
+// Shutdown stops the server, then the workers. The server waits for open
+// requests until ctx is done.
+func (a *Application) Shutdown(ctx context.Context) error {
+	err := a.Server.Shutdown(ctx)
+	a.stopWorkers()
+	return err
+}
+
+// startWorkers starts each worker. When one fails, it stops the workers
+// that started and returns the error.
+func (a *Application) startWorkers() error {
+	for i, w := range a.workers {
 		if err := w.Start(); err != nil {
-			// Stop any already started workers
-			a.stopWorkers()
+			for _, started := range a.workers[:i] {
+				started.Stop()
+			}
 			return err
 		}
 	}
-	return a.Server.StartAsync()
-}
-
-// Shutdown gracefully stops workers and the server.
-func (a *Application) Shutdown(ctx context.Context) error {
-	a.stopWorkers()
-	return a.Server.Shutdown(ctx)
+	return nil
 }
 
 // stopWorkers stops all background workers.
@@ -137,24 +148,25 @@ func (a *Application) stopWorkers() {
 	}
 }
 
-// Run starts the application and waits for termination signals.
-// It handles graceful shutdown with a default timeout of 10 seconds.
+// Run starts the application and waits for SIGINT or SIGTERM. Then it shuts
+// down gracefully, with a timeout of 10 seconds.
 func (a *Application) Run() error {
 	return a.RunWithTimeout(10 * time.Second)
 }
 
-// RunWithTimeout starts the application and waits for termination signals.
-// It handles graceful shutdown with the specified timeout.
+// RunWithTimeout starts the application and waits for SIGINT or SIGTERM.
+// Then it stops the server and the workers, and waits up to timeout for
+// open requests. When the server fails to start, it returns that error.
 func (a *Application) RunWithTimeout(timeout time.Duration) error {
-	if err := a.Start(); err != nil {
+	signals, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := a.StartAsync(); err != nil {
 		return err
 	}
 
-	// Wait for termination signal
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-
+	<-signals.Done()
+	stop() // A second signal now kills the process.
 	a.Logger.Info("Shutting down gracefully...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
