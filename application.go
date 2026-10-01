@@ -2,6 +2,7 @@ package cartridge
 
 import (
 	"context"
+	"net"
 	"os/signal"
 	"syscall"
 	"time"
@@ -156,23 +157,45 @@ func (a *Application) Run() error {
 
 // RunWithTimeout starts the application and waits for SIGINT or SIGTERM.
 // Then it stops the server and the workers, and waits up to timeout for
-// open requests. When the server fails to start, it returns that error.
+// open requests. When the server fails to start or stops with an error, it
+// stops the workers and returns that error.
 func (a *Application) RunWithTimeout(timeout time.Duration) error {
 	signals, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	context.AfterFunc(signals, stop) // A second signal now kills the process.
 
-	if err := a.StartAsync(); err != nil {
+	if err := a.startWorkers(); err != nil {
 		return err
 	}
+	ln, err := a.Server.listen()
+	if err != nil {
+		a.stopWorkers()
+		return err
+	}
+	return a.serveUntil(signals, ln, timeout)
+}
 
-	<-signals.Done()
-	stop() // A second signal now kills the process.
+// serveUntil serves on ln until ctx is done or the server fails. Then it
+// shuts down the server and the workers.
+func (a *Application) serveUntil(ctx context.Context, ln net.Listener, timeout time.Duration) error {
+	served := make(chan error, 1)
+	go func() { served <- a.Server.serve(ln) }()
+
+	select {
+	case err := <-served:
+		if err != nil {
+			a.Logger.Error("Server failed", "error", err)
+			a.stopWorkers()
+		}
+		return err
+	case <-ctx.Done():
+	}
+
 	a.Logger.Info("Shutting down gracefully...")
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	if err := a.Shutdown(ctx); err != nil {
+	if err := a.Shutdown(shutdownCtx); err != nil {
 		a.Logger.Error("Graceful shutdown failed", "error", err)
 		return err
 	}

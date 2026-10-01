@@ -1,6 +1,7 @@
 package cartridge
 
 import (
+	"context"
 	"net"
 	"os"
 	"sync/atomic"
@@ -98,6 +99,38 @@ func TestApplicationRun(t *testing.T) {
 
 		if err == nil {
 			t.Fatal("Run returned nil, want a bind error")
+		}
+		if !worker.stopped.Load() {
+			t.Error("the worker did not stop")
+		}
+	})
+}
+
+func TestApplicationServeUntil(t *testing.T) {
+	t.Run("when the server fails after the bind, it returns the error and stops the workers", func(t *testing.T) {
+		port := freePort(t)
+		worker := newRecordingWorker()
+		app := newLifecycleApp(t, port, worker)
+		if err := app.startWorkers(); err != nil {
+			t.Fatal(err)
+		}
+		ln, err := app.Server.listen()
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- app.serveUntil(context.Background(), ln, time.Second) }()
+		waitForPort(t, port)
+
+		_ = ln.Close()
+
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Error("serveUntil returned nil, want the serve error")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("serveUntil did not return after the server failed")
 		}
 		if !worker.stopped.Load() {
 			t.Error("the worker did not stop")
