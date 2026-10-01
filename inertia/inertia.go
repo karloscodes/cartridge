@@ -27,11 +27,19 @@ var (
 	manifestOnce sync.Once
 	jsFile       string
 	cssFile      string
-	assetVersion string               // Hash of the built asset paths, sent as the Inertia version
-	devMode      bool                 // When true, re-read manifest on every request
-	pageTitle    string = "Fusionaly" // Default page title
-	manifestData []byte               // Embedded manifest data (used when filesystem not available)
-	scriptPage   bool                 // Send the first page in a JSON script element (Inertia v3)
+	assetVersion string                                 // Hash of the built asset paths, sent as the Inertia version
+	devMode      bool                                   // When true, re-read manifest on every request
+	pageTitle    string                   = "Fusionaly" // Default page title
+	manifestData []byte                                 // Embedded manifest data (used when filesystem not available)
+	scriptPage   bool                                   // Send the first page in a JSON script element (Inertia v3)
+	manifest     map[string]ManifestEntry               // Parsed Vite manifest, for preload links
+)
+
+// entryKey is the Vite entry; pagesDir holds one module per Inertia page,
+// named like the component ("Dashboard" -> src/pages/Dashboard.tsx).
+const (
+	entryKey = "src/inertia.tsx"
+	pagesDir = "src/pages/"
 )
 
 // SetScriptElement chooses how the first page reaches the client. Inertia v3
@@ -61,7 +69,7 @@ func SetManifestData(data []byte) {
 }
 
 // readManifest reads the Vite manifest and returns JS and CSS paths
-func readManifest() (js, css string) {
+func readManifest() (js, css string, entries map[string]ManifestEntry) {
 	// Default fallback paths (without hashes)
 	js = "/assets/inertia.js"
 	css = "/assets/inertia.css"
@@ -85,13 +93,12 @@ func readManifest() (js, css string) {
 		}
 	}
 
-	var manifest map[string]ManifestEntry
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	if err := json.Unmarshal(data, &entries); err != nil {
 		return // Use fallback paths
 	}
 
 	// Find the entry point (src/inertia.tsx)
-	if entry, ok := manifest["src/inertia.tsx"]; ok {
+	if entry, ok := entries[entryKey]; ok {
 		js = "/" + entry.File
 		if len(entry.CSS) > 0 {
 			css = "/" + entry.CSS[0]
@@ -106,16 +113,50 @@ func readManifest() (js, css string) {
 func loadManifest() {
 	if devMode {
 		// In dev mode, always re-read the manifest
-		jsFile, cssFile = readManifest()
+		jsFile, cssFile, manifest = readManifest()
 		assetVersion = versionFor(jsFile, cssFile)
 		return
 	}
 
 	// In production, cache the manifest
 	manifestOnce.Do(func() {
-		jsFile, cssFile = readManifest()
+		jsFile, cssFile, manifest = readManifest()
 		assetVersion = versionFor(jsFile, cssFile)
 	})
+}
+
+// preloadTags lists the chunks the first page needs: the entry's shared
+// imports and the page's own module with its imports and CSS. The browser then
+// fetches them in parallel instead of finding each one after the last loads.
+func preloadTags(component string) string {
+	if manifest == nil {
+		return ""
+	}
+	seen := map[string]bool{}
+	var tags strings.Builder
+	var walk func(key string)
+	walk = func(key string) {
+		entry, ok := manifest[key]
+		if !ok || seen[key] {
+			return
+		}
+		seen[key] = true
+		if key != entryKey {
+			tags.WriteString(`<link rel="modulepreload" href="/` + html.EscapeString(entry.File) + `">` + "\n    ")
+			for _, css := range entry.CSS {
+				if !seen[css] {
+					seen[css] = true
+					tags.WriteString(`<link rel="stylesheet" href="/` + html.EscapeString(css) + `">` + "\n    ")
+				}
+			}
+		}
+		for _, imp := range entry.Imports {
+			walk(imp)
+		}
+	}
+	walk(entryKey)
+	walk(pagesDir + component + ".tsx")
+	return tags.String()
 }
 
 // versionFor derives the Inertia asset version from the built asset paths.
@@ -290,6 +331,7 @@ func Render(w http.ResponseWriter, r *http.Request, component string, props map[
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <title>` + html.EscapeString(pageTitle) + `</title>
     ` + cssLink + `
+    ` + preloadTags(component) + `
 </head>
 <body>
     ` + root + `

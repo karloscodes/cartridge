@@ -243,3 +243,36 @@ func TestPageProtocol(t *testing.T) {
 		}
 	})
 }
+
+func TestInitialPagePreloads(t *testing.T) {
+	SetDevMode(true) // re-read the manifest on every render
+	defer SetDevMode(false)
+	SetManifestData([]byte(`{
+		"src/inertia.tsx": {"file": "assets/inertia-A.js", "isEntry": true, "css": ["assets/inertia-A.css"], "imports": ["_vendor-B.js"]},
+		"_vendor-B.js": {"file": "assets/vendor-B.js"},
+		"_charts-C.js": {"file": "assets/charts-C.js"},
+		"src/pages/Page.tsx": {"file": "assets/Page-D.js", "isDynamicEntry": true, "imports": ["_vendor-B.js", "_charts-C.js"], "css": ["assets/Page-D.css"]},
+		"src/pages/Other.tsx": {"file": "assets/Other-E.js", "isDynamicEntry": true}
+	}`))
+	defer SetManifestData(nil)
+
+	_, body := render(t, httptest.NewRequest("GET", "/x", nil), map[string]interface{}{})
+
+	for _, want := range []string{
+		`<link rel="modulepreload" href="/assets/vendor-B.js">`,
+		`<link rel="modulepreload" href="/assets/Page-D.js">`,
+		`<link rel="modulepreload" href="/assets/charts-C.js">`,
+		`<link rel="stylesheet" href="/assets/Page-D.css">`,
+		`<script type="module" src="/assets/inertia-A.js">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(body, "Other-E.js") {
+		t.Error("preloaded a page that is not being shown")
+	}
+	if n := strings.Count(body, "vendor-B.js"); n != 1 {
+		t.Errorf("vendor-B.js preloaded %d times, want once", n)
+	}
+}
