@@ -9,11 +9,9 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// ConcurrencyLimiter manages concurrent read and write operations.
-// This is particularly useful for SQLite with WAL mode, which allows
-// one writer + multiple readers concurrently.
+// ConcurrencyLimiter limits concurrent write operations. This is useful
+// for SQLite in WAL mode, which allows one writer at a time.
 type ConcurrencyLimiter struct {
-	readSem  *semaphore.Weighted
 	writeSem *semaphore.Weighted
 	timeout  time.Duration
 	logger   limiterLogger
@@ -27,29 +25,19 @@ type limiterLogger interface {
 	Error(msg string, args ...any)
 }
 
-// NewConcurrencyLimiter creates a limiter with the provided thresholds.
-func NewConcurrencyLimiter(readLimit, writeLimit int64, timeout time.Duration, logger limiterLogger) *ConcurrencyLimiter {
+// NewConcurrencyLimiter creates a limiter that allows writeLimit concurrent
+// writes, and waits up to timeout for a slot.
+func NewConcurrencyLimiter(writeLimit int64, timeout time.Duration, logger limiterLogger) *ConcurrencyLimiter {
 	return &ConcurrencyLimiter{
-		readSem:  semaphore.NewWeighted(readLimit),
 		writeSem: semaphore.NewWeighted(writeLimit),
 		timeout:  timeout,
 		logger:   logger,
 	}
 }
 
-// AcquireRead acquires a read semaphore.
-func (cl *ConcurrencyLimiter) AcquireRead(ctx context.Context) error {
-	return cl.readSem.Acquire(ctx, 1)
-}
-
 // AcquireWrite acquires a write semaphore.
 func (cl *ConcurrencyLimiter) AcquireWrite(ctx context.Context) error {
 	return cl.writeSem.Acquire(ctx, 1)
-}
-
-// ReleaseRead releases a read semaphore.
-func (cl *ConcurrencyLimiter) ReleaseRead() {
-	cl.readSem.Release(1)
 }
 
 // ReleaseWrite releases a write semaphore.

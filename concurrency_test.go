@@ -23,7 +23,7 @@ func (m *mockLogger) Error(msg string, keysAndValues ...any) { atomic.AddInt32(&
 
 func TestNewConcurrencyLimiter(t *testing.T) {
 	logger := &mockLogger{}
-	limiter := NewConcurrencyLimiter(10, 1, 5*time.Second, logger)
+	limiter := NewConcurrencyLimiter(1, 5*time.Second, logger)
 
 	if limiter == nil {
 		t.Fatal("expected non-nil limiter")
@@ -33,44 +33,9 @@ func TestNewConcurrencyLimiter(t *testing.T) {
 	}
 }
 
-func TestConcurrencyLimiter_AcquireReleaseRead(t *testing.T) {
-	logger := &mockLogger{}
-	limiter := NewConcurrencyLimiter(2, 1, time.Second, logger)
-
-	ctx := context.Background()
-
-	// Acquire first read
-	if err := limiter.AcquireRead(ctx); err != nil {
-		t.Fatalf("first AcquireRead failed: %v", err)
-	}
-
-	// Acquire second read
-	if err := limiter.AcquireRead(ctx); err != nil {
-		t.Fatalf("second AcquireRead failed: %v", err)
-	}
-
-	// Third read should block (we're at limit)
-	ctx2, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-	defer cancel()
-	err := limiter.AcquireRead(ctx2)
-	if err == nil {
-		t.Error("expected third AcquireRead to timeout")
-	}
-
-	// Release one and try again
-	limiter.ReleaseRead()
-	if err := limiter.AcquireRead(ctx); err != nil {
-		t.Fatalf("AcquireRead after release failed: %v", err)
-	}
-
-	// Clean up
-	limiter.ReleaseRead()
-	limiter.ReleaseRead()
-}
-
 func TestConcurrencyLimiter_AcquireReleaseWrite(t *testing.T) {
 	logger := &mockLogger{}
-	limiter := NewConcurrencyLimiter(10, 1, time.Second, logger)
+	limiter := NewConcurrencyLimiter(1, time.Second, logger)
 
 	ctx := context.Background()
 
@@ -98,24 +63,10 @@ func TestConcurrencyLimiter_AcquireReleaseWrite(t *testing.T) {
 
 func TestConcurrencyLimiter_ConcurrentAccess(t *testing.T) {
 	logger := &mockLogger{}
-	limiter := NewConcurrencyLimiter(5, 2, time.Second, logger)
+	limiter := NewConcurrencyLimiter(2, time.Second, logger)
 
 	var wg sync.WaitGroup
 	ctx := context.Background()
-
-	// Spawn multiple readers
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := limiter.AcquireRead(ctx); err != nil {
-				t.Errorf("AcquireRead failed: %v", err)
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-			limiter.ReleaseRead()
-		}()
-	}
 
 	// Spawn multiple writers
 	for i := 0; i < 2; i++ {
@@ -136,7 +87,7 @@ func TestConcurrencyLimiter_ConcurrentAccess(t *testing.T) {
 
 func TestConcurrencyLimiter_ContextCancellation(t *testing.T) {
 	logger := &mockLogger{}
-	limiter := NewConcurrencyLimiter(1, 1, time.Second, logger)
+	limiter := NewConcurrencyLimiter(1, time.Second, logger)
 
 	ctx := context.Background()
 

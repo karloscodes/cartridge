@@ -73,7 +73,6 @@ type ServerConfig struct {
 	SecFetchSiteAllowedValues []string
 
 	// Concurrency configuration (for SQLite WAL mode)
-	MaxConcurrentReads  int
 	MaxConcurrentWrites int
 	ConcurrencyTimeout  time.Duration
 }
@@ -99,7 +98,6 @@ func DefaultServerConfig() *ServerConfig {
 		EnableRequestLogger: true,
 
 		// Concurrency defaults optimized for SQLite WAL mode
-		MaxConcurrentReads:  128,
 		MaxConcurrentWrites: 8,
 		ConcurrencyTimeout:  5 * time.Second,
 	}
@@ -195,7 +193,6 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 	server := &Server{
 		cfg: cfg,
 		limiter: NewConcurrencyLimiter(
-			int64(cfg.MaxConcurrentReads),
 			int64(cfg.MaxConcurrentWrites),
 			cfg.ConcurrencyTimeout,
 			cfg.Logger,
@@ -560,11 +557,6 @@ func (s *Server) mountPublicFiles(mux *http.ServeMux) {
 			return nil
 		}))
 	}
-}
-
-// GetLimiter returns the concurrency limiter.
-func (s *Server) GetLimiter() *ConcurrencyLimiter {
-	return s.limiter
 }
 
 // GetLogger returns the logger.
