@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -93,7 +94,9 @@ func NewTestServer(t *testing.T, opts ...TestServerOptions) *TestServer {
 	return ts
 }
 
-// Request performs a test request and returns the response.
+// Request performs a test request with a JSON body and returns the
+// response. It sends Sec-Fetch-Site: same-origin, as a browser on the app's
+// own pages does, so CSRF protection lets the request through.
 func (ts *TestServer) Request(method, path string, body ...string) *http.Response {
 	ts.t.Helper()
 
@@ -104,12 +107,21 @@ func (ts *TestServer) Request(method, path string, body ...string) *http.Respons
 
 	req := httptest.NewRequest(method, path, bodyReader)
 	req.Header.Set("Content-Type", "application/json")
+	return ts.Do(req)
+}
 
+// Do performs req and returns the response. It sets Sec-Fetch-Site:
+// same-origin when req has no Sec-Fetch-Site header.
+func (ts *TestServer) Do(req *http.Request) *http.Response {
+	ts.t.Helper()
+
+	if req.Header.Get("Sec-Fetch-Site") == "" {
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+	}
 	resp, err := ts.Server.Test(req)
 	if err != nil {
 		ts.t.Fatalf("testsupport: request failed: %v", err)
 	}
-
 	return resp
 }
 
@@ -121,6 +133,15 @@ func (ts *TestServer) Get(path string) *http.Response {
 // Post performs a POST request with JSON body.
 func (ts *TestServer) Post(path, body string) *http.Response {
 	return ts.Request("POST", path, body)
+}
+
+// PostForm performs a POST request with a urlencoded form body.
+func (ts *TestServer) PostForm(path string, form url.Values) *http.Response {
+	ts.t.Helper()
+
+	req := httptest.NewRequest("POST", path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return ts.Do(req)
 }
 
 // Put performs a PUT request with JSON body.
