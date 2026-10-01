@@ -43,13 +43,14 @@ func TestSecFetchSiteMiddleware(t *testing.T) {
 		sameOrigin := post("http://hq.lan:8092")
 		otherSite := post("http://evil.example")
 		otherPort := post("http://hq.lan:9999")
+		otherScheme := post("https://hq.lan:8092")
 		noOrigin := post("")
 
 		if sameOrigin != http.StatusOK {
 			t.Errorf("same Origin = %d, want 200", sameOrigin)
 		}
-		if otherSite != http.StatusForbidden || otherPort != http.StatusForbidden {
-			t.Errorf("other origins = %d, %d, want 403", otherSite, otherPort)
+		if otherSite != http.StatusForbidden || otherPort != http.StatusForbidden || otherScheme != http.StatusForbidden {
+			t.Errorf("other origins = %d, %d, %d, want 403", otherSite, otherPort, otherScheme)
 		}
 		if noOrigin != http.StatusForbidden {
 			t.Errorf("no Origin = %d, want 403", noOrigin)

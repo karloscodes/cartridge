@@ -79,7 +79,7 @@ func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) HandlerFunc {
 		// HTTP they still send Origin on every POST, so an Origin that matches
 		// the host counts as same-origin. A cross-site Origin without the
 		// header stays blocked: that is what a spoofing tool sends.
-		if secFetchSite == "" && sameOrigin(c.Get("Origin"), c.Hostname()) {
+		if secFetchSite == "" && sameOrigin(c.Get("Origin"), c.Protocol(), c.Hostname()) {
 			secFetchSite = "same-origin"
 		}
 
@@ -103,8 +103,9 @@ func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) HandlerFunc {
 	}
 }
 
-// sameOrigin reports whether the Origin header names host.
-func sameOrigin(origin, host string) bool {
+// sameOrigin reports whether the Origin header names this server: the same
+// scheme and the same host and port.
+func sameOrigin(origin, scheme, host string) bool {
 	u, err := url.Parse(origin)
-	return origin != "" && err == nil && u.Host != "" && u.Host == host
+	return origin != "" && err == nil && u.Host != "" && u.Scheme == scheme && u.Host == host
 }
