@@ -8,24 +8,44 @@ import (
 	"os"
 	"time"
 
-	"gorm.io/gorm"
-
-	"github.com/karloscodes/cartridge/config"
+	"github.com/karloscodes/cartridge/inertia"
 	"github.com/karloscodes/cartridge/sqlite"
 )
 
-// App is a fully configured cartridge application.
-type App struct {
-	*Application
-	Config    *config.Config
-	Logger    *slog.Logger
-	DBManager *sqlite.Manager
-	Server    *Server
-	Session   *SessionManager
+// AppConfig is the configuration NewApp needs. config.Load returns a
+// *config.Config that implements it.
+type AppConfig interface {
+	Config
+
+	// GetAppName returns the application name. The session cookie is
+	// "{name}_session".
+	GetAppName() string
+
+	// DatabaseDSN returns the path of the SQLite file.
+	DatabaseDSN() string
+
+	// GetSessionSecret returns the session encryption key.
+	GetSessionSecret() string
+
+	// GetSessionTimeout returns the session timeout in seconds.
+	GetSessionTimeout() int
+
+	// GetMaxOpenConns returns the max open database connections.
+	GetMaxOpenConns() int
+
+	// GetMaxIdleConns returns the max idle database connections.
+	GetMaxIdleConns() int
 }
 
-// MigrateDatabase runs database migrations using the provided migrator.
-// It connects to the database, runs migrations, and checkpoints WAL.
+// App is an application with a logger, a SQLite database, an HTTP server
+// and, with WithSession, sessions. Run starts it.
+type App struct {
+	*Application
+	DBManager *sqlite.Manager
+	Session   *SessionManager // nil without WithSession
+}
+
+// MigrateDatabase runs the migrator, then checkpoints the WAL.
 func (a *App) MigrateDatabase(migrator Migrator) error {
 	db, err := a.DBManager.Connect()
 	if err != nil {
@@ -43,225 +63,183 @@ func (a *App) MigrateDatabase(migrator Migrator) error {
 	return nil
 }
 
-// GetDB returns the database connection.
-func (a *App) GetDB() (*gorm.DB, error) {
-	return a.DBManager.Connect()
+// AppOption configures NewApp.
+type AppOption func(*appOptions)
+
+type appOptions struct {
+	templatesFS   fs.FS
+	staticFS      fs.FS
+	templateFuncs template.FuncMap
+	errorHandler  ErrorHandler
+	routes        func(*Server)
+	workers       []BackgroundWorker
+	jobGroups     []jobGroup
+	sessionPath   string
+	inertia       bool
 }
 
-// AppOption configures the application.
-type AppOption func(*appConfig)
-
-// jobGroup represents a set of processors with their interval.
 type jobGroup struct {
 	interval   time.Duration
 	processors []Processor
 }
 
-type appConfig struct {
-	cfg           *config.Config
-	templatesFS   fs.FS
-	staticFS      fs.FS
-	templateFuncs template.FuncMap
-	errorHandler  ErrorHandler
-	init          func(*App)
-	routes        func(*Server)
-	jobGroups     []jobGroup
-	sessionPath   string // login path for session middleware
-}
-
-// WithConfig provides a pre-loaded config instead of loading one.
-func WithConfig(cfg *config.Config) AppOption {
-	return func(c *appConfig) {
-		c.cfg = cfg
-	}
-}
-
-// WithAssets sets embedded templates and static files for production.
+// WithAssets sets the embedded templates and static files. Either can be
+// nil. Development reads web/templates and the public directory from disk
+// instead, and reloads templates on every render. Without templates,
+// Context.Render returns an error.
 func WithAssets(templates, static fs.FS) AppOption {
-	return func(c *appConfig) {
-		c.templatesFS = templates
-		c.staticFS = static
+	return func(o *appOptions) {
+		o.templatesFS = templates
+		o.staticFS = static
 	}
 }
 
-// WithTemplateFuncs adds custom template functions.
+// WithTemplateFuncs adds functions to the templates.
 func WithTemplateFuncs(funcs template.FuncMap) AppOption {
-	return func(c *appConfig) {
-		c.templateFuncs = funcs
+	return func(o *appOptions) {
+		o.templateFuncs = funcs
 	}
 }
 
-// WithErrorHandler sets a custom error handler.
+// WithErrorHandler replaces DefaultErrorHandler.
 func WithErrorHandler(handler ErrorHandler) AppOption {
-	return func(c *appConfig) {
-		c.errorHandler = handler
+	return func(o *appOptions) {
+		o.errorHandler = handler
 	}
 }
 
-// WithInit sets initialization callback (e.g., auth setup).
-func WithInit(fn func(*App)) AppOption {
-	return func(c *appConfig) {
-		c.init = fn
-	}
-}
-
-// WithRoutes sets the route mounting function.
+// WithRoutes mounts the routes. Server.Session is set when it runs.
 func WithRoutes(fn func(*Server)) AppOption {
-	return func(c *appConfig) {
-		c.routes = fn
+	return func(o *appOptions) {
+		o.routes = fn
 	}
 }
 
-// WithJobs registers background job processors with a shared interval.
-// Call multiple times to create separate dispatchers with different schedules.
+// WithJobs runs the processors in one dispatcher at the interval. Call it
+// again for another interval.
 func WithJobs(interval time.Duration, processors ...Processor) AppOption {
-	return func(c *appConfig) {
-		c.jobGroups = append(c.jobGroups, jobGroup{
-			interval:   interval,
-			processors: processors,
-		})
+	return func(o *appOptions) {
+		o.jobGroups = append(o.jobGroups, jobGroup{interval: interval, processors: processors})
 	}
 }
 
-// WithSession enables session management with auto-derived cookie name.
-// The cookie name is "{appname}_session" (e.g., "formlander_session").
+// WithWorker runs a BackgroundWorker alongside the server.
+func WithWorker(worker BackgroundWorker) AppOption {
+	return func(o *appOptions) {
+		o.workers = append(o.workers, worker)
+	}
+}
+
+// WithSession enables sessions. RequireAuth redirects to loginPath. The
+// cookie name is "{appname}_session".
 func WithSession(loginPath string) AppOption {
-	return func(c *appConfig) {
-		c.sessionPath = loginPath
+	return func(o *appOptions) {
+		o.sessionPath = loginPath
 	}
 }
 
-// NewSSRApp creates a server-side rendered application with sensible defaults.
+// WithInertia prepares the inertia package: in development it re-reads the
+// Vite manifest on every request. Set the page title and other settings
+// with the inertia package functions.
+func WithInertia() AppOption {
+	return func(o *appOptions) {
+		o.inertia = true
+	}
+}
+
+// NewApp creates an application with a logger, a SQLite database, and an
+// HTTP server. For another database or a custom server, use NewApplication.
 //
-// Example:
-//
-//	app, err := cartridge.NewSSRApp("myapp",
-//	    cartridge.WithAssets(web.Templates, web.Static),
-//	    cartridge.WithTemplateFuncs(templateFuncs()),
-//	    cartridge.WithJobs(2*time.Minute, webhookJob, emailJob),
+//	cfg, err := config.Load("myapp")
+//	app, err := cartridge.NewApp(cfg,
+//	    cartridge.WithAssets(web.Templates(), web.Static()),
 //	    cartridge.WithRoutes(mountRoutes),
+//	    cartridge.WithSession("/login"),
 //	)
-func NewSSRApp(appName string, opts ...AppOption) (*App, error) {
-	// Apply options
-	cfg := &appConfig{}
+func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("cartridge: config is required")
+	}
+	o := &appOptions{}
 	for _, opt := range opts {
-		opt(cfg)
+		opt(o)
 	}
 
-	// Load config
-	var appCfg *config.Config
-	var err error
-	if cfg.cfg != nil {
-		appCfg = cfg.cfg
-	} else {
-		appCfg, err = config.Load(appName)
-		if err != nil {
-			return nil, fmt.Errorf("load config: %w", err)
-		}
+	if o.inertia {
+		inertia.SetDevMode(cfg.IsDevelopment())
 	}
 
-	// Create logger
-	logger := NewLogger(appCfg, nil)
+	logger := NewLogger(cfg, nil)
 	slog.SetDefault(logger)
 
-	// Create database manager
 	dbManager := sqlite.NewManager(sqlite.Config{
-		Path:         appCfg.DatabaseDSN(),
-		MaxOpenConns: appCfg.GetMaxOpenConns(),
-		MaxIdleConns: appCfg.GetMaxIdleConns(),
+		Path:         cfg.DatabaseDSN(),
+		MaxOpenConns: cfg.GetMaxOpenConns(),
+		MaxIdleConns: cfg.GetMaxIdleConns(),
 		Logger:       logger,
 	})
 
-	// Create views engine
-	viewsEngine := createViewsEngine(appCfg, cfg.templatesFS, cfg.templateFuncs)
-
-	// Build server config
 	serverCfg := DefaultServerConfig()
-	serverCfg.Config = appCfg
+	serverCfg.Config = cfg
 	serverCfg.Logger = logger
 	serverCfg.DBManager = dbManager
-	serverCfg.ViewsEngine = viewsEngine
-	// In development mode, serve static from disk for hot-reload
-	// In production, use embedded filesystem
-	if !appCfg.IsDevelopment() && cfg.staticFS != nil {
-		serverCfg.StaticFS = cfg.staticFS
-	}
-	if cfg.errorHandler != nil {
-		serverCfg.ErrorHandler = cfg.errorHandler
-	} else {
-		serverCfg.ErrorHandler = DefaultErrorHandler(logger, appCfg.IsDevelopment())
+	serverCfg.ErrorHandler = o.errorHandler
+	serverCfg.ViewsEngine = newViews(cfg, o.templatesFS, o.templateFuncs)
+	if !cfg.IsDevelopment() {
+		serverCfg.StaticFS = o.staticFS
 	}
 
-	// Create server
 	server, err := NewServer(serverCfg)
 	if err != nil {
-		return nil, fmt.Errorf("create server: %w", err)
+		return nil, fmt.Errorf("cartridge: create server: %w", err)
 	}
 
-	// Create session manager if enabled and attach to server
-	var sessionMgr *SessionManager
-	if cfg.sessionPath != "" {
-		sessionMgr, err = NewSessionManager(SessionConfig{
-			CookieName: appCfg.AppName + "_session",
-			Secret:     appCfg.GetSessionSecret(),
-			TTL:        time.Duration(appCfg.GetSessionTimeout()) * time.Second,
-			Insecure:   !appCfg.IsProduction(),
-			LoginPath:  cfg.sessionPath,
+	var session *SessionManager
+	if o.sessionPath != "" {
+		session, err = NewSessionManager(SessionConfig{
+			CookieName: cfg.GetAppName() + "_session",
+			Secret:     cfg.GetSessionSecret(),
+			TTL:        time.Duration(cfg.GetSessionTimeout()) * time.Second,
+			Insecure:   !cfg.IsProduction(),
+			LoginPath:  o.sessionPath,
 		})
 		if err != nil {
 			return nil, err
 		}
-		server.SetSession(sessionMgr)
+		server.SetSession(session)
 	}
 
-	// Mount routes (session is available via server.Session())
-	if cfg.routes != nil {
-		cfg.routes(server)
+	if o.routes != nil {
+		o.routes(server)
 	}
 
-	// Build app
-	app := &App{
-		Config:    appCfg,
-		Logger:    logger,
-		DBManager: dbManager,
-		Server:    server,
-		Session:   sessionMgr,
+	workers := o.workers
+	for _, group := range o.jobGroups {
+		workers = append(workers, NewJobDispatcher(logger, dbManager, group.interval, group.processors...))
 	}
 
-	// Run init callback
-	if cfg.init != nil {
-		cfg.init(app)
-	}
-
-	// Create job dispatchers for each job group
-	var workers []BackgroundWorker
-	for _, group := range cfg.jobGroups {
-		dispatcher := NewJobDispatcher(logger, dbManager, group.interval, group.processors...)
-		workers = append(workers, dispatcher)
-	}
-
-	// Create application
 	application, err := NewApplication(ApplicationOptions{
-		Config:            appCfg,
+		Config:            cfg,
 		Logger:            logger,
 		DBManager:         dbManager,
 		Server:            server,
 		BackgroundWorkers: workers,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create application: %w", err)
+		return nil, fmt.Errorf("cartridge: create application: %w", err)
 	}
 
-	app.Application = application
-	return app, nil
+	return &App{Application: application, DBManager: dbManager, Session: session}, nil
 }
 
-// createViewsEngine creates the template engine with provided functions.
-// Production reads the embedded templates; development reads web/templates
+// newViews returns nil without templates. Development reads web/templates
 // from disk and reloads them on every render.
-func createViewsEngine(cfg *config.Config, templatesFS fs.FS, funcs template.FuncMap) *HTMLViews {
-	if !cfg.IsDevelopment() && templatesFS != nil {
-		return NewHTMLViews(templatesFS, funcs, false)
+func newViews(cfg Config, templates fs.FS, funcs template.FuncMap) Views {
+	if templates == nil {
+		return nil
 	}
-	return NewHTMLViews(os.DirFS("web/templates"), funcs, true)
+	if cfg.IsDevelopment() {
+		return NewHTMLViews(os.DirFS("web/templates"), funcs, true)
+	}
+	return NewHTMLViews(templates, funcs, false)
 }

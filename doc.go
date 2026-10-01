@@ -10,13 +10,28 @@
 //   - Application lifecycle management with graceful shutdown
 //   - Logging with log/slog: Logger is an alias for *slog.Logger
 //
-// # Application Factories
+// # Constructors
 //
-// Cartridge provides three levels of application creation:
+// Cartridge has two constructors.
 //
-// ## NewApplication (Low-Level)
+// ## NewApp
 //
-// Full control over all components. Use when you have custom requirements.
+// NewApp wires a logger, a SQLite database, sessions, embedded assets, and
+// background jobs. Use it for Go HTML templates and, with WithInertia, for
+// Inertia.js apps.
+//
+//	cfg, err := config.Load("myapp")
+//	app, err := cartridge.NewApp(cfg,
+//	    cartridge.WithAssets(templates, static),
+//	    cartridge.WithRoutes(mountRoutes),
+//	    cartridge.WithSession("/login"),
+//	    cartridge.WithJobs(5*time.Minute, cleanupJob),
+//	)
+//
+// ## NewApplication
+//
+// NewApplication gives full control. Use it for PostgreSQL or a custom
+// database manager.
 //
 //	app, err := cartridge.NewApplication(cartridge.ApplicationOptions{
 //	    Config:         myConfig,
@@ -25,38 +40,10 @@
 //	    RouteMountFunc: mountRoutes,
 //	})
 //
-// ## NewSSRApp (Server-Side Rendered HTML Templates)
-//
-// For traditional SSR apps with Go HTML templates. Handles logger, DB, sessions,
-// embedded assets, and background jobs automatically.
-//
-//	app, err := cartridge.NewSSRApp("myapp",
-//	    cartridge.WithAssets(templates, static),
-//	    cartridge.WithRoutes(mountRoutes),
-//	    cartridge.WithSession("/login"),
-//	    cartridge.WithJobs(5*time.Minute, cleanupJob),
-//	)
-//
-// ## NewInertiaApp (Inertia.js SPA)
-//
-// For Inertia.js apps (React/Vue SPA with server-side routing). Handles Inertia
-// dev mode, embedded assets, cross-origin APIs, and background workers.
-//
-//	app, err := cartridge.NewInertiaApp(
-//	    cartridge.InertiaWithConfig(cfg),
-//	    cartridge.InertiaWithStaticAssets(web.Assets()),
-//	    cartridge.InertiaWithRoutes(mountRoutes),
-//	    cartridge.InertiaWithWorker(jobsManager),
-//	    cartridge.InertiaWithSession("/login"),
-//	    cartridge.InertiaWithCrossOriginAPI(),
-//	)
-//
 // # Embedded Assets
 //
-// Both NewSSRApp and NewInertiaApp support embedded assets for single-binary deployment:
-//
-//   - Production: Assets served from embedded fs.FS (no external files needed)
-//   - Development: Assets served from disk for hot-reload
+// Production serves templates and static files from the embedded fs.FS.
+// Development reads them from disk for hot-reload.
 //
 // Create an embed.go in your web package:
 //

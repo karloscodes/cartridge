@@ -14,13 +14,12 @@ Requires Go 1.26+.
 
 | Constructor | Use it for | Database |
 |---|---|---|
-| `NewSSRApp` | Go `html/template` apps (with or without HTMX) | SQLite, managed for you |
-| `NewInertiaApp` | React/Vue frontends through Inertia.js | SQLite, or your own `DBManager` |
-| `NewApplication` | Full control: PostgreSQL, custom config, custom server | Anything that implements `DBManager` |
+| `NewApp` | Go `html/template` apps (with or without HTMX), and React/Vue through Inertia.js with `WithInertia()` | SQLite, managed for you |
+| `NewApplication` | Full control: PostgreSQL, custom server | Anything that implements `DBManager` |
 
-## Quick start (SSR)
+## Quick start
 
-Layout that `NewSSRApp` expects:
+Layout that `NewApp` expects:
 
 ```
 myapp/
@@ -61,6 +60,7 @@ import (
 	"log"
 
 	"github.com/karloscodes/cartridge"
+	"github.com/karloscodes/cartridge/config"
 
 	"myapp/web"
 )
@@ -71,7 +71,12 @@ type Note struct {
 }
 
 func main() {
-	app, err := cartridge.NewSSRApp("myapp",
+	cfg, err := config.Load("myapp")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	app, err := cartridge.NewApp(cfg,
 		cartridge.WithAssets(web.Templates(), web.Static()),
 		cartridge.WithRoutes(func(s *cartridge.Server) {
 			s.Get("/", home)
@@ -125,7 +130,7 @@ MYAPP_ENV=development go run .
 
 ## Configuration
 
-`NewSSRApp` reads env vars with the upper-cased app name as the prefix. It also reads a `.env` file in the working directory.
+`config.Load("myapp")` reads env vars with the upper-cased app name as the prefix. It also reads a `.env` file in the working directory.
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -138,12 +143,7 @@ MYAPP_ENV=development go run .
 
 The SQLite file is `<data dir>/<app>.<env>.db`, for example `storage/myapp.production.db`. Each environment gets its own file.
 
-To add your own settings, load the config yourself and pass it in:
-
-```go
-cfg, err := config.Load("myapp") // github.com/karloscodes/cartridge/config
-app, err := cartridge.NewSSRApp("myapp", cartridge.WithConfig(cfg))
-```
+`NewApp` accepts any `cartridge.AppConfig`. To add your own settings, embed `*config.Config` in your own struct and pass that struct.
 
 ## Handlers
 
@@ -258,7 +258,7 @@ cartridge.WithJobs(time.Minute, SendEmails{}),
 cartridge.WithJobs(time.Hour, PruneSessions{}), // each call gets its own schedule
 ```
 
-Jobs start with `app.Run()` and stop during graceful shutdown.
+`WithWorker(w)` runs any `BackgroundWorker` (`Start() error`, `Stop()`). Jobs and workers start with `app.Run()` and stop during graceful shutdown.
 
 ## Database
 
@@ -308,15 +308,16 @@ To support another database, implement `database.Driver`.
 
 ## Inertia.js
 
+Add `WithInertia()`. In development, Cartridge then re-reads the Vite manifest on each request:
+
 ```go
-app, err := cartridge.NewInertiaApp(
-	cartridge.InertiaWithConfig(cfg), // must implement cartridge.FactoryConfig; *config.Config does
-	cartridge.InertiaWithStaticAssets(web.Assets()),
-	cartridge.InertiaWithRoutes(mountRoutes),
-	cartridge.InertiaWithSession("/login"),
-	cartridge.InertiaWithJobs(time.Minute, SendEmails{}),
-	cartridge.InertiaWithPageTitle("My App"),
+app, err := cartridge.NewApp(cfg,
+	cartridge.WithInertia(),
+	cartridge.WithAssets(nil, web.Assets()), // no Go templates
+	cartridge.WithRoutes(mountRoutes),
+	cartridge.WithSession("/login"),
 )
+inertia.SetTitle("My App") // optional; empty by default
 ```
 
 ```go
@@ -328,19 +329,14 @@ func dashboard(ctx *cartridge.Context) error {
 }
 ```
 
-In development, Cartridge re-reads the Vite manifest on each request. Other options:
-
-- `InertiaWithCrossOriginAPI()` accepts cross-site requests. Use it for tracking scripts and public APIs.
-- `InertiaWithCatchAllRedirect("/")` redirects unknown paths.
-- `InertiaWithWorker(w)` adds any `BackgroundWorker` (`Start() error`, `Stop()`).
-- `InertiaWithDBManager(m)` replaces the default SQLite manager.
+To redirect unknown paths, call `s.SetCatchAllRedirect("/")` in your routes function.
 
 ## Other packages
 
 | Package | Contents |
 |---|---|
 | `cartridge` | `SecFetchSiteMiddleware`, `SecurityHeaders`, `Recover`, `RequestID`, `RequestLogger`, `Compress`, `CORS`, write concurrency limiter |
-| `config` | Env-based config loader used by `NewSSRApp` |
+| `config` | Env-based config loader (`config.Load`) for `NewApp` |
 | `middleware` | `RateLimiter` |
 | `cache` | Generic TTL cache (`NewCache`), GORM-backed cache, memory and database `Store`s |
 | `crypto` | AES-GCM `Encrypt`/`Decrypt`, bcrypt password helpers |
@@ -365,6 +361,34 @@ func TestCreateNote(t *testing.T) {
 	assert.Equal(t, http.StatusFound, resp.StatusCode)
 }
 ```
+
+## Upgrading from 1.2
+
+`NewSSRApp` and `NewInertiaApp` are now one constructor, `NewApp`, with one set of options. `NewApp` takes the config as its first argument and does not load it for you.
+
+| 1.2 | 1.3 |
+|---|---|
+| `NewSSRApp("myapp", WithConfig(cfg), ...)` | `NewApp(cfg, ...)` |
+| `NewSSRApp("myapp", ...)` without `WithConfig` | `cfg, err := config.Load("myapp")`, then `NewApp(cfg, ...)` |
+| `NewInertiaApp(InertiaWithConfig(cfg), ...)` | `NewApp(cfg, WithInertia(), ...)` |
+| `InertiaWithStaticAssets(fs)` | `WithAssets(nil, fs)` |
+| `InertiaWithRoutes`, `InertiaWithJobs`, `InertiaWithSession` | `WithRoutes`, `WithJobs`, `WithSession` |
+| `InertiaWithWorker(w)` | `WithWorker(w)` |
+| `InertiaWithPageTitle("X")` | `inertia.SetTitle("X")` |
+| `InertiaWithCatchAllRedirect("/")` | `s.SetCatchAllRedirect("/")` in your routes function |
+| `InertiaWithCrossOriginAPI()` | `&cartridge.RouteConfig{EnableSecFetchSite: cartridge.Bool(false)}` on the public routes only |
+| `InertiaWithDBManager(m)` | `NewApplication` with `DBManager: m` |
+| `WithInit(fn)` | Run `fn(app)` after `NewApp` returns |
+| `FactoryConfig` | `AppConfig` |
+| `*InertiaApp` | `*App` |
+| `app.Config` (`*config.Config`) | Keep your own `cfg`. `app.Config` is now the `cartridge.Config` interface |
+| `app.GetDB()` | `app.DBManager.Connect()` |
+
+Other changes:
+
+- Without templates in `WithAssets`, `NewApp` sets no views engine. Before, it read `web/templates` from disk.
+- `Context.IP()` skips proxy header entries it cannot read, and reads entries with a port or quotes. When no entry qualifies, it returns the peer.
+- `Run` returns the error when the server fails after it binds the port, and stops the workers.
 
 ## Contributing
 
