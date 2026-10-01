@@ -27,9 +27,6 @@ type Config interface {
 
 	// GetPublicDirectory returns the path to public/static assets.
 	GetPublicDirectory() string
-
-	// GetAssetsPrefix returns the URL prefix for static assets (e.g., "/assets").
-	GetAssetsPrefix() string
 }
 
 // DBManager abstracts database connection management.

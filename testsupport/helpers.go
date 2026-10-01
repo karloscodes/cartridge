@@ -10,7 +10,6 @@ type TestConfig struct {
 	port            string
 	environment     string
 	publicDirectory string
-	assetsPrefix    string
 }
 
 // NewTestConfig creates a test configuration with sensible defaults.
@@ -19,7 +18,6 @@ func NewTestConfig() *TestConfig {
 		port:            "0", // Random port
 		environment:     "test",
 		publicDirectory: "",
-		assetsPrefix:    "/assets",
 	}
 }
 
@@ -37,9 +35,6 @@ func (c *TestConfig) GetPort() string { return c.port }
 
 // GetPublicDirectory returns the public assets directory.
 func (c *TestConfig) GetPublicDirectory() string { return c.publicDirectory }
-
-// GetAssetsPrefix returns the assets URL prefix.
-func (c *TestConfig) GetAssetsPrefix() string { return c.assetsPrefix }
 
 // NewTestLogger creates a slog.Logger that discards all output.
 // Use this for tests where you don't need to verify log messages.

@@ -212,7 +212,6 @@ func (c *Config) IsTest() bool        { return c.Environment == Test }
 
 func (c *Config) GetPort() string            { return c.Port }
 func (c *Config) GetPublicDirectory() string { return "web/static" }
-func (c *Config) GetAssetsPrefix() string    { return "/assets" }
 
 // LogConfigProvider implementation.
 

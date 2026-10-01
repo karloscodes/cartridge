@@ -110,9 +110,6 @@ func TestConfig_InterfaceMethods(t *testing.T) {
 	if cfg.GetPublicDirectory() != "web/static" {
 		t.Errorf("GetPublicDirectory: expected web/static, got %s", cfg.GetPublicDirectory())
 	}
-	if cfg.GetAssetsPrefix() != "/assets" {
-		t.Errorf("GetAssetsPrefix: expected /assets, got %s", cfg.GetAssetsPrefix())
-	}
 	if cfg.GetLogLevel() != "debug" {
 		t.Errorf("GetLogLevel: expected debug, got %s", cfg.GetLogLevel())
 	}

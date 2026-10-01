@@ -150,7 +150,6 @@ func (c *testConfig) IsProduction() bool         { return false }
 func (c *testConfig) IsTest() bool               { return true }
 func (c *testConfig) GetPort() string            { return "3000" }
 func (c *testConfig) GetPublicDirectory() string { return "" }
-func (c *testConfig) GetAssetsPrefix() string    { return "/assets" }
 
 type testDBManager struct{}
 
