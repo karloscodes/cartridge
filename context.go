@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -210,28 +211,41 @@ func (ctx *Context) Locals(key any, value ...any) any {
 	return ctx.locals[key]
 }
 
-// IP returns the client address. When ServerConfig.ProxyHeader is set and
-// the peer is a trusted proxy, it returns the leftmost entry of that header.
+// IP returns the client address. It reads ServerConfig.ProxyHeader only when
+// the direct peer is in TrustedProxies. It walks the header from right to
+// left and returns the first address that is not a trusted proxy. The
+// leftmost entries come from the client, so a client cannot set its own IP.
 func (ctx *Context) IP() string {
 	peer := remoteIP(ctx.r)
-	if ctx.server != nil && ctx.server.cfg.ProxyHeader != "" && ctx.server.trustsProxy(peer) {
-		if v := ctx.r.Header.Get(ctx.server.cfg.ProxyHeader); v != "" {
-			first, _, _ := strings.Cut(v, ",")
-			return strings.TrimSpace(first)
+	if ctx.server == nil || ctx.server.cfg.ProxyHeader == "" || !ctx.server.trustsProxy(peer) {
+		return peer
+	}
+	header := ctx.r.Header.Values(ctx.server.cfg.ProxyHeader)
+	entries := strings.Split(strings.Join(header, ","), ",")
+	ip := peer
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := strings.TrimSpace(entries[i])
+		if _, err := netip.ParseAddr(entry); err != nil {
+			break
+		}
+		ip = entry
+		if !ctx.server.trustsProxy(entry) {
+			break
 		}
 	}
-	return peer
+	return ip
 }
 
 // Hostname returns the Host header.
 func (ctx *Context) Hostname() string { return ctx.r.Host }
 
-// Protocol returns "https" or "http". A trusted proxy's X-Forwarded-Proto counts.
+// Protocol returns "https" or "http". X-Forwarded-Proto counts only when the
+// direct peer is in ServerConfig.TrustedProxies.
 func (ctx *Context) Protocol() string {
 	if ctx.r.TLS != nil {
 		return "https"
 	}
-	if ctx.server == nil || ctx.server.trustsProxy(remoteIP(ctx.r)) {
+	if ctx.server != nil && ctx.server.trustsProxy(remoteIP(ctx.r)) {
 		if p := ctx.r.Header.Get("X-Forwarded-Proto"); p == "https" || p == "http" {
 			return p
 		}

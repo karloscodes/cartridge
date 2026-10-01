@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -69,34 +70,75 @@ func TestRouteSecFetchSite(t *testing.T) {
 }
 
 func TestTrustedProxies(t *testing.T) {
-	clientIP := func(t *testing.T, trusted []string) string {
+	// serve sends a request from peer with the given headers and returns the body.
+	serve := func(t *testing.T, srv *Server, peer string, headers map[string]string) string {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/whoami", nil)
+		req.RemoteAddr = peer + ":1234"
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec.Body.String()
+	}
+	newServer := func(t *testing.T, trusted ...string) *Server {
 		t.Helper()
 		srv := newTestServer(t, func(c *ServerConfig) {
 			c.ProxyHeader = "X-Forwarded-For"
 			c.TrustedProxies = trusted
 		})
-		srv.Get("/ip", func(c *Context) error { return c.SendString(c.IP()) })
-
-		req, _ := http.NewRequest("GET", "/ip", nil)
-		req.Header.Set("X-Forwarded-For", "203.0.113.7")
-		resp, err := srv.Test(req)
-		if err != nil {
-			t.Fatalf("request failed: %v", err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		return string(body)
+		srv.Get("/whoami", func(c *Context) error { return c.SendString(c.IP() + " " + c.Protocol()) })
+		return srv
 	}
 
-	t.Run("the proxy header is ignored from an untrusted peer", func(t *testing.T) {
-		if ip := clientIP(t, []string{"10.0.0.0/8"}); ip == "203.0.113.7" {
-			t.Errorf("IP = %s: a client outside TrustedProxies set its own IP", ip)
+	t.Run("with no trusted proxies, the headers are ignored", func(t *testing.T) {
+		srv := newServer(t)
+
+		got := serve(t, srv, "198.51.100.9", map[string]string{"X-Forwarded-For": "203.0.113.7", "X-Forwarded-Proto": "https"})
+
+		if got != "198.51.100.9 http" {
+			t.Errorf("got %q, want the peer address over http", got)
 		}
 	})
 
-	t.Run("the proxy header is used from a trusted peer", func(t *testing.T) {
-		// Server.Test connects from 0.0.0.0.
-		if ip := clientIP(t, []string{"0.0.0.0"}); ip != "203.0.113.7" {
-			t.Errorf("IP = %s, want the forwarded client IP", ip)
+	t.Run("from an untrusted peer, the headers are ignored", func(t *testing.T) {
+		srv := newServer(t, "10.0.0.0/8")
+
+		got := serve(t, srv, "198.51.100.9", map[string]string{"X-Forwarded-For": "203.0.113.7", "X-Forwarded-Proto": "https"})
+
+		if got != "198.51.100.9 http" {
+			t.Errorf("got %q, want the peer address over http", got)
+		}
+	})
+
+	t.Run("from a trusted peer, the headers count", func(t *testing.T) {
+		srv := newServer(t, "10.0.0.0/8")
+
+		got := serve(t, srv, "10.0.0.2", map[string]string{"X-Forwarded-For": "203.0.113.7", "X-Forwarded-Proto": "https"})
+
+		if got != "203.0.113.7 https" {
+			t.Errorf("got %q, want the forwarded address over https", got)
+		}
+	})
+
+	t.Run("a client cannot prepend a fake address", func(t *testing.T) {
+		srv := newServer(t, "10.0.0.0/8")
+
+		got := serve(t, srv, "10.0.0.2", map[string]string{"X-Forwarded-For": "1.2.3.4, 203.0.113.7, 10.0.0.5"})
+
+		if got != "203.0.113.7 http" {
+			t.Errorf("got %q, want the rightmost untrusted address", got)
+		}
+	})
+
+	t.Run("a malformed entry stops the walk", func(t *testing.T) {
+		srv := newServer(t, "10.0.0.0/8")
+
+		got := serve(t, srv, "10.0.0.2", map[string]string{"X-Forwarded-For": "203.0.113.7, garbage"})
+
+		if got != "10.0.0.2 http" {
+			t.Errorf("got %q, want the peer address", got)
 		}
 	})
 }

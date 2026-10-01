@@ -54,9 +54,9 @@ func WithSkip(skip func(*cartridge.Context) bool) RateLimiterOption {
 }
 
 // WithKeyGenerator sets how requests are grouped into one budget. The default
-// is c.IP(). Behind a proxy that appends to X-Forwarded-For, the leftmost
-// entry is what the client sent; pass a function that returns the real client
-// address instead.
+// is c.IP(). A client cannot change c.IP(): it reads proxy headers only from
+// ServerConfig.TrustedProxies. Behind a proxy, set ProxyHeader and
+// TrustedProxies, or every client shares the proxy's budget.
 func WithKeyGenerator(key func(*cartridge.Context) string) RateLimiterOption {
 	return func(cfg *RateLimiterConfig) {
 		cfg.Key = key

@@ -38,7 +38,8 @@ type ServerConfig struct {
 
 	// ProxyHeader names the header that Context.IP reads the client address
 	// from, for example "X-Forwarded-For". TrustedProxies lists the IPs or
-	// CIDRs whose proxy headers count. Empty trusts every peer.
+	// CIDRs of your proxies. Context.IP and Context.Protocol read proxy
+	// headers only from these peers. Empty trusts no peer.
 	ProxyHeader    string
 	TrustedProxies []string
 
@@ -590,11 +591,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return srv.Shutdown(ctx)
 }
 
-// trustsProxy reports whether proxy headers from ip count.
+// trustsProxy reports whether ip is in TrustedProxies.
 func (s *Server) trustsProxy(ip string) bool {
-	if len(s.trustedProxies) == 0 {
-		return true
-	}
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return false
