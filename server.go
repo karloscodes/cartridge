@@ -44,11 +44,8 @@ type ServerConfig struct {
 	ProxyHeader    string
 	TrustedProxies []string
 
-	// Template engine configuration
-	EnableTemplates    bool
-	TemplatesFS        fs.FS  // Embedded filesystem for templates (production)
-	TemplatesDirectory string // Directory for templates (development)
-	ViewsEngine        Views
+	// ViewsEngine renders templates for Context.Render.
+	ViewsEngine Views
 
 	// Static assets configuration
 	EnableStaticAssets bool
@@ -94,7 +91,6 @@ func DefaultServerConfig() *ServerConfig {
 		StaticPrefix:       "/assets",
 
 		// Middleware defaults (all enabled)
-		EnableTemplates:     true,
 		EnableRequestID:     true,
 		EnableRecover:       true,
 		EnableHelmet:        true,
