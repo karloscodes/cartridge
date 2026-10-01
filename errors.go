@@ -29,35 +29,39 @@ func NewError(code int, message ...string) *Error {
 // ErrorHandler turns an error from a handler chain into a response.
 type ErrorHandler func(*Context, error) error
 
-// DefaultErrorHandler returns a production-ready error handler.
-// It returns JSON for API requests and simple HTML for browser requests.
-// For custom error pages with templates, use WithErrorHandler to provide your own.
+// DefaultErrorHandler is the error handler a server uses when
+// ServerConfig.ErrorHandler is nil. The client sees only the status text,
+// or the Message of an *Error with a code below 500. The log gets the full
+// error. In development, the HTML page also shows the full error.
 func DefaultErrorHandler(logger *slog.Logger, isDev bool) ErrorHandler {
 	return func(c *Context, err error) error {
 		code := errorCode(err)
 
-		logger.Error("request failed",
+		attrs := []any{
 			slog.Any("error", err),
-			slog.String("path", c.Path()),
-			slog.String("method", c.Method()),
 			slog.Int("status", code),
-		)
-
-		// JSON error response for API requests
-		if c.Accepts("application/json") == "application/json" {
-			return c.Status(code).JSON(Map{
-				"error":   ErrorCodeName(code),
-				"message": err.Error(),
-			})
+			slog.String("method", c.Method()),
+			slog.String("path", c.Path()),
+		}
+		if code >= http.StatusInternalServerError {
+			logger.Error("request failed", attrs...)
+		} else {
+			logger.Info("request rejected", attrs...)
 		}
 
-		// Simple HTML error page for browser requests
-		errorMsg := ""
+		title := http.StatusText(code)
+		if c.Accepts("application/json") == "application/json" {
+			return c.Status(code).JSON(Map{"error": title, "message": clientMessage(err, code)})
+		}
+
+		details := ""
 		if isDev {
-			errorMsg = err.Error()
+			details = err.Error()
+		} else if msg := clientMessage(err, code); msg != title {
+			details = msg
 		}
 		c.Set("Content-Type", "text/html; charset=utf-8")
-		return c.Status(code).SendString(errorHTML(code, ErrorCodeName(code), errorMsg))
+		return c.Status(code).SendString(errorHTML(code, title, details))
 	}
 }
 
@@ -70,30 +74,14 @@ func errorCode(err error) int {
 	return http.StatusInternalServerError
 }
 
-// ErrorCodeName returns a human-readable name for common HTTP status codes.
-func ErrorCodeName(code int) string {
-	switch code {
-	case http.StatusBadRequest:
-		return "Bad Request"
-	case http.StatusUnauthorized:
-		return "Unauthorized"
-	case http.StatusForbidden:
-		return "Forbidden"
-	case http.StatusNotFound:
-		return "Not Found"
-	case http.StatusMethodNotAllowed:
-		return "Method Not Allowed"
-	case http.StatusTooManyRequests:
-		return "Too Many Requests"
-	case http.StatusInternalServerError:
-		return "Internal Server Error"
-	case http.StatusBadGateway:
-		return "Bad Gateway"
-	case http.StatusServiceUnavailable:
-		return "Service Unavailable"
-	default:
-		return "Error"
+// clientMessage is the error text that is safe to send to the client: the
+// Message of an *Error with a code below 500, or else the status text.
+func clientMessage(err error, code int) string {
+	var e *Error
+	if errors.As(err, &e) && e.Code < http.StatusInternalServerError && e.Message != "" {
+		return e.Message
 	}
+	return http.StatusText(code)
 }
 
 // errorHTML generates a simple, styled HTML error page.

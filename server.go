@@ -184,7 +184,7 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("cartridge: database manager is required")
 	}
 	if cfg.ErrorHandler == nil {
-		cfg.ErrorHandler = createDefaultErrorHandler(cfg.Logger)
+		cfg.ErrorHandler = DefaultErrorHandler(cfg.Logger, cfg.Config.IsDevelopment())
 	}
 
 	trusted, err := parsePrefixes(cfg.TrustedProxies)
@@ -646,31 +646,6 @@ func parsePrefixes(list []string) ([]netip.Prefix, error) {
 		out = append(out, netip.PrefixFrom(addr.Unmap(), addr.Unmap().BitLen()))
 	}
 	return out, nil
-}
-
-// createDefaultErrorHandler creates a default error handler.
-func createDefaultErrorHandler(logger Logger) ErrorHandler {
-	return func(c *Context, err error) error {
-		code := errorCode(err)
-
-		logger.Error("Request error",
-			slog.Any("error", err),
-			slog.Int("status", code),
-			slog.String("path", c.Path()),
-			slog.String("method", c.Method()),
-		)
-
-		// JSON error response for API requests
-		if c.Accepts("application/json") == "application/json" {
-			return c.Status(code).JSON(Map{
-				"error":   "internal_server_error",
-				"message": err.Error(),
-			})
-		}
-
-		// Fallback text response
-		return c.Status(code).SendString(fmt.Sprintf("Error: %d - %s", code, err.Error()))
-	}
 }
 
 var fiberParam = regexp.MustCompile(`:([A-Za-z_][A-Za-z0-9_]*)`)

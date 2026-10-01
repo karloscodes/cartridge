@@ -10,33 +10,6 @@ import (
 	"testing"
 )
 
-func TestErrorCodeName(t *testing.T) {
-	tests := []struct {
-		code     int
-		expected string
-	}{
-		{http.StatusBadRequest, "Bad Request"},
-		{http.StatusUnauthorized, "Unauthorized"},
-		{http.StatusForbidden, "Forbidden"},
-		{http.StatusNotFound, "Not Found"},
-		{http.StatusMethodNotAllowed, "Method Not Allowed"},
-		{http.StatusTooManyRequests, "Too Many Requests"},
-		{http.StatusInternalServerError, "Internal Server Error"},
-		{http.StatusBadGateway, "Bad Gateway"},
-		{http.StatusServiceUnavailable, "Service Unavailable"},
-		{418, "Error"}, // Unknown code
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			result := ErrorCodeName(tt.code)
-			if result != tt.expected {
-				t.Errorf("ErrorCodeName(%d) = %s, want %s", tt.code, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestErrorHTML(t *testing.T) {
 	t.Run("generates valid HTML without message", func(t *testing.T) {
 		html := errorHTML(404, "Not Found", "")
@@ -99,6 +72,47 @@ func TestDefaultErrorHandler(t *testing.T) {
 		}
 		if !strings.Contains(string(body), `"error":"Internal Server Error"`) {
 			t.Errorf("expected a JSON error, got %s", body)
+		}
+	})
+
+	t.Run("hides the cause of a 500 from the client", func(t *testing.T) {
+		app := newApp(false, errors.New("dial tcp 10.0.0.3:5432: connection refused"))
+		req := httptest.NewRequest("GET", "/fail", nil)
+		req.Header.Set("Accept", "application/json")
+
+		resp, _ := app.Test(req)
+
+		body, _ := io.ReadAll(resp.Body)
+		if strings.Contains(string(body), "10.0.0.3") {
+			t.Errorf("the response leaks the error: %s", body)
+		}
+		if !strings.Contains(string(body), `"message":"Internal Server Error"`) {
+			t.Errorf("expected the status text, got %s", body)
+		}
+	})
+
+	t.Run("hides the cause of a 500 Error from the client", func(t *testing.T) {
+		app := newApp(false, NewError(http.StatusBadGateway, "upstream secret.internal failed"))
+		req := httptest.NewRequest("GET", "/fail", nil)
+		req.Header.Set("Accept", "text/html")
+
+		resp, _ := app.Test(req)
+
+		if body, _ := io.ReadAll(resp.Body); strings.Contains(string(body), "secret.internal") {
+			t.Errorf("the response leaks the error: %s", body)
+		}
+	})
+
+	t.Run("shows the message of a client Error", func(t *testing.T) {
+		app := newApp(false, NewError(http.StatusBadRequest, "email is required"))
+		req := httptest.NewRequest("GET", "/fail", nil)
+		req.Header.Set("Accept", "application/json")
+
+		resp, _ := app.Test(req)
+
+		body, _ := io.ReadAll(resp.Body)
+		if !strings.Contains(string(body), `"error":"Bad Request"`) || !strings.Contains(string(body), `"message":"email is required"`) {
+			t.Errorf("expected the client message, got %s", body)
 		}
 	})
 
