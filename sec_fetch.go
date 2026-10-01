@@ -27,11 +27,20 @@ func DefaultSecFetchSiteConfig() SecFetchSiteConfig {
 	}
 }
 
-// SecFetchSiteMiddleware validates the Sec-Fetch-Site header to prevent CSRF and spoofing attacks.
-// Modern browsers automatically set this header, and it cannot be spoofed by JavaScript or server-to-server tools.
+// SecFetchSiteMiddleware is CSRF protection. A browser sets the
+// Sec-Fetch-Site header itself, and a page on another site cannot change
+// it. So a cross-site form post or fetch from a victim's browser is blocked.
 //
-// STRICT MODE: Requests without Sec-Fetch-Site header are REJECTED.
-// This blocks: curl, Postman, Python requests, Node.js fetch, older browsers (pre-2020).
+// It is not client authentication. Any non-browser client (curl, scripts)
+// can send any Sec-Fetch-Site value. Protect APIs with real credentials.
+//
+// It checks only the configured methods, by default POST, PUT, DELETE, and
+// PATCH. GET, HEAD, and OPTIONS are never checked, so keep them free of
+// side effects.
+//
+// A request without Sec-Fetch-Site passes only when its Origin header
+// names this server (browsers over plain http send Origin, not
+// Sec-Fetch-Site). A request with neither header is rejected.
 //
 // Sec-Fetch-Site values:
 //   - "same-origin": Request from the same origin (scheme + host + port)
@@ -39,8 +48,8 @@ func DefaultSecFetchSiteConfig() SecFetchSiteConfig {
 //   - "cross-site": Request from a different site
 //   - "none": Direct navigation (user typed URL, bookmark, etc.)
 //
-// By default, this middleware allows "same-origin" and "none" for state-changing methods.
-// For analytics endpoints, configure AllowedValues to include "cross-site".
+// By default, this middleware allows "same-origin" and "none". For
+// endpoints that other sites call, such as analytics, add "cross-site".
 func SecFetchSiteMiddleware(config ...SecFetchSiteConfig) HandlerFunc {
 	cfg := DefaultSecFetchSiteConfig()
 	if len(config) > 0 {
