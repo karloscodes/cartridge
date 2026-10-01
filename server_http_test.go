@@ -93,6 +93,18 @@ func TestRouting(t *testing.T) {
 		}
 	})
 
+	t.Run("an unknown route answers Not Found without echoing the path", func(t *testing.T) {
+		app := newTestApp(t)
+		req := httptest.NewRequest("GET", "/missing", nil)
+		req.Header.Set("Accept", "application/json")
+
+		resp, _ := app.Test(req)
+
+		if got := body(t, resp); got != `{"error":"Not Found","message":"Not Found"}` {
+			t.Errorf("body = %s", got)
+		}
+	})
+
 	t.Run("a GET route answers HEAD", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Get("/_health", func(c *Context) error { return c.SendString("ok") })

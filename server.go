@@ -397,7 +397,7 @@ func (s *Server) build() {
 	}
 
 	notFound := s.chain(nil, func(c *Context) error {
-		return NewError(http.StatusNotFound, "Cannot "+c.Method()+" "+c.Path())
+		return NewError(http.StatusNotFound)
 	})
 	if s.catchAll != "" {
 		mux.Handle(fallbackPattern, s.chain(nil, func(c *Context) error {
@@ -489,7 +489,7 @@ func (s *Server) mountStaticAssets(mux *http.ServeMux) {
 		name := strings.TrimPrefix(c.Path(), prefix+"/")
 		info, err := fs.Stat(fsys, name)
 		if err != nil || info.IsDir() {
-			return NewError(http.StatusNotFound, "Cannot "+c.Method()+" "+c.Path())
+			return NewError(http.StatusNotFound)
 		}
 		// Vite puts a content hash in built file names, so embedded assets
 		// can be cached for a year. Development serves from disk, uncached.
