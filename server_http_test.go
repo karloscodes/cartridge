@@ -275,11 +275,11 @@ func TestContextResponses(t *testing.T) {
 		}
 	})
 
-	t.Run("BodyParser reads form fields by tag and by name", func(t *testing.T) {
+	t.Run("BodyParser reads form fields by tag", func(t *testing.T) {
 		app := newTestApp(t)
 		var got struct {
-			Email    string `form:"email"`
-			Remember bool
+			Email    string   `form:"email"`
+			Remember bool     `form:"remember"`
 			Tags     []string `form:"tag"`
 		}
 		app.Post("/x", func(c *Context) error { return c.BodyParser(&got) })

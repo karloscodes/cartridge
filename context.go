@@ -58,7 +58,7 @@ type Context struct {
 	locals   map[any]any
 	body     []byte
 	bodyRead bool
-	bodyErr  *Error // why the body read failed, if it did
+	bodyErr  *Error   // why the body read failed, if it did
 	db       *gorm.DB // Cached database session (lazy-loaded)
 }
 
@@ -318,7 +318,9 @@ func (ctx *Context) FormValue(key string) string {
 }
 
 // BodyParser decodes the body into out by Content-Type: JSON, urlencoded
-// form, or multipart form. Form fields map by the `form` struct tag.
+// form, or multipart form. JSON uses encoding/json rules. Form fields map
+// only by an explicit `form` struct tag. It returns an *Error: 400 for a
+// malformed body, 413 for a body over the limit, 415 for another type.
 func (ctx *Context) BodyParser(out any) error {
 	body := ctx.Body()
 	if ctx.bodyErr != nil {
@@ -327,17 +329,25 @@ func (ctx *Context) BodyParser(out any) error {
 	ct, _, _ := mime.ParseMediaType(ctx.r.Header.Get("Content-Type"))
 	switch {
 	case strings.HasSuffix(ct, "json"):
-		return json.Unmarshal(body, out)
+		if err := json.Unmarshal(body, out); err != nil {
+			var target *json.InvalidUnmarshalError
+			if errors.As(err, &target) {
+				return err // a programming error, not a bad request
+			}
+			return NewError(http.StatusBadRequest, "malformed JSON body")
+		}
+		return nil
 	case ct == "application/x-www-form-urlencoded", ct == "multipart/form-data":
 		if err := ctx.r.ParseMultipartForm(32 << 20); err != nil && err != http.ErrNotMultipart {
-			return NewError(http.StatusBadRequest, err.Error())
+			return NewError(http.StatusBadRequest, "malformed form body")
 		}
 		return decodeValues(ctx.r.PostForm, "form", out)
 	}
-	return NewError(http.StatusUnprocessableEntity)
+	return NewError(http.StatusUnsupportedMediaType)
 }
 
-// ParamsParser decodes route parameters into out by the `params` struct tag.
+// ParamsParser decodes route parameters into out. Fields map only by an
+// explicit `params` struct tag.
 func (ctx *Context) ParamsParser(out any) error {
 	values := url.Values{}
 	for _, name := range ctx.paramNames() {
@@ -346,7 +356,8 @@ func (ctx *Context) ParamsParser(out any) error {
 	return decodeValues(values, "params", out)
 }
 
-// QueryParser decodes the query string into out by the `query` struct tag.
+// QueryParser decodes the query string into out. Fields map only by an
+// explicit `query` struct tag.
 func (ctx *Context) QueryParser(out any) error {
 	return decodeValues(ctx.r.URL.Query(), "query", out)
 }

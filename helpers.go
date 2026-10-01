@@ -14,8 +14,9 @@ import (
 // urlencoded/multipart form, JSON body (the Inertia protocol), route param, or
 // query string — checked in that order. Returns "" if the key is absent.
 //
-// It's the single-field counterpart to Bind: reach for Input when you need one
-// or two values, Bind when you want a typed struct. This avoids the
+// Unlike Bind, Input also reads route params and the query string. Reach
+// for Input when you need one or two values, Bind when you want a typed
+// struct of body fields. This avoids the
 // declare-struct-then-pull-fields ceremony for the common case:
 //
 //	key := strings.TrimSpace(ctx.Input("openai_api_key"))
@@ -45,25 +46,22 @@ func (ctx *Context) Input(key string) string {
 	return ctx.Query(key)
 }
 
-// Bind decodes request input into out, regardless of how it arrived.
-// It reads the body (BodyParser is content-type-aware: JSON,
-// x-www-form-urlencoded, multipart), then overlays route params and query
-// values. Use this instead of FormValue so handlers don't break when the
-// frontend posts JSON (e.g. the Inertia protocol) vs a form.
+// Bind decodes the request body into out: JSON (the Inertia protocol),
+// x-www-form-urlencoded, or multipart. Use it instead of FormValue so
+// handlers work for both JSON and form posts. An empty body is not an error.
+//
+// Bind reads the body only. Read route params and query values with Params,
+// Query, ParamsParser, or QueryParser, so a query string cannot set a field
+// the body did not set. JSON follows encoding/json rules; form fields map
+// only by an explicit `form` tag, and "-" skips a field.
+//
+// Bind returns an *Error: 400 for a malformed body, 413 for a body over
+// ServerConfig.BodyLimit, 415 for an unsupported Content-Type.
 func (ctx *Context) Bind(out any) error {
-	if len(ctx.Body()) > 0 || ctx.bodyErr != nil {
-		if err := ctx.BodyParser(out); err != nil {
-			return err
-		}
+	if len(ctx.Body()) == 0 && ctx.bodyErr == nil {
+		return nil
 	}
-
-	// Overlay route params and query values. These are best-effort:
-	// a struct may legitimately have no fields that match, so their
-	// errors are not propagated.
-	_ = ctx.ParamsParser(out)
-	_ = ctx.QueryParser(out)
-
-	return nil
+	return ctx.BodyParser(out)
 }
 
 // Inertia renders an Inertia page, auto-injecting the current flash message

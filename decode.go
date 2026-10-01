@@ -1,7 +1,9 @@
 package cartridge
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -9,8 +11,10 @@ import (
 )
 
 // decodeValues copies form, query, or route values into the struct out.
-// A field matches the name in its tag (for example `form:"email"`), or its
-// own name, ignoring case. Keys without a matching field are skipped.
+// A field matches only the name in its tag (for example `form:"email"`),
+// ignoring case. Fields without the tag, or with "-", are never set, so a
+// client cannot set a field the struct does not expose. A value that does
+// not fit its field gives an *Error with status 400.
 func decodeValues(values url.Values, tag string, out any) error {
 	v := reflect.ValueOf(out)
 	if v.Kind() != reflect.Pointer || v.Elem().Kind() != reflect.Struct {
@@ -18,6 +22,9 @@ func decodeValues(values url.Values, tag string, out any) error {
 	}
 	return decodeStruct(values, tag, v.Elem())
 }
+
+// errUnsupportedType marks a field type that decodeValues cannot set.
+var errUnsupportedType = errors.New("unsupported type")
 
 func decodeStruct(values url.Values, tag string, v reflect.Value) error {
 	t := v.Type()
@@ -34,19 +41,18 @@ func decodeStruct(values url.Values, tag string, v reflect.Value) error {
 		}
 
 		name, _, _ := strings.Cut(field.Tag.Get(tag), ",")
-		if name == "-" {
+		if name == "" || name == "-" {
 			continue
-		}
-		if name == "" {
-			name = field.Name
 		}
 
 		raw, ok := lookupFold(values, name)
 		if !ok {
 			continue
 		}
-		if err := setField(v.Field(i), raw); err != nil {
+		if err := setField(v.Field(i), raw); errors.Is(err, errUnsupportedType) {
 			return fmt.Errorf("cartridge: field %q: %w", name, err)
+		} else if err != nil {
+			return NewError(http.StatusBadRequest, fmt.Sprintf("invalid value for %q", name))
 		}
 	}
 	return nil
@@ -135,7 +141,7 @@ func setScalar(f reflect.Value, s string) error {
 		}
 		f.SetFloat(n)
 	default:
-		return fmt.Errorf("unsupported type %s", f.Type())
+		return fmt.Errorf("%w %s", errUnsupportedType, f.Type())
 	}
 	return nil
 }

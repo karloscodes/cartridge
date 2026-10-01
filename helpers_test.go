@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -65,7 +66,7 @@ func TestBind(t *testing.T) {
 		}
 	})
 
-	t.Run("overlays route params and query values", func(t *testing.T) {
+	t.Run("ignores route params and query values", func(t *testing.T) {
 		app := newTestApp(t)
 		var got input
 		app.Post("/users/:id", func(c *Context) error {
@@ -73,7 +74,7 @@ func TestBind(t *testing.T) {
 		})
 
 		body := strings.NewReader(`{"name":"Ada"}`)
-		req, _ := http.NewRequest("POST", "/users/42?age=99", body)
+		req, _ := http.NewRequest("POST", "/users/42?age=99&name=Eve", body)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := app.Test(req)
 
@@ -83,14 +84,57 @@ func TestBind(t *testing.T) {
 		if resp.StatusCode != 200 {
 			t.Fatalf("expected 200, got %d", resp.StatusCode)
 		}
-		if got.Name != "Ada" {
-			t.Errorf("expected body value Name=Ada, got %q", got.Name)
+		if got != (input{Name: "Ada"}) {
+			t.Errorf("expected only the body value, got %+v", got)
 		}
-		if got.ID != "42" {
-			t.Errorf("expected route param ID=42, got %q", got.ID)
+	})
+
+	t.Run("sets only form fields with an explicit form tag", func(t *testing.T) {
+		app := newTestApp(t)
+		var got struct {
+			Email   string `form:"email"`
+			IsAdmin bool
+			Role    string `json:"role" form:"-"`
 		}
-		if got.Age != 99 {
-			t.Errorf("expected query overlay Age=99, got %d", got.Age)
+		app.Post("/signup", func(c *Context) error {
+			return c.Bind(&got)
+		})
+
+		form := url.Values{"email": {"a@b.c"}, "IsAdmin": {"true"}, "isadmin": {"true"}, "role": {"admin"}, "Role": {"admin"}}
+		req, _ := http.NewRequest("POST", "/signup", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		app.Test(req)
+
+		if got.Email != "a@b.c" || got.IsAdmin || got.Role != "" {
+			t.Errorf("expected only Email set, got %+v", got)
+		}
+	})
+
+	t.Run("returns typed errors for bad input", func(t *testing.T) {
+		cases := []struct {
+			name, contentType, body string
+			want                    int
+		}{
+			{"malformed JSON", "application/json", `{"name":`, http.StatusBadRequest},
+			{"a value that does not fit its field", "application/x-www-form-urlencoded", "age=old", http.StatusBadRequest},
+			{"an unsupported content type", "text/plain", "name=Ada", http.StatusUnsupportedMediaType},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				app := newTestApp(t)
+				app.Post("/users", func(c *Context) error {
+					var got input
+					return c.Bind(&got)
+				})
+				req, _ := http.NewRequest("POST", "/users", strings.NewReader(tc.body))
+				req.Header.Set("Content-Type", tc.contentType)
+
+				resp, _ := app.Test(req)
+
+				if resp.StatusCode != tc.want {
+					t.Errorf("status = %d, want %d", resp.StatusCode, tc.want)
+				}
+			})
 		}
 	})
 
@@ -115,12 +159,32 @@ func TestBind(t *testing.T) {
 		if bindErr != nil {
 			t.Errorf("expected no error for empty body, got %v", bindErr)
 		}
-		// Params and query overlays should still apply.
-		if got.ID != "7" {
-			t.Errorf("expected route param ID=7, got %q", got.ID)
+		if got != (input{}) {
+			t.Errorf("expected nothing bound, got %+v", got)
 		}
-		if got.Name != "Linus" {
-			t.Errorf("expected query Name=Linus, got %q", got.Name)
+	})
+}
+
+func TestQueryAndParamsParser(t *testing.T) {
+	t.Run("set only fields with an explicit tag", func(t *testing.T) {
+		app := newTestApp(t)
+		var got struct {
+			ID     string `params:"id"`
+			Page   int    `query:"page"`
+			Secret string `json:"-"`
+			Owner  string
+		}
+		app.Get("/sites/:id", func(c *Context) error {
+			if err := c.ParamsParser(&got); err != nil {
+				return err
+			}
+			return c.QueryParser(&got)
+		})
+
+		app.Test(httptest.NewRequest("GET", "/sites/7?page=2&Secret=x&secret=x&Owner=eve&owner=eve&id=9", nil))
+
+		if got.ID != "7" || got.Page != 2 || got.Secret != "" || got.Owner != "" {
+			t.Errorf("expected only tagged fields set, got %+v", got)
 		}
 	})
 }
