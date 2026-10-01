@@ -103,7 +103,7 @@ func TestBind(t *testing.T) {
 		form := url.Values{"email": {"a@b.c"}, "IsAdmin": {"true"}, "isadmin": {"true"}, "role": {"admin"}, "Role": {"admin"}}
 		req, _ := http.NewRequest("POST", "/signup", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		app.Test(req)
+		_, _ = app.Test(req)
 
 		if got.Email != "a@b.c" || got.IsAdmin || got.Role != "" {
 			t.Errorf("expected only Email set, got %+v", got)
@@ -181,7 +181,7 @@ func TestQueryAndParamsParser(t *testing.T) {
 			return c.QueryParser(&got)
 		})
 
-		app.Test(httptest.NewRequest("GET", "/sites/7?page=2&Secret=x&secret=x&Owner=eve&owner=eve&id=9", nil))
+		_, _ = app.Test(httptest.NewRequest("GET", "/sites/7?page=2&Secret=x&secret=x&Owner=eve&owner=eve&id=9", nil))
 
 		if got.ID != "7" || got.Page != 2 || got.Secret != "" || got.Owner != "" {
 			t.Errorf("expected only tagged fields set, got %+v", got)

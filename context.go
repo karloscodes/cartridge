@@ -288,7 +288,7 @@ func (ctx *Context) Body() []byte {
 		ctx.bodyRead = true
 		if ctx.r.Body != nil {
 			body, err := io.ReadAll(ctx.r.Body)
-			ctx.r.Body.Close()
+			_ = ctx.r.Body.Close()
 			if err != nil {
 				ctx.bodyErr = bodyReadError(err)
 			} else {
@@ -420,7 +420,7 @@ func (ctx *Context) JSON(v any) error {
 // is an io.Closer, such as an *os.File, SendStream closes it.
 func (ctx *Context) SendStream(r io.Reader, size ...int) error {
 	if c, ok := r.(io.Closer); ok {
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 	}
 	if len(size) > 0 && size[0] >= 0 {
 		ctx.w.Header().Set("Content-Length", strconv.Itoa(size[0]))

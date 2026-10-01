@@ -48,7 +48,7 @@ func RequestID() HandlerFunc {
 		id := c.Get("X-Request-ID")
 		if !validRequestID(id) {
 			b := make([]byte, 16)
-			rand.Read(b)
+			_, _ = rand.Read(b) // crypto/rand.Read never fails; it panics instead
 			id = hex.EncodeToString(b)
 		}
 		c.Set("X-Request-ID", id)
@@ -64,7 +64,9 @@ func validRequestID(id string) bool {
 		return false
 	}
 	for _, r := range id {
-		if !('a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' || r == '-') {
+		letter := 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z'
+		digit := '0' <= r && r <= '9'
+		if !letter && !digit && r != '-' {
 			return false
 		}
 	}
@@ -190,7 +192,7 @@ func (w *gzipWriter) Write(p []byte) (int, error) {
 
 func (w *gzipWriter) Flush() {
 	if w.gz != nil {
-		w.gz.Flush()
+		_ = w.gz.Flush()
 	}
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
@@ -201,7 +203,7 @@ func (w *gzipWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *gzipWriter) close() {
 	if w.gz != nil {
-		w.gz.Close()
+		_ = w.gz.Close()
 	}
 }
 

@@ -152,7 +152,7 @@ func TestRouting(t *testing.T) {
 		app.Get("/x", func(c *Context) error { order = append(order, "handler"); return nil },
 			&RouteConfig{CustomMiddleware: []HandlerFunc{mw("route")}})
 
-		app.Test(httptest.NewRequest("GET", "/x", nil))
+		_, _ = app.Test(httptest.NewRequest("GET", "/x", nil))
 
 		if got := strings.Join(order, ","); got != "global,route,handler" {
 			t.Errorf("order = %s, want global,route,handler", got)
@@ -287,7 +287,7 @@ func TestContextResponses(t *testing.T) {
 		req := httptest.NewRequest("POST", "/x", strings.NewReader("email=a%40b.c&remember=on&tag=x&tag=y"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-		app.Test(req)
+		_, _ = app.Test(req)
 
 		if got.Email != "a@b.c" || !got.Remember || strings.Join(got.Tags, ",") != "x,y" {
 			t.Errorf("got %+v", got)
@@ -297,7 +297,7 @@ func TestContextResponses(t *testing.T) {
 	t.Run("an error after the response started keeps the response", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Get("/x", func(c *Context) error {
-			c.SendString("partial")
+			_ = c.SendString("partial")
 			return NewError(http.StatusInternalServerError)
 		})
 
@@ -771,7 +771,7 @@ func TestShutdownWaitsForOpenRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
-	ln.Close()
+	_ = ln.Close()
 	app := newTestApp(t)
 	app.cfg.Config = &portConfig{port: port}
 	started := make(chan struct{})
@@ -780,7 +780,7 @@ func TestShutdownWaitsForOpenRequests(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		return c.SendString("done")
 	})
-	go app.Start()
+	go func() { _ = app.Start() }()
 	waitForPort(t, port)
 
 	result := make(chan string, 1)
@@ -814,7 +814,7 @@ func waitForPort(t *testing.T, port string) {
 	t.Helper()
 	for range 100 {
 		if conn, err := net.Dial("tcp", "127.0.0.1:"+port); err == nil {
-			conn.Close()
+			_ = conn.Close()
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -838,7 +838,7 @@ func TestWriteTimeout(t *testing.T) {
 		if err := app.StartAsync(); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { app.Shutdown(context.Background()) })
+		t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
 
 		resp, err := http.Get("http://127.0.0.1:" + port + "/stream")
 

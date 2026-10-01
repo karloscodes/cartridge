@@ -49,7 +49,7 @@ func busyPort(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 	return port
 }
@@ -61,7 +61,7 @@ func freePort(t *testing.T) string {
 		t.Fatal(err)
 	}
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
-	ln.Close()
+	_ = ln.Close()
 	return port
 }
 
@@ -75,7 +75,7 @@ func TestApplicationRun(t *testing.T) {
 		<-worker.started
 		waitForPort(t, port)
 
-		syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
 
 		select {
 		case err := <-done:
