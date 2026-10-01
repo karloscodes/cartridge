@@ -27,12 +27,12 @@ var (
 	manifestOnce sync.Once
 	jsFile       string
 	cssFile      string
-	assetVersion string                                 // Hash of the built asset paths, sent as the Inertia version
-	devMode      bool                                   // When true, re-read manifest on every request
-	pageTitle    string                   = "Fusionaly" // Default page title
-	manifestData []byte                                 // Embedded manifest data (used when filesystem not available)
-	scriptPage   bool                                   // Send the first page in a JSON script element (Inertia v3)
-	manifest     map[string]ManifestEntry               // Parsed Vite manifest, for preload links
+	assetVersion string                   // Hash of the built asset paths, sent as the Inertia version
+	devMode      bool                     // When true, re-read manifest on every request
+	pageTitle    string                   // HTML page title; empty by default, set with SetTitle
+	manifestData []byte                   // Embedded manifest data (used when filesystem not available)
+	scriptPage   bool                     // Send the first page in a JSON script element (Inertia v3)
+	manifest     map[string]ManifestEntry // Parsed Vite manifest, for preload links
 )
 
 // entryKey is the Vite entry; pagesDir holds one module per Inertia page,
