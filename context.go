@@ -416,8 +416,12 @@ func (ctx *Context) JSON(v any) error {
 	return ctx.Send(data)
 }
 
-// SendStream copies r to the body. Pass size to set Content-Length.
+// SendStream copies r to the body. Pass size to set Content-Length. When r
+// is an io.Closer, such as an *os.File, SendStream closes it.
 func (ctx *Context) SendStream(r io.Reader, size ...int) error {
+	if c, ok := r.(io.Closer); ok {
+		defer c.Close()
+	}
 	if len(size) > 0 && size[0] >= 0 {
 		ctx.w.Header().Set("Content-Length", strconv.Itoa(size[0]))
 	}

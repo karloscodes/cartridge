@@ -309,6 +309,30 @@ func TestContextResponses(t *testing.T) {
 	})
 }
 
+type closeRecorder struct {
+	io.Reader
+	closed bool
+}
+
+func (r *closeRecorder) Close() error {
+	r.closed = true
+	return nil
+}
+
+func TestSendStream(t *testing.T) {
+	t.Run("closes a reader that is an io.Closer", func(t *testing.T) {
+		app := newTestApp(t)
+		stream := &closeRecorder{Reader: strings.NewReader("data")}
+		app.Get("/x", func(c *Context) error { return c.SendStream(stream) })
+
+		resp, _ := app.Test(httptest.NewRequest("GET", "/x", nil))
+
+		if body(t, resp) != "data" || !stream.closed {
+			t.Errorf("closed = %v", stream.closed)
+		}
+	})
+}
+
 func TestServerTest(t *testing.T) {
 	t.Run("returns an error when the handler runs past the timeout", func(t *testing.T) {
 		app := newTestApp(t)
