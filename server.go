@@ -487,6 +487,9 @@ func (s *Server) mountStaticAssets(mux *http.ServeMux) {
 	files := http.StripPrefix(prefix, http.FileServerFS(fsys))
 	mux.Handle("GET "+prefix+"/", s.chain(nil, func(c *Context) error {
 		name := strings.TrimPrefix(c.Path(), prefix+"/")
+		if hasDotSegment(name) {
+			return NewError(http.StatusNotFound)
+		}
 		info, err := fs.Stat(fsys, name)
 		if err != nil || info.IsDir() {
 			return NewError(http.StatusNotFound)
@@ -499,6 +502,18 @@ func (s *Server) mountStaticAssets(mux *http.ServeMux) {
 		files.ServeHTTP(c.Response(), c.Request())
 		return nil
 	}))
+}
+
+// hasDotSegment reports whether a segment of the slash-separated name starts
+// with a dot, like ".env", ".git/config", or ".DS_Store". These files are
+// never public.
+func hasDotSegment(name string) bool {
+	for _, segment := range strings.Split(name, "/") {
+		if strings.HasPrefix(segment, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 // mountPublicFiles serves root-level public files (favicon.svg, robots.txt, etc.).
@@ -519,10 +534,10 @@ func (s *Server) mountPublicFiles(mux *http.ServeMux) {
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() {
+		name := entry.Name()
+		if entry.IsDir() || strings.HasPrefix(name, ".") {
 			continue
 		}
-		name := entry.Name()
 		pattern, _ := muxPattern("/" + name)
 		mux.Handle("GET "+pattern, s.chain(nil, func(c *Context) error {
 			http.ServeFileFS(c.Response(), c.Request(), publicFS, name)

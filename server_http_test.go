@@ -550,6 +550,9 @@ func TestStaticAssets(t *testing.T) {
 	assets := fstest.MapFS{
 		"app-abc123.js":      &fstest.MapFile{Data: []byte("console.log(1)")},
 		"chunks/lib-def.css": &fstest.MapFile{Data: []byte("body{}")},
+		".env":               &fstest.MapFile{Data: []byte("SECRET=1")},
+		".git/config":        &fstest.MapFile{Data: []byte("[core]")},
+		"chunks/.DS_Store":   &fstest.MapFile{Data: []byte("x")},
 	}
 	newApp := func() *Server {
 		app := newTestApp(t)
@@ -599,6 +602,18 @@ func TestStaticAssets(t *testing.T) {
 
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("status = %d, want 404", resp.StatusCode)
+		}
+	})
+
+	t.Run("hides dotfiles", func(t *testing.T) {
+		app := newApp()
+
+		for _, path := range []string{"/assets/.env", "/assets/.git/config", "/assets/chunks/.DS_Store"} {
+			resp, _ := app.Test(httptest.NewRequest("GET", path, nil))
+
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("%s = %d, want 404", path, resp.StatusCode)
+			}
 		}
 	})
 }

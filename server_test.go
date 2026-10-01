@@ -15,6 +15,7 @@ func TestPublicFS(t *testing.T) {
 	publicFiles := fstest.MapFS{
 		"favicon.svg": &fstest.MapFile{Data: []byte("<svg>test</svg>")},
 		"robots.txt":  &fstest.MapFile{Data: []byte("User-agent: *\nAllow: /")},
+		".env":        &fstest.MapFile{Data: []byte("SECRET=1")},
 	}
 
 	cfg := DefaultServerConfig()
@@ -53,6 +54,16 @@ func TestPublicFS(t *testing.T) {
 		}
 		if resp.StatusCode != 200 {
 			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("hides dotfiles", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/.env", nil)
+
+		resp, _ := srv.Test(req)
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("expected 404, got %d", resp.StatusCode)
 		}
 	})
 
