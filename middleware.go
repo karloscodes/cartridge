@@ -170,6 +170,10 @@ func compressible(code int, h http.Header) bool {
 	if h.Get("Content-Encoding") != "" {
 		return false
 	}
+	// gzip makes bodies under 1 KB larger, not smaller.
+	if n, err := strconv.Atoi(h.Get("Content-Length")); err == nil && n < 1024 {
+		return false
+	}
 	ct := h.Get("Content-Type")
 	switch {
 	case strings.HasPrefix(ct, "text/event-stream"),

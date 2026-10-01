@@ -357,7 +357,7 @@ func TestBuiltInMiddleware(t *testing.T) {
 	t.Run("gzips a response the client accepts", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Use(Compress())
-		app.Get("/x", func(c *Context) error { return c.SendString(strings.Repeat("fusionaly ", 100)) })
+		app.Get("/x", func(c *Context) error { return c.SendString(strings.Repeat("fusionaly ", 200)) })
 		req := httptest.NewRequest("GET", "/x", nil)
 		req.Header.Set("Accept-Encoding", "gzip, br")
 
@@ -371,8 +371,22 @@ func TestBuiltInMiddleware(t *testing.T) {
 			t.Fatalf("gzip: %v", err)
 		}
 		plain, _ := io.ReadAll(zr)
-		if string(plain) != strings.Repeat("fusionaly ", 100) {
+		if string(plain) != strings.Repeat("fusionaly ", 200) {
 			t.Errorf("decompressed body is wrong: %q", plain[:20])
+		}
+	})
+
+	t.Run("does not gzip a tiny body", func(t *testing.T) {
+		app := newTestApp(t)
+		app.Use(Compress())
+		app.Get("/x", func(c *Context) error { return c.JSON(Map{"ok": true}) })
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+
+		resp, _ := app.Test(req)
+
+		if resp.Header.Get("Content-Encoding") != "" || body(t, resp) != `{"ok":true}` {
+			t.Errorf("tiny body was encoded: %q", resp.Header.Get("Content-Encoding"))
 		}
 	})
 

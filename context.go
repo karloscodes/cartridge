@@ -340,6 +340,10 @@ func (ctx *Context) SendString(body string) error {
 
 // Send sends a raw body.
 func (ctx *Context) Send(body []byte) error {
+	// A known length lets Compress skip bodies too small to gain from gzip.
+	if ctx.w.Header().Get("Content-Length") == "" {
+		ctx.w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	}
 	ctx.writeHeader()
 	if len(body) == 0 {
 		return nil
