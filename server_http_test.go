@@ -449,6 +449,22 @@ func TestBuiltInMiddleware(t *testing.T) {
 		}
 	})
 
+	t.Run("replaces a request ID that is too long or has other characters", func(t *testing.T) {
+		for _, id := range []string{strings.Repeat("a", 65), "abc\nforged log line", "<script>", "a b"} {
+			app := newTestApp(t)
+			app.Use(RequestID())
+			app.Get("/x", func(c *Context) error { return nil })
+			req := httptest.NewRequest("GET", "/x", nil)
+			req.Header.Set("X-Request-ID", id)
+
+			resp, _ := app.Test(req)
+
+			if got := resp.Header.Get("X-Request-ID"); got == id || len(got) != 32 {
+				t.Errorf("client ID %q: got %q, want a new ID", id, got)
+			}
+		}
+	})
+
 	t.Run("turns a panic into a 500", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Use(Recover())

@@ -34,10 +34,12 @@ const requestIDKey = "requestid"
 
 // RequestID sets the X-Request-ID response header. It keeps the ID the
 // client sent, or makes a new one, and stores it in Locals("requestid").
+// The client's ID counts only when it is up to 64 letters, digits, and
+// dashes, so it cannot inject text into logs or headers.
 func RequestID() HandlerFunc {
 	return func(c *Context) error {
 		id := c.Get("X-Request-ID")
-		if id == "" {
+		if !validRequestID(id) {
 			b := make([]byte, 16)
 			rand.Read(b)
 			id = hex.EncodeToString(b)
@@ -46,6 +48,20 @@ func RequestID() HandlerFunc {
 		c.Locals(requestIDKey, id)
 		return c.Next()
 	}
+}
+
+// validRequestID reports whether id is 1 to 64 characters of A-Z, a-z,
+// 0-9, and "-".
+func validRequestID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		if !('a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // SecurityHeaders sets security response headers that suit a typical
