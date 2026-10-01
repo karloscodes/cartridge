@@ -8,7 +8,7 @@
 //   - Single handler signature: func(*Context) error
 //   - Built-in middleware for concurrency limiting, recovery, compression, etc.
 //   - Application lifecycle management with graceful shutdown
-//   - Support for both slog and zap logging via adapters
+//   - Logging with log/slog: Logger is an alias for *slog.Logger
 //
 // # Application Factories
 //
@@ -103,16 +103,10 @@
 //   - Config for runtime configuration
 //   - DB() for database access with request context
 //
-// # Logger Adapters
+// # Logging
 //
-// Cartridge provides adapters for common logging libraries:
-//
-//	// For slog (Go 1.21+ stdlib)
-//	logger := cartridge.NewSlogAdapter(slog.Default())
-//
-//	// For zap
-//	zapLogger, _ := zap.NewProduction()
-//	logger := cartridge.NewZapAdapter(zapLogger)
+// cartridge.Logger is an alias for *slog.Logger. Pass any *slog.Logger,
+// or build one from config with NewLogger.
 //
 // # Concurrency Limiting
 //

@@ -34,6 +34,10 @@ type ServerConfig struct {
 	// HTTP server configuration
 	ErrorHandler ErrorHandler
 	ReadTimeout  time.Duration
+	// WriteTimeout limits the time to write a response. Default: 30s. A
+	// stream (server-sent events, a large download) lifts it per request:
+	//
+	//	http.NewResponseController(ctx.Response()).SetWriteDeadline(time.Time{})
 	WriteTimeout time.Duration
 	BodyLimit    int // Maximum request body in bytes. Default: 4 MB
 

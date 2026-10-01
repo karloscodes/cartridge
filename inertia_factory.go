@@ -147,12 +147,12 @@ type FactoryConfig interface {
 // Example:
 //
 //	app, err := cartridge.NewInertiaApp(
-//	    cartridge.WithConfig(cfg),
-//	    cartridge.WithStaticAssets(web.Assets()),
-//	    cartridge.WithRoutes(mountRoutes),
-//	    cartridge.WithJobs(60*time.Second, eventProcessor),
-//	    cartridge.WithSession("/login"),
-//	    cartridge.WithCrossOriginAPI(),
+//	    cartridge.InertiaWithConfig(cfg),
+//	    cartridge.InertiaWithStaticAssets(web.Assets()),
+//	    cartridge.InertiaWithRoutes(mountRoutes),
+//	    cartridge.InertiaWithJobs(60*time.Second, eventProcessor),
+//	    cartridge.InertiaWithSession("/login"),
+//	    cartridge.InertiaWithCrossOriginAPI(),
 //	)
 func NewInertiaApp(opts ...InertiaOption) (*InertiaApp, error) {
 	// Apply options
@@ -163,7 +163,7 @@ func NewInertiaApp(opts ...InertiaOption) (*InertiaApp, error) {
 
 	// Require config
 	if cfg.cfg == nil {
-		return nil, fmt.Errorf("cartridge: config is required (use WithConfig)")
+		return nil, fmt.Errorf("cartridge: config is required (use InertiaWithConfig)")
 	}
 
 	// Cast to FactoryConfig for extended methods

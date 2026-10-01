@@ -821,3 +821,32 @@ func waitForPort(t *testing.T, port string) {
 	}
 	t.Fatal("server did not start")
 }
+
+func TestWriteTimeout(t *testing.T) {
+	t.Run("a handler can lift the write deadline for a stream", func(t *testing.T) {
+		port := freePort(t)
+		app := newTestApp(t)
+		app.cfg.Config = &portConfig{port: port}
+		app.cfg.WriteTimeout = 50 * time.Millisecond
+		app.Get("/stream", func(c *Context) error {
+			if err := http.NewResponseController(c.Response()).SetWriteDeadline(time.Time{}); err != nil {
+				return err
+			}
+			time.Sleep(150 * time.Millisecond)
+			return c.SendString("done")
+		})
+		if err := app.StartAsync(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { app.Shutdown(context.Background()) })
+
+		resp, err := http.Get("http://127.0.0.1:" + port + "/stream")
+
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if got := body(t, resp); got != "done" {
+			t.Errorf("body = %q, want done", got)
+		}
+	})
+}
