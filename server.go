@@ -45,6 +45,12 @@ type ServerConfig struct {
 	// from, for example "X-Forwarded-For". TrustedProxies lists the IPs or
 	// CIDRs of your proxies. Context.IP and Context.Protocol read proxy
 	// headers only from these peers. Empty trusts no peer.
+	//
+	// Context.IP walks the header from right to left past every trusted
+	// address. So list only your own proxies. If you list whole private
+	// ranges and clients can also come from a private network, such a client
+	// can add a fake private address and choose its own IP. Protocol is not
+	// affected.
 	ProxyHeader    string
 	TrustedProxies []string
 
