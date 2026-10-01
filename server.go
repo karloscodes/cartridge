@@ -59,12 +59,16 @@ type ServerConfig struct {
 	PublicDirectory    string // Directory for public files in development (e.g. "web/public")
 
 	// Middleware configuration
-	EnableRequestID     bool
-	EnableRecover       bool
-	EnableHelmet        bool // Security headers
-	EnableCompress      bool
-	EnableSecFetchSite  bool // CSRF protection via Sec-Fetch-Site header
-	EnableRequestLogger bool
+	EnableRequestID bool
+	EnableRecover   bool
+	EnableHelmet    bool // Security headers, see SecurityHeaders
+
+	// ContentSecurityPolicy is the Content-Security-Policy header value.
+	// EnableHelmet sends it on every response when it is not empty.
+	ContentSecurityPolicy string
+	EnableCompress        bool
+	EnableSecFetchSite    bool // CSRF protection via Sec-Fetch-Site header
+	EnableRequestLogger   bool
 
 	// SecFetchSite configuration
 	// Allowed values for Sec-Fetch-Site header. Default: ["same-origin", "none"]
@@ -218,7 +222,7 @@ func (s *Server) setupGlobalMiddleware() {
 		s.global = append(s.global, Recover())
 	}
 	if s.cfg.EnableHelmet {
-		s.global = append(s.global, SecurityHeaders())
+		s.global = append(s.global, serverSecurityHeaders(s.cfg))
 	}
 	if s.cfg.EnableCompress {
 		s.global = append(s.global, Compress())

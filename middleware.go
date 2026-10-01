@@ -48,20 +48,20 @@ func RequestID() HandlerFunc {
 	}
 }
 
-// SecurityHeaders sets the security response headers that Fiber's helmet
-// middleware set in cartridge v0, with Referrer-Policy "same-origin".
+// SecurityHeaders sets security response headers that suit a typical
+// server-rendered app. It does not send Cross-Origin-Embedder-Policy: its
+// require-corp mode blocks cross-origin images and scripts on your pages.
+// Cross-Origin-Resource-Policy stays same-origin: it stops other sites
+// from embedding your responses. A route that other sites must load, such
+// as a public script, sets the header to "cross-origin".
 func SecurityHeaders() HandlerFunc {
 	headers := [][2]string{
-		{"X-XSS-Protection", "0"},
 		{"X-Content-Type-Options", "nosniff"},
 		{"X-Frame-Options", "SAMEORIGIN"},
 		{"Referrer-Policy", "same-origin"},
-		{"Cross-Origin-Embedder-Policy", "require-corp"},
 		{"Cross-Origin-Opener-Policy", "same-origin"},
 		{"Cross-Origin-Resource-Policy", "same-origin"},
 		{"Origin-Agent-Cluster", "?1"},
-		{"X-DNS-Prefetch-Control", "off"},
-		{"X-Download-Options", "noopen"},
 		{"X-Permitted-Cross-Domain-Policies", "none"},
 	}
 	return func(c *Context) error {
@@ -70,6 +70,25 @@ func SecurityHeaders() HandlerFunc {
 			h.Set(kv[0], kv[1])
 		}
 		return c.Next()
+	}
+}
+
+// serverSecurityHeaders adds to SecurityHeaders the headers that depend on
+// the server config: ServerConfig.ContentSecurityPolicy, and HSTS for an
+// https request in production.
+func serverSecurityHeaders(cfg *ServerConfig) HandlerFunc {
+	static := SecurityHeaders()
+	return func(c *Context) error {
+		h := c.Response().Header()
+		if cfg.ContentSecurityPolicy != "" {
+			h.Set("Content-Security-Policy", cfg.ContentSecurityPolicy)
+		}
+		// HSTS tells the browser to refuse plain http for a year, so send it
+		// only over https.
+		if cfg.Config.IsProduction() && c.Protocol() == "https" {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		return static(c)
 	}
 }
 

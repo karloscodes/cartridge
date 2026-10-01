@@ -365,6 +365,56 @@ func TestBodyLimit(t *testing.T) {
 }
 
 func TestBuiltInMiddleware(t *testing.T) {
+	t.Run("drops the security headers that break pages or do nothing", func(t *testing.T) {
+		app := newTestApp(t)
+		app.Use(SecurityHeaders())
+		app.Get("/x", func(c *Context) error { return nil })
+
+		resp, _ := app.Test(httptest.NewRequest("GET", "/x", nil))
+
+		for _, header := range []string{"Cross-Origin-Embedder-Policy", "X-XSS-Protection", "X-Download-Options", "X-DNS-Prefetch-Control"} {
+			if got := resp.Header.Get(header); got != "" {
+				t.Errorf("%s = %q, want none", header, got)
+			}
+		}
+	})
+
+	t.Run("sends the configured Content-Security-Policy", func(t *testing.T) {
+		srv := newTestServer(t, func(c *ServerConfig) { c.ContentSecurityPolicy = "default-src 'self'" })
+		srv.Get("/x", func(c *Context) error { return nil })
+
+		resp, _ := srv.Test(httptest.NewRequest("GET", "/x", nil))
+
+		if got := resp.Header.Get("Content-Security-Policy"); got != "default-src 'self'" {
+			t.Errorf("Content-Security-Policy = %q", got)
+		}
+	})
+
+	t.Run("sends HSTS only over https in production", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			config Config
+			url    string
+			want   string
+		}{
+			{"https in production", &prodConfig{}, "https://example.com/x", "max-age=31536000"},
+			{"http in production", &prodConfig{}, "http://example.com/x", ""},
+			{"https outside production", &testConfig{}, "https://example.com/x", ""},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				srv := newTestServer(t, func(c *ServerConfig) { c.Config = tc.config })
+				srv.Get("/x", func(c *Context) error { return nil })
+
+				resp, _ := srv.Test(httptest.NewRequest("GET", tc.url, nil))
+
+				if got := resp.Header.Get("Strict-Transport-Security"); got != tc.want {
+					t.Errorf("Strict-Transport-Security = %q, want %q", got, tc.want)
+				}
+			})
+		}
+	})
+
 	t.Run("sets the security headers", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Use(SecurityHeaders())
