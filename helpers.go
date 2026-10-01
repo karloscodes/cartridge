@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/karloscodes/cartridge/flash"
@@ -104,15 +105,29 @@ func (ctx *Context) setFlash(messageType, message string) {
 	flash.SetFlash(ctx.Response(), messageType, message, secure)
 }
 
-// RedirectBack issues a 302 to the Referer header, or to fallback if there's
-// no referer. Combined with the Flash* helpers it enables the Post/Redirect/Get
+// RedirectBack issues a 302 to the page in the Referer header, or to
+// fallback. Combined with the Flash* helpers it enables the Post/Redirect/Get
 // pattern in one line:
 //
 //	return ctx.FlashError("Invalid domain").RedirectBack("/admin/websites")
+//
+// It follows a Referer only on this host, and redirects to its path and
+// query only. Any other Referer gives the fallback, so a forged Referer
+// cannot send the user to another site.
 func (ctx *Context) RedirectBack(fallback string) error {
-	loc := ctx.Get("Referer")
-	if loc == "" {
-		loc = fallback
+	return ctx.Redirect(localReferer(ctx.Get("Referer"), ctx.Hostname(), fallback), http.StatusFound)
+}
+
+// localReferer returns the path and query of referer when it points at host,
+// or else fallback.
+func localReferer(referer, host, fallback string) string {
+	u, err := url.Parse(referer)
+	if referer == "" || err != nil || (u.Host != "" && u.Host != host) || (u.Host == "" && u.Scheme != "") {
+		return fallback
 	}
-	return ctx.Redirect(loc, http.StatusFound)
+	// A browser reads "//evil.com" and "/\evil.com" as another host.
+	if !strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") || strings.HasPrefix(u.Path, "/\\") {
+		return fallback
+	}
+	return u.RequestURI()
 }

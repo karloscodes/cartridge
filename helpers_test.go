@@ -413,6 +413,31 @@ func TestFlashAndRedirectBack(t *testing.T) {
 		assertFlashCookie(t, resp, "error", "Invalid domain")
 	})
 
+	t.Run("RedirectBack follows only a Referer on this host", func(t *testing.T) {
+		cases := map[string]string{
+			"http://example.com/admin/sites?page=2": "/admin/sites?page=2",
+			"/admin/sites":                          "/admin/sites",
+			"https://evil.com/phish":                "/fallback",
+			"//evil.com/phish":                      "/fallback",
+			"/\\evil.com":                           "/fallback",
+			"http://example.com//evil.com":          "/fallback",
+			"javascript:alert(1)":                   "/fallback",
+			"evil.com":                              "/fallback",
+		}
+		for referer, want := range cases {
+			app := newTestApp(t)
+			app.Post("/x", func(c *Context) error { return c.RedirectBack("/fallback") })
+			req := httptest.NewRequest("POST", "http://example.com/x", nil)
+			req.Header.Set("Referer", referer)
+
+			resp, _ := app.Test(req)
+
+			if got := resp.Header.Get("Location"); got != want {
+				t.Errorf("Referer %q: Location = %q, want %q", referer, got, want)
+			}
+		}
+	})
+
 	t.Run("RedirectBack falls back when Referer is absent", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Post("/admin/websites", func(c *Context) error {
