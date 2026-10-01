@@ -2,6 +2,7 @@
 package middleware
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"sync"
@@ -118,19 +119,20 @@ func RateLimiter(options ...RateLimiterOption) cartridge.HandlerFunc {
 		remaining := cfg.Max - hits
 
 		c.Set("X-RateLimit-Limit", limit)
+		reset := strconv.Itoa(int(math.Ceil(resetIn.Seconds())))
+		c.Set("X-RateLimit-Reset", reset)
 		if remaining < 0 {
-			// Retry-After for well-behaved clients
-			c.Set("Retry-After", "60")
+			// Retry-After tells well-behaved clients when the window resets.
+			c.Set("Retry-After", reset)
 			c.Set("X-RateLimit-Remaining", "0")
 			return c.Status(http.StatusTooManyRequests).JSON(cartridge.Map{
 				"error":       "Too Many Requests",
 				"message":     "Rate limit exceeded. Please try again later.",
-				"retry_after": 60,
+				"retry_after": int(math.Ceil(resetIn.Seconds())),
 			})
 		}
 
 		c.Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
-		c.Set("X-RateLimit-Reset", strconv.Itoa(int(resetIn.Seconds())))
 		return c.Next()
 	}
 }

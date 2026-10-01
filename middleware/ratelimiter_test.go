@@ -48,4 +48,16 @@ func TestRateLimiter(t *testing.T) {
 		assert.Equal(t, http.StatusTooManyRequests, res.Code)
 		assert.Equal(t, "1", res.Header().Get("X-RateLimit-Limit"))
 	})
+
+	t.Run("sets Retry-After to the time left in the window", func(t *testing.T) {
+		app := testsupport.NewTestServer(t).Server
+		app.Use(RateLimiter(WithMax(1), WithDuration(5*time.Second)))
+		app.Get("/", func(c *cartridge.Context) error { return c.SendStatus(http.StatusOK) })
+		get(app, "a")
+
+		res := get(app, "a")
+
+		assert.Equal(t, http.StatusTooManyRequests, res.Code)
+		assert.Equal(t, "5", res.Header().Get("Retry-After"))
+	})
 }
