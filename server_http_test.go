@@ -373,6 +373,9 @@ func TestCORS(t *testing.T) {
 		if resp.Header.Get("Access-Control-Allow-Origin") != "*" || resp.Header.Get("Access-Control-Allow-Methods") != "POST,GET,OPTIONS" {
 			t.Errorf("CORS headers = %v", resp.Header)
 		}
+		if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "Origin,Content-Type" {
+			t.Errorf("Allow-Headers = %q, want the list without spaces, as Fiber sent it", got)
+		}
 	})
 
 	t.Run("an explicit OPTIONS route still runs", func(t *testing.T) {

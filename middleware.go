@@ -207,6 +207,9 @@ func CORS(cfg CORSConfig) HandlerFunc {
 			allowAll = true
 		}
 	}
+	// Lists go out without spaces, as Fiber's CORS middleware sent them.
+	allowMethods := strings.ReplaceAll(cfg.AllowMethods, " ", "")
+	allowHeaders := strings.ReplaceAll(cfg.AllowHeaders, " ", "")
 	exposeHeaders := strings.ReplaceAll(cfg.ExposeHeaders, " ", "")
 
 	return func(c *Context) error {
@@ -254,9 +257,9 @@ func CORS(cfg CORSConfig) HandlerFunc {
 		}
 
 		c.Vary("Access-Control-Request-Method", "Access-Control-Request-Headers", "Origin")
-		h.Set("Access-Control-Allow-Methods", cfg.AllowMethods)
-		if cfg.AllowHeaders != "" {
-			h.Set("Access-Control-Allow-Headers", cfg.AllowHeaders)
+		h.Set("Access-Control-Allow-Methods", allowMethods)
+		if allowHeaders != "" {
+			h.Set("Access-Control-Allow-Headers", allowHeaders)
 		} else if req := c.Get("Access-Control-Request-Headers"); req != "" {
 			h.Set("Access-Control-Allow-Headers", req)
 		}
