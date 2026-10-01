@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -57,6 +58,7 @@ type Context struct {
 	locals   map[any]any
 	body     []byte
 	bodyRead bool
+	bodyErr  *Error // why the body read failed, if it did
 	db       *gorm.DB // Cached database session (lazy-loaded)
 }
 
@@ -278,12 +280,20 @@ func (ctx *Context) Accepts(offers ...string) string {
 }
 
 // Body returns the raw request body. It reads the body once and caches it.
+// When the read fails, for example when the body is over
+// ServerConfig.BodyLimit, it returns nil. BodyParser and Bind then return
+// that failure as an *Error: 413 for a body over the limit, else 400.
 func (ctx *Context) Body() []byte {
 	if !ctx.bodyRead {
 		ctx.bodyRead = true
 		if ctx.r.Body != nil {
-			ctx.body, _ = io.ReadAll(ctx.r.Body)
+			body, err := io.ReadAll(ctx.r.Body)
 			ctx.r.Body.Close()
+			if err != nil {
+				ctx.bodyErr = bodyReadError(err)
+			} else {
+				ctx.body = body
+			}
 		}
 	}
 	// Give later readers (form parsing) a fresh copy of the body.
@@ -291,7 +301,17 @@ func (ctx *Context) Body() []byte {
 	return ctx.body
 }
 
-// FormValue returns a value from a urlencoded or multipart form body.
+// bodyReadError turns a failed body read into an HTTP error.
+func bodyReadError(err error) *Error {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return NewError(http.StatusRequestEntityTooLarge)
+	}
+	return NewError(http.StatusBadRequest, "could not read the request body")
+}
+
+// FormValue returns a value from a urlencoded or multipart form body. It
+// returns "" when the body read fails.
 func (ctx *Context) FormValue(key string) string {
 	ctx.Body()
 	return ctx.r.PostFormValue(key)
@@ -300,12 +320,15 @@ func (ctx *Context) FormValue(key string) string {
 // BodyParser decodes the body into out by Content-Type: JSON, urlencoded
 // form, or multipart form. Form fields map by the `form` struct tag.
 func (ctx *Context) BodyParser(out any) error {
+	body := ctx.Body()
+	if ctx.bodyErr != nil {
+		return ctx.bodyErr
+	}
 	ct, _, _ := mime.ParseMediaType(ctx.r.Header.Get("Content-Type"))
 	switch {
 	case strings.HasSuffix(ct, "json"):
-		return json.Unmarshal(ctx.Body(), out)
+		return json.Unmarshal(body, out)
 	case ct == "application/x-www-form-urlencoded", ct == "multipart/form-data":
-		ctx.Body()
 		if err := ctx.r.ParseMultipartForm(32 << 20); err != nil && err != http.ErrNotMultipart {
 			return NewError(http.StatusBadRequest, err.Error())
 		}

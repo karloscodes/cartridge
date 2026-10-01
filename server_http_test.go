@@ -3,6 +3,7 @@ package cartridge
 import (
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -308,15 +309,59 @@ func TestContextResponses(t *testing.T) {
 }
 
 func TestBodyLimit(t *testing.T) {
-	app := newTestApp(t)
-	app.cfg.BodyLimit = 10
-	app.Post("/x", func(c *Context) error { return c.SendString(string(c.Body())) })
-
-	resp, _ := app.Test(httptest.NewRequest("POST", "/x", strings.NewReader(strings.Repeat("a", 11))))
-
-	if resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Errorf("status = %d, want 413", resp.StatusCode)
+	// chunked returns a POST whose length the server does not know up front.
+	chunked := func(body string) *http.Request {
+		req := httptest.NewRequest("POST", "/x", io.NopCloser(strings.NewReader(body)))
+		req.ContentLength = -1
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return req
 	}
+
+	t.Run("rejects a body with a Content-Length over the limit", func(t *testing.T) {
+		app := newTestApp(t)
+		app.cfg.BodyLimit = 10
+		app.Post("/x", func(c *Context) error { return c.SendString(string(c.Body())) })
+
+		resp, _ := app.Test(httptest.NewRequest("POST", "/x", strings.NewReader(strings.Repeat("a", 11))))
+
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Errorf("status = %d, want 413", resp.StatusCode)
+		}
+	})
+
+	t.Run("Bind rejects a chunked body over the limit", func(t *testing.T) {
+		app := newTestApp(t)
+		app.cfg.BodyLimit = 10
+		app.Post("/x", func(c *Context) error {
+			var in struct {
+				Name string `form:"name"`
+			}
+			if err := c.Bind(&in); err != nil {
+				return err
+			}
+			return c.SendString(in.Name)
+		})
+
+		resp, _ := app.Test(chunked("name=" + strings.Repeat("a", 20)))
+
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Errorf("status = %d, want 413", resp.StatusCode)
+		}
+	})
+
+	t.Run("Body and FormValue give nothing for a chunked body over the limit", func(t *testing.T) {
+		app := newTestApp(t)
+		app.cfg.BodyLimit = 10
+		app.Post("/x", func(c *Context) error {
+			return c.SendString(fmt.Sprintf("%d %q", len(c.Body()), c.FormValue("name")))
+		})
+
+		resp, _ := app.Test(chunked("name=" + strings.Repeat("a", 20)))
+
+		if got := body(t, resp); got != `0 ""` {
+			t.Errorf("body = %s, want no truncated data", got)
+		}
+	})
 }
 
 func TestBuiltInMiddleware(t *testing.T) {

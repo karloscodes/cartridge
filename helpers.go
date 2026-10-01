@@ -51,7 +51,7 @@ func (ctx *Context) Input(key string) string {
 // values. Use this instead of FormValue so handlers don't break when the
 // frontend posts JSON (e.g. the Inertia protocol) vs a form.
 func (ctx *Context) Bind(out any) error {
-	if len(ctx.Body()) > 0 {
+	if len(ctx.Body()) > 0 || ctx.bodyErr != nil {
 		if err := ctx.BodyParser(out); err != nil {
 			return err
 		}
