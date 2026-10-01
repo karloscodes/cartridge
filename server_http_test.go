@@ -309,6 +309,33 @@ func TestContextResponses(t *testing.T) {
 	})
 }
 
+func TestServerTest(t *testing.T) {
+	t.Run("returns an error when the handler runs past the timeout", func(t *testing.T) {
+		app := newTestApp(t)
+		app.Get("/slow", func(c *Context) error {
+			time.Sleep(200 * time.Millisecond)
+			return nil
+		})
+
+		_, err := app.Test(httptest.NewRequest("GET", "/slow", nil), 20)
+
+		if err == nil {
+			t.Error("expected a timeout error")
+		}
+	})
+
+	t.Run("returns the response within the timeout", func(t *testing.T) {
+		app := newTestApp(t)
+		app.Get("/fast", func(c *Context) error { return c.SendString("ok") })
+
+		resp, err := app.Test(httptest.NewRequest("GET", "/fast", nil), 1000)
+
+		if err != nil || body(t, resp) != "ok" {
+			t.Errorf("got %v", err)
+		}
+	})
+}
+
 func TestBodyLimit(t *testing.T) {
 	// chunked returns a POST whose length the server does not know up front.
 	chunked := func(body string) *http.Request {

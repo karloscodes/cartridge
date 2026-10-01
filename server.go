@@ -362,14 +362,30 @@ func (s *Server) onlyFallbackMatches(r *http.Request) bool {
 	return pattern == fallbackPattern
 }
 
-// Test serves req in memory and returns the response, like Fiber's app.Test:
-// the request comes from 0.0.0.0, and the timeout argument is ignored. To
-// test a specific peer address, call ServeHTTP with net/http/httptest.
+// Test serves req in memory and returns the response, like Fiber's app.Test.
+// The request comes from 0.0.0.0; to test another peer address, call
+// ServeHTTP with net/http/httptest. The optional timeout is in milliseconds:
+// when the handler runs longer, Test returns an error. Without a timeout,
+// or with 0 or less, Test waits for the handler.
 func (s *Server) Test(req *http.Request, timeout ...int) (*http.Response, error) {
 	req.RemoteAddr = "0.0.0.0:0"
 	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, req)
-	return rec.Result(), nil
+	if len(timeout) == 0 || timeout[0] <= 0 {
+		s.ServeHTTP(rec, req)
+		return rec.Result(), nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.ServeHTTP(rec, req)
+	}()
+	select {
+	case <-done:
+		return rec.Result(), nil
+	case <-time.After(time.Duration(timeout[0]) * time.Millisecond):
+		return nil, fmt.Errorf("cartridge: test request took longer than %dms", timeout[0])
+	}
 }
 
 // build turns the registered routes into a ServeMux.
