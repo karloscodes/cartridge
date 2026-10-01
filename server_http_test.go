@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -465,15 +466,25 @@ func TestBuiltInMiddleware(t *testing.T) {
 		}
 	})
 
-	t.Run("turns a panic into a 500", func(t *testing.T) {
+	t.Run("turns a panic into a 500 and logs it", func(t *testing.T) {
+		var logs strings.Builder
 		app := newTestApp(t)
+		app.cfg.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 		app.Use(Recover())
-		app.Get("/x", func(c *Context) error { panic("boom") })
+		app.Get("/x", func(c *Context) error { panic("boom-secret") })
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.Header.Set("Accept", "application/json")
 
-		resp, _ := app.Test(httptest.NewRequest("GET", "/x", nil))
+		resp, _ := app.Test(req)
 
 		if resp.StatusCode != http.StatusInternalServerError {
 			t.Errorf("status = %d, want 500", resp.StatusCode)
+		}
+		if strings.Contains(body(t, resp), "boom-secret") {
+			t.Error("the response leaks the panic value")
+		}
+		if !strings.Contains(logs.String(), "panic recovered") || !strings.Contains(logs.String(), "boom-secret") {
+			t.Errorf("expected the panic in the log, got %s", logs.String())
 		}
 	})
 

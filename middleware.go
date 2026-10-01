@@ -6,14 +6,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
-	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// Recover turns a panic in the chain into a 500 error and prints the stack.
+// Recover turns a panic in the chain into a 500 error. It logs the panic
+// and the stack with the server's logger. The client sees only the status.
 func Recover() HandlerFunc {
 	return func(c *Context) (err error) {
 		defer func() {
@@ -21,8 +21,15 @@ func Recover() HandlerFunc {
 				if r == http.ErrAbortHandler {
 					panic(r)
 				}
-				fmt.Fprintf(os.Stderr, "panic: %v\n%s\n", r, debug.Stack())
-				err = fmt.Errorf("%v", r)
+				if c.Logger != nil {
+					c.Logger.Error("panic recovered",
+						"panic", fmt.Sprint(r),
+						"stack", string(debug.Stack()),
+						"method", c.Method(),
+						"path", c.Path(),
+					)
+				}
+				err = fmt.Errorf("panic: %v", r)
 			}
 		}()
 		return c.Next()
