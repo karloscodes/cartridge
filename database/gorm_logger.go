@@ -22,7 +22,8 @@ type GormLoggerConfig struct {
 	IgnoreRecordNotFoundError bool
 }
 
-// GormLogger adapts slog to gorm's logger.Interface.
+// GormLogger adapts slog to gorm's logger.Interface. It never logs query
+// parameter values.
 type GormLogger struct {
 	slogger *slog.Logger
 	level   logger.LogLevel
@@ -63,6 +64,13 @@ func NewGormLogger(slogger *slog.Logger, cfg *GormLoggerConfig) logger.Interface
 		level:   gormLevel,
 		config:  cfg,
 	}
+}
+
+// ParamsFilter drops the query parameters, so logged SQL shows "?" in
+// place of values. Values can hold passwords, tokens, and personal data.
+// It implements gorm.ParamsFilter.
+func (l *GormLogger) ParamsFilter(ctx context.Context, sql string, params ...interface{}) (string, []interface{}) {
+	return sql, nil
 }
 
 func (l *GormLogger) LogMode(level logger.LogLevel) logger.Interface {
