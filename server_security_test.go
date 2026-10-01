@@ -132,10 +132,43 @@ func TestTrustedProxies(t *testing.T) {
 		}
 	})
 
-	t.Run("a malformed entry stops the walk", func(t *testing.T) {
+	t.Run("with malformed entries", func(t *testing.T) {
 		srv := newServer(t, "10.0.0.0/8")
 
-		got := serve(t, srv, "10.0.0.2", map[string]string{"X-Forwarded-For": "203.0.113.7, garbage"})
+		cases := map[string]string{
+			"skips garbage":                    "203.0.113.7, garbage",
+			"skips empty entries":              "203.0.113.7, , ",
+			"skips words like unknown":         "not-an-ip, 203.0.113.7, unknown",
+			"reads an IPv4 entry with a port":  "1.2.3.4, 203.0.113.7:5678",
+			"reads a quoted entry":             `1.2.3.4, "203.0.113.7"`,
+			"reads a quoted entry with a port": `"203.0.113.7:443", 10.0.0.5`,
+			"skips garbage behind a proxy":     "203.0.113.7, garbage, 10.0.0.5",
+		}
+		for name, header := range cases {
+			t.Run(name, func(t *testing.T) {
+				got := serve(t, srv, "10.0.0.2", map[string]string{"X-Forwarded-For": header})
+
+				if got != "203.0.113.7 http" {
+					t.Errorf("X-Forwarded-For %q: got %q, want 203.0.113.7", header, got)
+				}
+			})
+		}
+	})
+
+	t.Run("reads a bracketed IPv6 entry with a port", func(t *testing.T) {
+		srv := newServer(t, "10.0.0.0/8")
+
+		got := serve(t, srv, "10.0.0.2", map[string]string{"X-Forwarded-For": "[2001:db8::1]:443"})
+
+		if got != "2001:db8::1 http" {
+			t.Errorf("got %q, want the IPv6 address without the port", got)
+		}
+	})
+
+	t.Run("with only garbage or proxies in the header, returns the peer", func(t *testing.T) {
+		srv := newServer(t, "10.0.0.0/8")
+
+		got := serve(t, srv, "10.0.0.2", map[string]string{"X-Forwarded-For": "garbage, 10.0.0.5"})
 
 		if got != "10.0.0.2 http" {
 			t.Errorf("got %q, want the peer address", got)

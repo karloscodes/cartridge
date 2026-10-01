@@ -656,6 +656,11 @@ func (s *Server) trustsProxy(ip string) bool {
 	if err != nil {
 		return false
 	}
+	return s.trustsAddr(addr)
+}
+
+// trustsAddr reports whether addr is in TrustedProxies.
+func (s *Server) trustsAddr(addr netip.Addr) bool {
 	addr = addr.Unmap()
 	for _, p := range s.trustedProxies {
 		if p.Contains(addr) {

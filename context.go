@@ -215,8 +215,10 @@ func (ctx *Context) Locals(key any, value ...any) any {
 
 // IP returns the client address. It reads ServerConfig.ProxyHeader only when
 // the direct peer is in TrustedProxies. It walks the header from right to
-// left and returns the first address that is not a trusted proxy. The
-// leftmost entries come from the client, so a client cannot set its own IP.
+// left and returns the first address that is not a trusted proxy. It skips
+// entries it cannot read (empty, garbage) and accepts entries with a port or
+// quotes. When no entry qualifies, it returns the peer. The leftmost entries
+// come from the client, so a client cannot set its own IP.
 func (ctx *Context) IP() string {
 	peer := remoteIP(ctx.r)
 	if ctx.server == nil || ctx.server.cfg.ProxyHeader == "" || !ctx.server.trustsProxy(peer) {
@@ -224,18 +226,28 @@ func (ctx *Context) IP() string {
 	}
 	header := ctx.r.Header.Values(ctx.server.cfg.ProxyHeader)
 	entries := strings.Split(strings.Join(header, ","), ",")
-	ip := peer
 	for i := len(entries) - 1; i >= 0; i-- {
-		entry := strings.TrimSpace(entries[i])
-		if _, err := netip.ParseAddr(entry); err != nil {
-			break
-		}
-		ip = entry
-		if !ctx.server.trustsProxy(entry) {
-			break
+		addr, ok := parseForwardedAddr(entries[i])
+		if ok && !ctx.server.trustsAddr(addr) {
+			return addr.String()
 		}
 	}
-	return ip
+	return peer
+}
+
+// parseForwardedAddr reads one proxy header entry: an address with or
+// without a port or quotes. It returns IPv4-mapped IPv6 as IPv4.
+func parseForwardedAddr(raw string) (netip.Addr, bool) {
+	s := strings.Trim(strings.TrimSpace(raw), `"`)
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		s = host
+	}
+	s = strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap().WithZone(""), true
 }
 
 // Hostname returns the Host header.

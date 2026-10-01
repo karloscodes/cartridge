@@ -190,7 +190,7 @@ cfg.ProxyHeader = "X-Forwarded-For"
 cfg.TrustedProxies = []string{"10.0.0.0/8", "127.0.0.1"}
 ```
 
-`ctx.IP()` reads the header from right to left and returns the first address that is not a trusted proxy. Without `TrustedProxies`, every client behind the proxy shares the proxy's IP, and `ctx.BaseURL()` says `http`.
+`ctx.IP()` reads the header from right to left and returns the first address that is not a trusted proxy. It skips entries it cannot read and accepts entries with a port or quotes. When no entry qualifies, it returns the peer. Without `TrustedProxies`, every client behind the proxy shares the proxy's IP, and `ctx.BaseURL()` says `http`.
 
 ### Streams and WriteTimeout
 
