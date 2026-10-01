@@ -3,6 +3,7 @@ package cartridge
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,11 +12,20 @@ import (
 	"time"
 )
 
+const testSecret = "test-secret-key-32-characters-xx"
+
+func newSessionManager(t *testing.T, cfg SessionConfig) *SessionManager {
+	t.Helper()
+	sm, err := NewSessionManager(cfg)
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+	return sm
+}
+
 func TestNewSessionManager(t *testing.T) {
 	t.Run("uses defaults for empty config", func(t *testing.T) {
-		sm := NewSessionManager(SessionConfig{
-			Secret: "test-secret",
-		})
+		sm := newSessionManager(t, SessionConfig{Secret: testSecret})
 
 		if sm.cookieName != "session" {
 			t.Errorf("expected cookie name 'session', got '%s'", sm.cookieName)
@@ -29,11 +39,10 @@ func TestNewSessionManager(t *testing.T) {
 	})
 
 	t.Run("uses provided config", func(t *testing.T) {
-		sm := NewSessionManager(SessionConfig{
+		sm := newSessionManager(t, SessionConfig{
 			CookieName: "my_session",
-			Secret:     "test-secret",
+			Secret:     testSecret,
 			TTL:        1 * time.Hour,
-			Secure:     true,
 			LoginPath:  "/auth/login",
 		})
 
@@ -46,16 +55,74 @@ func TestNewSessionManager(t *testing.T) {
 		if sm.loginPath != "/auth/login" {
 			t.Errorf("expected login path '/auth/login', got '%s'", sm.loginPath)
 		}
-		if !sm.secure {
-			t.Error("expected secure to be true")
+	})
+
+	t.Run("rejects a secret shorter than 32 bytes", func(t *testing.T) {
+		for _, secret := range []string{"", "short", testSecret[:31]} {
+			_, err := NewSessionManager(SessionConfig{Secret: secret})
+
+			if err == nil {
+				t.Errorf("secret %q: expected an error", secret)
+			}
+		}
+	})
+}
+
+func TestSessionCookie(t *testing.T) {
+	login := func(t *testing.T, sm *SessionManager, userID uint) *http.Cookie {
+		t.Helper()
+		app := newTestApp(t)
+		app.Get("/login", func(c *Context) error { return sm.SetSession(c, userID) })
+		resp, _ := app.Test(httptest.NewRequest("GET", "/login", nil))
+		cookies := resp.Cookies()
+		if len(cookies) != 1 {
+			t.Fatalf("expected one cookie, got %d", len(cookies))
+		}
+		return cookies[0]
+	}
+
+	t.Run("is Secure by default", func(t *testing.T) {
+		sm := newSessionManager(t, SessionConfig{Secret: testSecret})
+
+		cookie := login(t, sm, 1)
+
+		if !cookie.Secure || !cookie.HttpOnly {
+			t.Errorf("expected a Secure, HttpOnly cookie, got %+v", cookie)
+		}
+	})
+
+	t.Run("drops Secure with Insecure", func(t *testing.T) {
+		sm := newSessionManager(t, SessionConfig{Secret: testSecret, Insecure: true})
+
+		cookie := login(t, sm, 1)
+
+		if cookie.Secure {
+			t.Error("expected no Secure flag")
+		}
+	})
+
+	t.Run("IsAuthenticated and GetUserID agree on a large user ID", func(t *testing.T) {
+		sm := newSessionManager(t, SessionConfig{Secret: testSecret})
+		var bigID uint64 = 1 << 33
+		cookie := login(t, sm, uint(bigID))
+		app := newTestApp(t)
+		app.Get("/me", func(c *Context) error {
+			id, ok := sm.GetUserID(c)
+			return c.SendString(fmt.Sprintf("%v %d %v", sm.IsAuthenticated(c), id, ok))
+		})
+		req := httptest.NewRequest("GET", "/me", nil)
+		req.AddCookie(cookie)
+
+		resp, _ := app.Test(req)
+
+		if got, _ := io.ReadAll(resp.Body); string(got) != "true 8589934592 true" {
+			t.Errorf("got %q", got)
 		}
 	})
 }
 
 func TestSessionSigning(t *testing.T) {
-	sm := NewSessionManager(SessionConfig{
-		Secret: "test-secret-key-32-characters-xx",
-	})
+	sm := newSessionManager(t, SessionConfig{Secret: testSecret})
 
 	t.Run("sign and verify roundtrip", func(t *testing.T) {
 		sessionData := SessionData{
@@ -154,8 +221,8 @@ func TestSessionSigning(t *testing.T) {
 }
 
 func TestDifferentSecrets(t *testing.T) {
-	sm1 := NewSessionManager(SessionConfig{Secret: "secret-one"})
-	sm2 := NewSessionManager(SessionConfig{Secret: "secret-two"})
+	sm1 := newSessionManager(t, SessionConfig{Secret: "secret-one-" + testSecret})
+	sm2 := newSessionManager(t, SessionConfig{Secret: "secret-two-" + testSecret})
 
 	sessionData := SessionData{
 		UserID:    "123",
@@ -179,7 +246,7 @@ func TestDifferentSecrets(t *testing.T) {
 }
 
 func TestSessionIssuedAt(t *testing.T) {
-	sm := NewSessionManager(SessionConfig{Secret: "test-secret-key-32-characters-xx"})
+	sm := newSessionManager(t, SessionConfig{Secret: testSecret})
 	app := newTestApp(t)
 	app.Get("/login", func(c *Context) error { return sm.SetSession(c, 7) })
 	app.Get("/issued", func(c *Context) error {

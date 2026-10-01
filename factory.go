@@ -201,13 +201,16 @@ func NewSSRApp(appName string, opts ...AppOption) (*App, error) {
 	// Create session manager if enabled and attach to server
 	var sessionMgr *SessionManager
 	if cfg.sessionPath != "" {
-		sessionMgr = NewSessionManager(SessionConfig{
+		sessionMgr, err = NewSessionManager(SessionConfig{
 			CookieName: appCfg.AppName + "_session",
 			Secret:     appCfg.GetSessionSecret(),
 			TTL:        time.Duration(appCfg.GetSessionTimeout()) * time.Second,
-			Secure:     appCfg.IsProduction(),
+			Insecure:   !appCfg.IsProduction(),
 			LoginPath:  cfg.sessionPath,
 		})
+		if err != nil {
+			return nil, err
+		}
 		server.SetSession(sessionMgr)
 	}
 

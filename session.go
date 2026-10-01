@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -18,18 +19,23 @@ type SessionConfig struct {
 	// CookieName is the name of the session cookie. Default: "session".
 	CookieName string
 
-	// Secret is the HMAC secret for signing session tokens. Required.
+	// Secret is the HMAC secret for signing session tokens. Required, at
+	// least 32 bytes.
 	Secret string
 
 	// TTL is the session duration. Default: 24 hours.
 	TTL time.Duration
 
-	// Secure sets the Secure flag on cookies. Default: true in production.
-	Secure bool
+	// Insecure drops the Secure flag from the cookie, so the browser sends
+	// it over plain http. Use it only for local development. Default: false.
+	Insecure bool
 
 	// LoginPath is where to redirect unauthenticated users. Default: "/login".
 	LoginPath string
 }
+
+// minSessionSecretLength is the shortest secret NewSessionManager accepts.
+const minSessionSecretLength = 32
 
 // SessionManager handles cookie-based session authentication.
 type SessionManager struct {
@@ -50,7 +56,13 @@ type SessionData struct {
 }
 
 // NewSessionManager creates a session manager with the given configuration.
-func NewSessionManager(cfg SessionConfig) *SessionManager {
+// It returns an error when the secret is shorter than 32 bytes: anyone who
+// knows or guesses the secret can sign in as any user.
+func NewSessionManager(cfg SessionConfig) (*SessionManager, error) {
+	if len(cfg.Secret) < minSessionSecretLength {
+		return nil, fmt.Errorf("cartridge: session secret must be at least %d bytes", minSessionSecretLength)
+	}
+
 	cookieName := cfg.CookieName
 	if cookieName == "" {
 		cookieName = "session"
@@ -70,9 +82,9 @@ func NewSessionManager(cfg SessionConfig) *SessionManager {
 		cookieName: cookieName,
 		secret:     []byte(cfg.Secret),
 		ttl:        ttl,
-		secure:     cfg.Secure,
+		secure:     !cfg.Insecure,
 		loginPath:  loginPath,
-	}
+	}, nil
 }
 
 // SetSession creates a session cookie for the given user ID.
@@ -129,52 +141,22 @@ func (sm *SessionManager) ClearSession(c *Context) {
 
 // IsAuthenticated checks if the request has a valid session.
 func (sm *SessionManager) IsAuthenticated(c *Context) bool {
-	token := c.Cookies(sm.cookieName)
-	if token == "" {
-		return false
-	}
-
-	sessionData, err := sm.verify(token)
-	if err != nil {
-		slog.Debug("session verification failed", slog.Any("error", err))
-		return false
-	}
-
-	if time.Now().After(sessionData.ExpiresAt) {
-		slog.Debug("session expired", slog.Time("expires_at", sessionData.ExpiresAt))
-		return false
-	}
-
-	if _, err := strconv.ParseUint(sessionData.UserID, 10, 64); err != nil {
-		slog.Debug("invalid user ID in session", slog.String("user_id", sessionData.UserID))
-		return false
-	}
-
-	return true
+	_, ok := sm.GetUserID(c)
+	return ok
 }
 
 // GetUserID retrieves the user ID from the session cookie.
 // Returns 0 and false if not authenticated.
 func (sm *SessionManager) GetUserID(c *Context) (uint, bool) {
-	token := c.Cookies(sm.cookieName)
-	if token == "" {
+	data, ok := sm.current(c)
+	if !ok {
 		return 0, false
 	}
-
-	sessionData, err := sm.verify(token)
+	userID, err := strconv.ParseUint(data.UserID, 10, strconv.IntSize)
 	if err != nil {
+		slog.Debug("invalid user ID in session", slog.String("user_id", data.UserID))
 		return 0, false
 	}
-
-	if time.Now().After(sessionData.ExpiresAt) {
-		return 0, false
-	}
-
-	userID, err := strconv.ParseUint(sessionData.UserID, 10, 32)
-	if err != nil {
-		return 0, false
-	}
-
 	return uint(userID), true
 }
 
@@ -182,17 +164,32 @@ func (sm *SessionManager) GetUserID(c *Context) (uint, bool) {
 // when there is no valid session. Sessions created by older versions have
 // the zero time.
 func (sm *SessionManager) IssuedAt(c *Context) (time.Time, bool) {
+	data, ok := sm.current(c)
+	if !ok {
+		return time.Time{}, false
+	}
+	return data.IssuedAt, true
+}
+
+// current returns the data of a session cookie that is signed and not expired.
+func (sm *SessionManager) current(c *Context) (*SessionData, bool) {
 	token := c.Cookies(sm.cookieName)
 	if token == "" {
-		return time.Time{}, false
+		return nil, false
 	}
 
-	sessionData, err := sm.verify(token)
-	if err != nil || time.Now().After(sessionData.ExpiresAt) {
-		return time.Time{}, false
+	data, err := sm.verify(token)
+	if err != nil {
+		slog.Debug("session verification failed", slog.Any("error", err))
+		return nil, false
 	}
 
-	return sessionData.IssuedAt, true
+	if time.Now().After(data.ExpiresAt) {
+		slog.Debug("session expired", slog.Time("expires_at", data.ExpiresAt))
+		return nil, false
+	}
+
+	return data, true
 }
 
 // Middleware returns a middleware that requires authentication.

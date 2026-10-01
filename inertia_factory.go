@@ -226,13 +226,16 @@ func NewInertiaApp(opts ...InertiaOption) (*InertiaApp, error) {
 	// Create session manager if enabled and attach to server
 	var sessionMgr *SessionManager
 	if cfg.sessionPath != "" {
-		sessionMgr = NewSessionManager(SessionConfig{
+		sessionMgr, err = NewSessionManager(SessionConfig{
 			CookieName: factoryCfg.GetAppName() + "_session",
 			Secret:     factoryCfg.GetSessionSecret(),
 			TTL:        time.Duration(factoryCfg.GetSessionTimeout()) * time.Second,
-			Secure:     cfg.cfg.IsProduction(),
+			Insecure:   !cfg.cfg.IsProduction(),
 			LoginPath:  cfg.sessionPath,
 		})
+		if err != nil {
+			return nil, err
+		}
 		server.SetSession(sessionMgr)
 	}
 
