@@ -175,3 +175,48 @@ func TestTrustedProxies(t *testing.T) {
 		}
 	})
 }
+
+func TestAllowedHosts(t *testing.T) {
+	status := func(t *testing.T, allowed []string, host string) int {
+		t.Helper()
+		srv := newTestServer(t, func(c *ServerConfig) { c.AllowedHosts = allowed })
+		srv.Get("/", func(c *Context) error { return c.SendString(c.BaseURL()) })
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Host = host
+
+		resp, err := srv.Test(req)
+
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		return resp.StatusCode
+	}
+
+	t.Run("rejects a host that is not in the list", func(t *testing.T) {
+		if got := status(t, []string{"example.com"}, "evil.com"); got != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", got)
+		}
+	})
+
+	t.Run("answers a listed host, with or without a port, in any case", func(t *testing.T) {
+		for _, host := range []string{"example.com", "example.com:8080", "EXAMPLE.com"} {
+			if got := status(t, []string{"example.com"}, host); got != http.StatusOK {
+				t.Errorf("host %q: status = %d, want 200", host, got)
+			}
+		}
+	})
+
+	t.Run("always answers loopback hosts, for health checks", func(t *testing.T) {
+		for _, host := range []string{"localhost:8080", "127.0.0.1:8080", "[::1]:8080"} {
+			if got := status(t, []string{"example.com"}, host); got != http.StatusOK {
+				t.Errorf("host %q: status = %d, want 200", host, got)
+			}
+		}
+	})
+
+	t.Run("answers every host when the list is empty", func(t *testing.T) {
+		if got := status(t, nil, "anything.test"); got != http.StatusOK {
+			t.Errorf("status = %d, want 200", got)
+		}
+	})
+}

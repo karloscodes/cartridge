@@ -59,6 +59,14 @@ type ServerConfig struct {
 	ProxyHeader    string
 	TrustedProxies []string
 
+	// AllowedHosts lists the Host header values this server answers, for
+	// example "example.com". An entry matches with or without the port. A
+	// request for another host gets a 400, so a forged Host header cannot
+	// reach Context.Hostname or Context.BaseURL and the links built from
+	// them. Loopback hosts (localhost, 127.0.0.1, ::1) always pass, so
+	// health checks work. Empty allows every host.
+	AllowedHosts []string
+
 	// ViewsEngine renders templates for Context.Render.
 	ViewsEngine Views
 
@@ -174,6 +182,7 @@ type Server struct {
 	buildOnce  sync.Once
 	mux        *http.ServeMux
 	notFound   http.Handler
+	badHost    http.Handler
 	mu         sync.Mutex
 	httpServer *http.Server
 }
@@ -355,6 +364,11 @@ func (s *Server) registerRoute(method, path string, handler HandlerFunc, cfgs ..
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.buildOnce.Do(s.build)
 
+	if !hostAllowed(r.Host, s.cfg.AllowedHosts) {
+		s.badHost.ServeHTTP(w, r)
+		return
+	}
+
 	// Like Fiber, "/admin/" matches the route "/admin". Trim the slash only
 	// when no route but the fallback matches, so "/assets/" still reaches the
 	// "/assets/" subtree instead of redirecting to itself.
@@ -453,6 +467,9 @@ func (s *Server) build() {
 	}
 
 	s.notFound = notFound
+	s.badHost = s.chain(nil, func(c *Context) error {
+		return NewError(http.StatusBadRequest, "unknown host")
+	})
 	s.mux = mux
 }
 
@@ -670,6 +687,28 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return srv.Shutdown(ctx)
+}
+
+// hostAllowed reports whether the Host header value is in allowed, with or
+// without its port. An empty list allows every host. Loopback hosts always pass.
+func hostAllowed(host string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	name := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		name = h
+	}
+	name = strings.TrimSuffix(strings.TrimPrefix(name, "["), "]")
+	if strings.EqualFold(name, "localhost") || name == "127.0.0.1" || name == "::1" {
+		return true
+	}
+	for _, a := range allowed {
+		if strings.EqualFold(a, host) || strings.EqualFold(a, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // trustsProxy reports whether ip is in TrustedProxies.
