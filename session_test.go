@@ -331,6 +331,51 @@ func TestSessionValid(t *testing.T) {
 		}
 	})
 
+	t.Run("after SetSession the request sees the new session, not its cookie", func(t *testing.T) {
+		// As after a password change: sessions issued before the change no
+		// longer count, and the handler issues a new one.
+		var changedAt time.Time
+		sm := newSessionManager(t, SessionConfig{Secret: testSecret, Valid: func(_ uint, issuedAt time.Time) bool {
+			return !issuedAt.Before(changedAt)
+		}})
+		app := newTestApp(t)
+		app.Get("/login", func(c *Context) error { return sm.SetSession(c, 7) })
+		app.Get("/rotate", func(c *Context) error {
+			changedAt = time.Now()
+			if err := sm.SetSession(c, 7); err != nil {
+				return err
+			}
+			id, ok := sm.GetUserID(c)
+			return c.SendString(fmt.Sprint(id, ok))
+		})
+		req := login(t, app, "/rotate")
+
+		resp, _ := app.Test(req)
+
+		body, _ := io.ReadAll(resp.Body)
+		if string(body) != "7 true" {
+			t.Errorf("GetUserID after SetSession = %q, want 7 true", body)
+		}
+	})
+
+	t.Run("after ClearSession the request sees no session", func(t *testing.T) {
+		app := newApp(t, func(uint, time.Time) bool { return true })
+		sm := newSessionManager(t, SessionConfig{Secret: testSecret})
+		app.Get("/logout", func(c *Context) error {
+			sm.ClearSession(c)
+			_, ok := sm.GetUserID(c)
+			return c.SendString(fmt.Sprint(ok))
+		})
+		req := login(t, app, "/logout")
+
+		resp, _ := app.Test(req)
+
+		body, _ := io.ReadAll(resp.Body)
+		if string(body) != "false" {
+			t.Errorf("signed in after ClearSession = %q, want false", body)
+		}
+	})
+
 	t.Run("an htmx request without a session is sent to the login page", func(t *testing.T) {
 		app := newApp(t, func(uint, time.Time) bool { return false })
 		req := login(t, app, "/me")

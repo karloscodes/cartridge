@@ -118,7 +118,9 @@ func (sm *SessionManager) SetSession(c *Context, userID uint) error {
 		return err
 	}
 
-	delete(c.locals, sessionKey{sm})
+	// The rest of the request sees the new session, not the cookie it came
+	// with: after a password change, that cookie no longer passes Valid.
+	c.Locals(sessionKey{sm}, &sessionData)
 	c.Cookie(&Cookie{
 		Name:     sm.cookieName,
 		Value:    token,
@@ -138,7 +140,8 @@ func (sm *SessionManager) SetSession(c *Context, userID uint) error {
 
 // ClearSession removes the session cookie.
 func (sm *SessionManager) ClearSession(c *Context) {
-	delete(c.locals, sessionKey{sm})
+	// The rest of the request sees no session.
+	c.Locals(sessionKey{sm}, (*SessionData)(nil))
 	c.ClearCookie(sm.cookieName)
 	c.Cookie(&Cookie{
 		Name:     sm.cookieName,
