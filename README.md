@@ -286,13 +286,38 @@ type Migrator interface {
 
 ### Writes under load
 
-Use `sqlite.PerformWrite` for writes that can collide. It retries `SQLITE_BUSY` with backoff:
+SQLite allows one writer. `WriteTx` runs a write transaction when its turn comes. Writers wait in arrival order and hold no pool connection while they wait, so reads go on:
 
 ```go
-err := sqlite.PerformWrite(ctx.Logger, ctx.DB(), func(tx *gorm.DB) error {
+err := ctx.WriteTx(func(tx *gorm.DB) error {
 	return tx.Create(&event).Error
 })
+if errors.Is(err, sqlite.ErrBusy) {
+	ctx.Set("Retry-After", "5")
+	return ctx.Status(http.StatusServiceUnavailable).JSON(cartridge.Map{"error": "busy, retry"})
+}
 ```
+
+- A write that waits longer than `sqlite.Config.WriteWait` (default 5s) gets `sqlite.ErrBusy`. Answer it with 503 and `Retry-After`, so clients slow down. The server does not retry.
+- The wait has a deadline. The transaction does not: once it starts, it commits or rolls back, even if the client leaves.
+- Inside `fn`, use `tx` for every query, and run nothing slow (no HTTP calls, no email). Do not nest `WriteTx`.
+- In a job, use `jobCtx.WriteTx`. Outside a request, use `cartridge.Write(ctx, dbManager, fn)`.
+- Batch many small writes into one `WriteTx`. Use `tx.Transaction(...)` inside it for a savepoint per item, so one bad item does not roll back the batch.
+
+`sqlite.PerformWrite` is deprecated. It waits inside SQLite while it holds a pool connection, so a write burst can block every reader.
+
+### Pragmas
+
+Every connection gets WAL, `synchronous=NORMAL`, `busy_timeout`, and immediate transactions. The manager runs `PRAGMA optimize` at open and close, so the query planner has statistics. Add app-specific pragmas with `Pragmas`. They run on every connection:
+
+```go
+sqlite.NewManager(sqlite.Config{
+	Path:    "storage/app.db",
+	Pragmas: []string{"PRAGMA mmap_size = 268435456"},
+})
+```
+
+Measure a pragma on real data before you add it. SQLite ignores an unknown pragma name without an error.
 
 ### PostgreSQL
 

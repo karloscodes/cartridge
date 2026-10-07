@@ -43,4 +43,6 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - Development and test bind `127.0.0.1` only. Set `{APP}_HOST=0.0.0.0` to open a dev server to the network or to Docker.
 - Test through HTTP with `testsupport.NewTestServer`. It uses an in-memory SQLite database. Do not mock the database.
 - `server.Test(req)` serves one request in memory.
-- Use `sqlite.PerformWrite` for a write that can collide, and `RouteConfig.WriteConcurrency` on a write-heavy route.
+- Write in one transaction with `ctx.WriteTx(func(tx *gorm.DB) error { ... })` (in a job: `jobCtx.WriteTx`). Writes wait for their turn, one at a time. Use `tx` for every query inside, run nothing slow inside, and do not nest `WriteTx`.
+- `WriteTx` returns `sqlite.ErrBusy` when a write waits too long. Answer it with 503 and a `Retry-After` header, so the client slows down. Do not retry on the server.
+- Add app-specific pragmas with `sqlite.Config.Pragmas`. They run on every connection.
