@@ -27,6 +27,10 @@ type Config struct {
 	// Environment: development, production, or test.
 	Environment string `mapstructure:"environment"`
 
+	// Host is the address the HTTP server binds. Empty binds every
+	// interface in production and 127.0.0.1 in development and test.
+	Host string `mapstructure:"host"`
+
 	// Port for the HTTP server.
 	Port string `mapstructure:"port"`
 
@@ -59,6 +63,7 @@ type Config struct {
 // example "port" reads {PREFIX}_PORT.
 var envVars = map[string]string{
 	"environment":   "_ENV",
+	"host":          "_HOST",
 	"port":          "_PORT",
 	"sessionsecret": "_SESSION_SECRET",
 	"loglevel":      "_LOG_LEVEL",
@@ -243,6 +248,7 @@ func (c *Config) IsTest() bool        { return c.Environment == Test }
 
 // Cartridge interface implementations.
 
+func (c *Config) GetHost() string            { return c.Host }
 func (c *Config) GetPort() string            { return c.Port }
 func (c *Config) GetPublicDirectory() string { return "web/static" }
 

@@ -648,7 +648,7 @@ func (s *Server) listen() (net.Listener, error) {
 	s.buildOnce.Do(s.build)
 
 	port := s.cfg.Config.GetPort()
-	ln, err := net.Listen("tcp", ":"+port)
+	ln, err := net.Listen("tcp", net.JoinHostPort(listenHost(s.cfg.Config), port))
 	if err != nil {
 		return nil, err
 	}
@@ -664,6 +664,20 @@ func (s *Server) listen() (net.Listener, error) {
 
 	s.cfg.Logger.Info("Server started and ready to accept requests", "port", port)
 	return ln, nil
+}
+
+// listenHost returns the address to bind. A Config with a GetHost method
+// chooses it. Otherwise production binds every interface, and development
+// and test bind loopback only: they run with a public session secret and
+// detailed error pages, so the network must not reach them.
+func listenHost(cfg Config) string {
+	if h, ok := cfg.(interface{ GetHost() string }); ok && h.GetHost() != "" {
+		return h.GetHost()
+	}
+	if cfg.IsProduction() {
+		return ""
+	}
+	return "127.0.0.1"
 }
 
 // serve accepts connections on ln until Shutdown.

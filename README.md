@@ -136,6 +136,7 @@ MYAPP_ENV=development go run .
 | Variable | Default | Notes |
 |---|---|---|
 | `MYAPP_ENV` | `production` | `development`, `production`, or `test` |
+| `MYAPP_HOST` | every interface (`127.0.0.1` in dev/test) | Set `0.0.0.0` to reach a dev server from the network or from Docker |
 | `MYAPP_PORT` | `8080` | |
 | `MYAPP_SESSION_SECRET` | none | Required in production, at least 32 bytes. Falls back to `PRIVATE_KEY`. |
 | `MYAPP_LOG_LEVEL` | `error` (`info` in dev/test) | `debug`, `info`, `warn`, `error` |

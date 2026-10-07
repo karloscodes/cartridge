@@ -3,6 +3,7 @@ package cartridge
 import (
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -217,6 +218,47 @@ func TestAllowedHosts(t *testing.T) {
 	t.Run("answers every host when the list is empty", func(t *testing.T) {
 		if got := status(t, nil, "anything.test"); got != http.StatusOK {
 			t.Errorf("status = %d, want 200", got)
+		}
+	})
+}
+
+type envConfig struct {
+	testConfig
+	production bool
+	host       string
+}
+
+func (c *envConfig) IsProduction() bool { return c.production }
+func (c *envConfig) GetPort() string    { return "0" }
+func (c *envConfig) GetHost() string    { return c.host }
+
+func TestListenAddress(t *testing.T) {
+	boundIP := func(t *testing.T, cfg Config) net.IP {
+		t.Helper()
+		srv := newTestServer(t, func(c *ServerConfig) { c.Config = cfg })
+		ln, err := srv.listen()
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		return ln.Addr().(*net.TCPAddr).IP
+	}
+
+	t.Run("development and test bind loopback only", func(t *testing.T) {
+		if ip := boundIP(t, &envConfig{}); !ip.IsLoopback() {
+			t.Errorf("bound %v, want loopback", ip)
+		}
+	})
+
+	t.Run("production binds every interface", func(t *testing.T) {
+		if ip := boundIP(t, &envConfig{production: true}); !ip.IsUnspecified() {
+			t.Errorf("bound %v, want every interface", ip)
+		}
+	})
+
+	t.Run("a config host overrides the default", func(t *testing.T) {
+		if ip := boundIP(t, &envConfig{host: "0.0.0.0"}); !ip.IsUnspecified() {
+			t.Errorf("bound %v, want every interface", ip)
 		}
 	})
 }

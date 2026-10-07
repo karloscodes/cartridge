@@ -62,6 +62,7 @@ func TestLoadEnvVars(t *testing.T) {
 	t.Run("the prefixed env vars override the defaults", func(t *testing.T) {
 		inTempDir(t)
 		t.Setenv("PINAPP_ENV", "development")
+		t.Setenv("PINAPP_HOST", "0.0.0.0")
 		t.Setenv("PINAPP_PORT", "3000")
 		t.Setenv("PINAPP_SESSION_SECRET", "from-env")
 		t.Setenv("PINAPP_LOG_LEVEL", "warn")
