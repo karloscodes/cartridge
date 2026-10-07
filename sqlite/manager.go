@@ -1,12 +1,16 @@
 package sqlite
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
@@ -43,16 +47,23 @@ type Config struct {
 	// WriteWait is how long Write waits for its turn before it returns
 	// ErrBusy. Default: 5 seconds.
 	WriteWait time.Duration
+
+	// Pragmas run on every new connection, after the defaults. Use them for
+	// app-specific settings, such as "PRAGMA mmap_size = 268435456". A
+	// pragma that fails stops the connection from opening. SQLite ignores
+	// an unknown pragma name without an error, so check the spelling.
+	Pragmas []string
 }
 
 // Manager manages SQLite database connections with optimized settings.
 type Manager struct {
-	cfg       Config
-	logger    *slog.Logger
-	db        *gorm.DB
-	dbOnce    sync.Once
-	dbMutex   sync.Mutex
-	writeTurn chan struct{} // holds one token while a Write runs
+	cfg        Config
+	logger     *slog.Logger
+	db         *gorm.DB
+	dbOnce     sync.Once
+	dbMutex    sync.Mutex
+	writeTurn  chan struct{} // holds one token while a Write runs
+	driverName string        // set on first open when Pragmas is not empty
 }
 
 // NewManager creates a new SQLite database manager.
@@ -129,6 +140,9 @@ func (m *Manager) Close() error {
 		return fmt.Errorf("sqlite: access sql.DB: %w", err)
 	}
 
+	// Record what this run learned about the queries for the next start.
+	m.optimize(m.db, "PRAGMA optimize")
+
 	if err := sqlDB.Close(); err != nil {
 		return fmt.Errorf("sqlite: close: %w", err)
 	}
@@ -161,7 +175,15 @@ func (m *Manager) open() error {
 	// Create GORM logger
 	gormLogger := database.NewGormLogger(m.logger.With(slog.String("component", "gorm")), nil)
 
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+	dialector := sqlite.Open(dsn)
+	if len(m.cfg.Pragmas) > 0 {
+		if m.driverName == "" {
+			m.driverName = registerDriver(m.cfg.Pragmas)
+		}
+		dialector = sqlite.New(sqlite.Config{DriverName: m.driverName, DSN: dsn})
+	}
+
+	db, err := gorm.Open(dialector, &gorm.Config{
 		Logger:                 gormLogger,
 		SkipDefaultTransaction: true,
 		NowFunc: func() time.Time {
@@ -170,11 +192,6 @@ func (m *Manager) open() error {
 	})
 	if err != nil {
 		return fmt.Errorf("sqlite: open: %w", err)
-	}
-
-	// Apply pragmas
-	if err := m.applyPragmas(db); err != nil {
-		return err
 	}
 
 	// Configure connection pool
@@ -193,26 +210,40 @@ func (m *Manager) open() error {
 		slog.Int("max_idle", m.cfg.MaxIdleConns),
 	)
 
+	// Without statistics the query planner guesses. The SQLite docs ask a
+	// long-lived connection to run this at open; it analyzes only the tables
+	// that need it, so it is fast after the first run.
+	m.optimize(db, "PRAGMA optimize=0x10002")
+
 	m.db = db
 	return nil
 }
 
-func (m *Manager) applyPragmas(db *gorm.DB) error {
-	// busy_timeout, synchronous, and journal_mode are in the DSN (buildDSN),
-	// so the driver applies them to every pooled connection. temp_store has
-	// no DSN form; it is only a hint for temporary tables and sorts.
-	pragmas := []string{
-		"PRAGMA temp_store = MEMORY",
+// optimize refreshes the query planner statistics. A failure costs only
+// speed, so it logs and goes on.
+func (m *Manager) optimize(db *gorm.DB, pragma string) {
+	if err := db.Exec(pragma).Error; err != nil {
+		m.logger.Warn("sqlite: optimize failed", slog.String("pragma", pragma), slog.Any("error", err))
 	}
+}
 
-	for _, pragma := range pragmas {
-		if err := db.Exec(pragma).Error; err != nil {
-			m.logger.Error("failed to apply pragma", slog.String("pragma", pragma), slog.Any("error", err))
-			return fmt.Errorf("sqlite: apply pragma %s: %w", pragma, err)
+var driverSeq atomic.Int64
+
+// registerDriver registers a driver that runs pragmas on each connection it
+// opens. A PRAGMA sent through the pool reaches only one connection, and the
+// DSN has no form for most pragmas.
+func registerDriver(pragmas []string) string {
+	pragmas = slices.Clone(pragmas)
+	name := fmt.Sprintf("sqlite3_cartridge_%d", driverSeq.Add(1))
+	sql.Register(name, &sqlite3.SQLiteDriver{ConnectHook: func(conn *sqlite3.SQLiteConn) error {
+		for _, pragma := range pragmas {
+			if _, err := conn.Exec(pragma, nil); err != nil {
+				return fmt.Errorf("sqlite: %s: %w", pragma, err)
+			}
 		}
-	}
-
-	return nil
+		return nil
+	}})
+	return name
 }
 
 // buildDSN adds the connection settings to the path as driver parameters. A

@@ -207,3 +207,112 @@ func TestManager_PragmasOnEveryConnection(t *testing.T) {
 		_ = conn.Close()
 	}
 }
+
+func TestManager_PlannerStatistics(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "stats.db")
+	m := NewManager(Config{Path: dbPath})
+	db, err := m.Connect()
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	db.Exec("CREATE TABLE items(id INTEGER PRIMARY KEY, kind TEXT)")
+	db.Exec("CREATE INDEX idx_items_kind ON items(kind)")
+	db.Exec("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 500) INSERT INTO items(kind) SELECT 'k' || (i % 5) FROM n")
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	db, err = m.Connect()
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+	var rows int64
+	err = db.Raw("SELECT count(*) FROM sqlite_stat1 WHERE idx = 'idx_items_kind'").Scan(&rows).Error
+
+	if err != nil {
+		t.Fatalf("read sqlite_stat1: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("sqlite_stat1 rows for idx_items_kind = %d, want 1", rows)
+	}
+}
+
+func TestManager_AppPragmas(t *testing.T) {
+	t.Run("runs on every pooled connection", func(t *testing.T) {
+		m := NewManager(Config{
+			Path:         filepath.Join(t.TempDir(), "pragmas.db"),
+			MaxOpenConns: 3,
+			MaxIdleConns: 3,
+			Pragmas:      []string{"PRAGMA mmap_size = 1048576", "PRAGMA temp_store = MEMORY"},
+		})
+		db, err := m.Connect()
+		if err != nil {
+			t.Fatalf("Connect failed: %v", err)
+		}
+		defer func() { _ = m.Close() }()
+		sqlDB, _ := db.DB()
+
+		ctx := context.Background()
+		var conns []*sql.Conn
+		for i := 0; i < 3; i++ {
+			conn, err := sqlDB.Conn(ctx)
+			if err != nil {
+				t.Fatalf("conn %d: %v", i, err)
+			}
+			conns = append(conns, conn)
+		}
+
+		for i, conn := range conns {
+			var mmap, tempStore, timeout int
+			_ = conn.QueryRowContext(ctx, "PRAGMA mmap_size").Scan(&mmap)
+			_ = conn.QueryRowContext(ctx, "PRAGMA temp_store").Scan(&tempStore)
+			_ = conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&timeout)
+			if mmap != 1048576 {
+				t.Errorf("conn %d: mmap_size = %d, want 1048576", i, mmap)
+			}
+			if tempStore != 2 { // MEMORY
+				t.Errorf("conn %d: temp_store = %d, want 2", i, tempStore)
+			}
+			if timeout != 5000 {
+				t.Errorf("conn %d: busy_timeout = %d, want the default 5000", i, timeout)
+			}
+			_ = conn.Close()
+		}
+	})
+
+	t.Run("fails to open with a broken pragma", func(t *testing.T) {
+		m := NewManager(Config{
+			Path:    filepath.Join(t.TempDir(), "broken.db"),
+			Pragmas: []string{"PRAGMA mmap_size = 'oops"},
+		})
+
+		_, err := m.Connect()
+
+		if err == nil {
+			_ = m.Close()
+			t.Fatal("Connect succeeded, want an error for the broken pragma")
+		}
+	})
+
+	t.Run("keeps its pragmas after Close and a new Connect", func(t *testing.T) {
+		m := NewManager(Config{
+			Path:    filepath.Join(t.TempDir(), "reopen.db"),
+			Pragmas: []string{"PRAGMA mmap_size = 1048576"},
+		})
+		_, _ = m.Connect()
+		_ = m.Close()
+
+		db, err := m.Connect()
+		if err != nil {
+			t.Fatalf("Connect failed: %v", err)
+		}
+		defer func() { _ = m.Close() }()
+		var mmap int
+		_ = db.Raw("PRAGMA mmap_size").Scan(&mmap).Error
+
+		if mmap != 1048576 {
+			t.Errorf("mmap_size = %d, want 1048576", mmap)
+		}
+	})
+}
