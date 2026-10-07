@@ -27,6 +27,7 @@ func TestNewConcurrencyLimiter(t *testing.T) {
 
 	if limiter == nil {
 		t.Fatal("expected non-nil limiter")
+		return // staticcheck SA5011 does not see t.Fatal stop the test
 	}
 	if limiter.timeout != 5*time.Second {
 		t.Errorf("expected timeout 5s, got %v", limiter.timeout)

@@ -18,6 +18,7 @@ func TestAutoMigrator(t *testing.T) {
 		migrator := NewAutoMigrator(&testModel{})
 		if migrator == nil {
 			t.Fatal("expected non-nil migrator")
+			return // staticcheck SA5011 does not see t.Fatal stop the test
 		}
 		if len(migrator.models) != 1 {
 			t.Errorf("expected 1 model, got %d", len(migrator.models))

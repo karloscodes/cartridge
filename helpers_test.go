@@ -520,6 +520,7 @@ func TestFlashAndRedirectBack(t *testing.T) {
 			cookie := findCookie(resp, flash.FlashCookieName)
 			if cookie == nil {
 				t.Fatal("expected a flash cookie")
+				return // staticcheck SA5011 does not see t.Fatal stop the test
 			}
 			if cookie.Secure != tc.wantSecure {
 				t.Errorf("Secure = %v, want %v", cookie.Secure, tc.wantSecure)
