@@ -115,14 +115,24 @@ func (ctx *Context) setFlash(messageType, message string) {
 // query only. Any other Referer gives the fallback, so a forged Referer
 // cannot send the user to another site.
 func (ctx *Context) RedirectBack(fallback string) error {
-	return ctx.Redirect(localReferer(ctx.Get("Referer"), ctx.Hostname(), fallback), http.StatusFound)
+	return ctx.Redirect(localTarget(ctx.Get("Referer"), ctx.Hostname(), fallback), http.StatusFound)
 }
 
-// localReferer returns the path and query of referer when it points at host,
+// RedirectLocal issues a 302 to target when it points at this host, or else
+// to fallback. Use it for a target that comes from the request, such as the
+// "next" value after a login, so a crafted link cannot send the user to
+// another site:
+//
+//	return ctx.RedirectLocal(ctx.Query("next"), "/dashboard")
+func (ctx *Context) RedirectLocal(target, fallback string) error {
+	return ctx.Redirect(localTarget(target, ctx.Hostname(), fallback), http.StatusFound)
+}
+
+// localTarget returns the path and query of target when it points at host,
 // or else fallback.
-func localReferer(referer, host, fallback string) string {
-	u, err := url.Parse(referer)
-	if referer == "" || err != nil || (u.Host != "" && u.Host != host) || (u.Host == "" && u.Scheme != "") {
+func localTarget(target, host, fallback string) string {
+	u, err := url.Parse(target)
+	if target == "" || err != nil || (u.Host != "" && u.Host != host) || (u.Host == "" && u.Scheme != "") {
 		return fallback
 	}
 	// A browser reads "//evil.com" and "/\evil.com" as another host.

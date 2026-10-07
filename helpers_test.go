@@ -438,6 +438,29 @@ func TestFlashAndRedirectBack(t *testing.T) {
 		}
 	})
 
+	t.Run("RedirectLocal follows only a target on this host", func(t *testing.T) {
+		cases := map[string]string{
+			"/admin/sites?page=2":      "/admin/sites?page=2",
+			"http://example.com/admin": "/admin",
+			"":                         "/fallback",
+			"https://evil.com/phish":   "/fallback",
+			"//evil.com/phish":         "/fallback",
+			"/\\evil.com":              "/fallback",
+			"javascript:alert(1)":      "/fallback",
+		}
+		for target, want := range cases {
+			app := newTestApp(t)
+			app.Get("/login", func(c *Context) error { return c.RedirectLocal(c.Query("next"), "/fallback") })
+			req := httptest.NewRequest("GET", "http://example.com/login?next="+url.QueryEscape(target), nil)
+
+			resp, _ := app.Test(req)
+
+			if got := resp.Header.Get("Location"); got != want {
+				t.Errorf("next %q: Location = %q, want %q", target, got, want)
+			}
+		}
+	})
+
 	t.Run("RedirectBack falls back when Referer is absent", func(t *testing.T) {
 		app := newTestApp(t)
 		app.Post("/admin/websites", func(c *Context) error {
