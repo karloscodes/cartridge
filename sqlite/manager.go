@@ -39,15 +39,20 @@ type Config struct {
 	// TxImmediate uses immediate transaction locking. Default: true.
 	// This prevents SQLITE_BUSY errors in concurrent write scenarios.
 	TxImmediate bool
+
+	// WriteWait is how long Write waits for its turn before it returns
+	// ErrBusy. Default: 5 seconds.
+	WriteWait time.Duration
 }
 
 // Manager manages SQLite database connections with optimized settings.
 type Manager struct {
-	cfg     Config
-	logger  *slog.Logger
-	db      *gorm.DB
-	dbOnce  sync.Once
-	dbMutex sync.Mutex
+	cfg       Config
+	logger    *slog.Logger
+	db        *gorm.DB
+	dbOnce    sync.Once
+	dbMutex   sync.Mutex
+	writeTurn chan struct{} // holds one token while a Write runs
 }
 
 // NewManager creates a new SQLite database manager.
@@ -71,6 +76,9 @@ func NewManager(cfg Config) *Manager {
 	if !cfg.TxImmediate {
 		cfg.TxImmediate = true // Default to immediate transactions
 	}
+	if cfg.WriteWait <= 0 {
+		cfg.WriteWait = 5 * time.Second
+	}
 
 	logger := cfg.Logger
 	if logger == nil {
@@ -78,8 +86,9 @@ func NewManager(cfg Config) *Manager {
 	}
 
 	return &Manager{
-		cfg:    cfg,
-		logger: logger,
+		cfg:       cfg,
+		logger:    logger,
+		writeTurn: make(chan struct{}, 1),
 	}
 }
 

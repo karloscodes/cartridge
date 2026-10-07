@@ -53,6 +53,11 @@ func DefaultTransactionConfig() TransactionConfig {
 // - SQLite's busy_timeout (configured via DSN)
 // - _txlock=immediate to prevent lock upgrade deadlocks
 // - WAL mode for concurrent readers during writes
+//
+// Deprecated: Use Manager.Write. PerformWrite waits inside SQLite while it
+// holds a pool connection, so a burst of writes can block every reader, and
+// its retries can add up to half a minute. A retry also runs f again, so f
+// must not change state outside tx.
 func PerformWrite(logger *slog.Logger, db *gorm.DB, f func(tx *gorm.DB) error) error {
 	return PerformWriteWithConfig(logger, db, f, DefaultTransactionConfig())
 }

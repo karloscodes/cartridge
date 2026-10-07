@@ -11,8 +11,9 @@ import (
 // JobContext provides job-scoped access to application dependencies.
 type JobContext struct {
 	context.Context
-	Logger Logger
-	DB     *gorm.DB
+	Logger    Logger
+	DB        *gorm.DB
+	dbManager DBManager // for Write; nil in a JobContext built by hand
 }
 
 // Processor defines the interface for processing a batch of work.
@@ -100,9 +101,10 @@ func (d *JobDispatcher) processBatch() {
 	}
 
 	ctx := &JobContext{
-		Context: context.Background(),
-		Logger:  d.logger,
-		DB:      db,
+		Context:   context.Background(),
+		Logger:    d.logger,
+		DB:        db,
+		dbManager: d.dbManager,
 	}
 
 	for _, processor := range d.processors {
