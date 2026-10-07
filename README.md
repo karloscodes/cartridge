@@ -245,7 +245,7 @@ cartridge.WithSessionCheck(func(userID uint, issuedAt time.Time) bool {
 }),
 ```
 
-The middleware redirects anonymous users to the login path. HTMX requests get a `401` instead. Call `ctx.Session.ClearSession(ctx)` to log out. Use `crypto.GeneratePasswordHash` and `crypto.VerifyPassword` (bcrypt) for passwords.
+The middleware redirects anonymous users to the login path. Pages behind it send `Cache-Control: private, no-store`, unless the handler sets its own. HTMX requests get a `401` instead. Call `ctx.Session.ClearSession(ctx)` to log out. Use `crypto.GeneratePasswordHash` and `crypto.VerifyPassword` (bcrypt) for passwords.
 
 ## Background jobs
 

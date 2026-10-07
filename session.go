@@ -229,6 +229,10 @@ func (sm *SessionManager) resolve(c *Context) (*SessionData, bool) {
 // Middleware returns a middleware that requires authentication.
 // Unauthenticated requests are redirected to LoginPath.
 // HTMX requests receive a 401 status instead.
+//
+// Responses behind it carry "Cache-Control: private, no-store", so a proxy
+// or the browser's back button cannot show one user's page to another. A
+// handler can set its own Cache-Control.
 func (sm *SessionManager) Middleware() HandlerFunc {
 	return func(c *Context) error {
 		if !sm.IsAuthenticated(c) {
@@ -238,6 +242,7 @@ func (sm *SessionManager) Middleware() HandlerFunc {
 			}
 			return c.Redirect(sm.loginPath)
 		}
+		c.Set("Cache-Control", "private, no-store")
 		return c.Next()
 	}
 }

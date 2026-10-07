@@ -276,3 +276,18 @@ func TestInitialPagePreloads(t *testing.T) {
 		t.Errorf("vendor-B.js preloaded %d times, want once", n)
 	}
 }
+
+func TestRenderKeepsAStricterCacheControl(t *testing.T) {
+	SetDevMode(false)
+	rec := httptest.NewRecorder()
+	rec.Header().Set("Cache-Control", "private, no-store")
+
+	err := Render(rec, httptest.NewRequest("GET", "/test", nil), "Dashboard", Props{})
+
+	if err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "private, no-store" {
+		t.Errorf("Cache-Control = %q, want private, no-store", cc)
+	}
+}

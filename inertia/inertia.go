@@ -302,9 +302,10 @@ func Render(w http.ResponseWriter, r *http.Request, component string, props map[
 
 	// Cache control: dev mode never caches (prevents stale hashed asset references),
 	// production allows caching but requires revalidation to pick up new deploys.
+	// A stricter header set earlier, such as the session middleware's, stays.
 	if devMode {
 		w.Header().Set("Cache-Control", "no-store")
-	} else {
+	} else if w.Header().Get("Cache-Control") == "" {
 		w.Header().Set("Cache-Control", "no-cache")
 	}
 

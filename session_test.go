@@ -331,6 +331,16 @@ func TestSessionValid(t *testing.T) {
 		}
 	})
 
+	t.Run("a page behind the middleware is not stored by caches", func(t *testing.T) {
+		app := newApp(t, nil)
+
+		resp, _ := app.Test(login(t, app, "/me"))
+
+		if got := resp.Header.Get("Cache-Control"); got != "private, no-store" {
+			t.Errorf("Cache-Control = %q, want private, no-store", got)
+		}
+	})
+
 	t.Run("Valid gets the user and runs once per request", func(t *testing.T) {
 		calls := 0
 		var gotID uint
