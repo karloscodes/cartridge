@@ -237,6 +237,14 @@ func dashboard(ctx *cartridge.Context) error {
 }
 ```
 
+A signed cookie stays good until it expires, also after a logout or a password change. `WithSessionCheck` ends such sessions: return `false` and the user is signed out.
+
+```go
+cartridge.WithSessionCheck(func(userID uint, issuedAt time.Time) bool {
+	return users.SessionStillValid(userID, issuedAt)
+}),
+```
+
 The middleware redirects anonymous users to the login path. HTMX requests get a `401` instead. Call `ctx.Session.ClearSession(ctx)` to log out. Use `crypto.GeneratePasswordHash` and `crypto.VerifyPassword` (bcrypt) for passwords.
 
 ## Background jobs

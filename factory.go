@@ -75,6 +75,7 @@ type appOptions struct {
 	workers       []BackgroundWorker
 	jobGroups     []jobGroup
 	sessionPath   string
+	sessionValid  func(userID uint, issuedAt time.Time) bool
 	inertia       bool
 }
 
@@ -135,6 +136,15 @@ func WithWorker(worker BackgroundWorker) AppOption {
 func WithSession(loginPath string) AppOption {
 	return func(o *appOptions) {
 		o.sessionPath = loginPath
+	}
+}
+
+// WithSessionCheck sets SessionConfig.Valid: a session counts only while
+// valid returns true. Use it to end sessions after a logout or a password
+// change. It needs WithSession.
+func WithSessionCheck(valid func(userID uint, issuedAt time.Time) bool) AppOption {
+	return func(o *appOptions) {
+		o.sessionValid = valid
 	}
 }
 
@@ -202,6 +212,7 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 			TTL:        time.Duration(cfg.GetSessionTimeout()) * time.Second,
 			Insecure:   !cfg.IsProduction(),
 			LoginPath:  o.sessionPath,
+			Valid:      o.sessionValid,
 		})
 		if err != nil {
 			return nil, err

@@ -32,6 +32,13 @@ type SessionConfig struct {
 
 	// LoginPath is where to redirect unauthenticated users. Default: "/login".
 	LoginPath string
+
+	// Valid ends sessions before they expire. A signed cookie stays good
+	// until its expiry, also after a logout or a password change. When Valid
+	// is set, a session counts only if Valid returns true: check that the
+	// user still exists and that issuedAt is not before the user's last
+	// password change. It runs once per request.
+	Valid func(userID uint, issuedAt time.Time) bool
 }
 
 // minSessionSecretLength is the shortest secret NewSessionManager accepts.
@@ -44,7 +51,11 @@ type SessionManager struct {
 	ttl        time.Duration
 	secure     bool
 	loginPath  string
+	valid      func(userID uint, issuedAt time.Time) bool
 }
+
+// sessionKey is the Locals key for the session a request resolved to.
+type sessionKey struct{ sm *SessionManager }
 
 // SessionData stores session information in the cookie.
 type SessionData struct {
@@ -84,6 +95,7 @@ func NewSessionManager(cfg SessionConfig) (*SessionManager, error) {
 		ttl:        ttl,
 		secure:     !cfg.Insecure,
 		loginPath:  loginPath,
+		valid:      cfg.Valid,
 	}, nil
 }
 
@@ -106,6 +118,7 @@ func (sm *SessionManager) SetSession(c *Context, userID uint) error {
 		return err
 	}
 
+	delete(c.locals, sessionKey{sm})
 	c.Cookie(&Cookie{
 		Name:     sm.cookieName,
 		Value:    token,
@@ -125,6 +138,7 @@ func (sm *SessionManager) SetSession(c *Context, userID uint) error {
 
 // ClearSession removes the session cookie.
 func (sm *SessionManager) ClearSession(c *Context) {
+	delete(c.locals, sessionKey{sm})
 	c.ClearCookie(sm.cookieName)
 	c.Cookie(&Cookie{
 		Name:     sm.cookieName,
@@ -171,8 +185,20 @@ func (sm *SessionManager) IssuedAt(c *Context) (time.Time, bool) {
 	return data.IssuedAt, true
 }
 
-// current returns the data of a session cookie that is signed and not expired.
+// current returns the session of the request. It resolves the cookie once
+// per request, so SessionConfig.Valid runs once.
 func (sm *SessionManager) current(c *Context) (*SessionData, bool) {
+	if data, ok := c.Locals(sessionKey{sm}).(*SessionData); ok {
+		return data, data != nil
+	}
+	data, _ := sm.resolve(c)
+	c.Locals(sessionKey{sm}, data)
+	return data, data != nil
+}
+
+// resolve returns the data of a session cookie that is signed, not expired,
+// and accepted by SessionConfig.Valid.
+func (sm *SessionManager) resolve(c *Context) (*SessionData, bool) {
 	token := c.Cookies(sm.cookieName)
 	if token == "" {
 		return nil, false
@@ -187,6 +213,14 @@ func (sm *SessionManager) current(c *Context) (*SessionData, bool) {
 	if time.Now().After(data.ExpiresAt) {
 		slog.Debug("session expired", slog.Time("expires_at", data.ExpiresAt))
 		return nil, false
+	}
+
+	if sm.valid != nil {
+		userID, err := strconv.ParseUint(data.UserID, 10, strconv.IntSize)
+		if err != nil || !sm.valid(uint(userID), data.IssuedAt) {
+			slog.Debug("session rejected by Valid", slog.String("user_id", data.UserID))
+			return nil, false
+		}
 	}
 
 	return data, true

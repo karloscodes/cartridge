@@ -294,3 +294,53 @@ func TestSessionIssuedAt(t *testing.T) {
 		}
 	})
 }
+
+func TestSessionValid(t *testing.T) {
+	// login signs in user 7 and returns a request for path with the session cookie.
+	login := func(t *testing.T, app *Server, path string) *http.Request {
+		t.Helper()
+		loginResp, err := app.Test(httptest.NewRequest("GET", "/login", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest("GET", path, nil)
+		for _, cookie := range loginResp.Cookies() {
+			req.AddCookie(cookie)
+		}
+		return req
+	}
+	newApp := func(t *testing.T, valid func(uint, time.Time) bool) *Server {
+		t.Helper()
+		sm := newSessionManager(t, SessionConfig{Secret: testSecret, Valid: valid})
+		app := newTestApp(t)
+		app.Get("/login", func(c *Context) error { return sm.SetSession(c, 7) })
+		app.Get("/me", func(c *Context) error {
+			id, _ := sm.GetUserID(c)
+			return c.SendString(fmt.Sprint(id))
+		}, &RouteConfig{CustomMiddleware: []HandlerFunc{sm.Middleware()}})
+		return app
+	}
+
+	t.Run("a session that Valid rejects is signed out", func(t *testing.T) {
+		app := newApp(t, func(uint, time.Time) bool { return false })
+
+		resp, _ := app.Test(login(t, app, "/me"))
+
+		if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/login" {
+			t.Errorf("status = %d, Location = %q, want a redirect to /login", resp.StatusCode, resp.Header.Get("Location"))
+		}
+	})
+
+	t.Run("Valid gets the user and runs once per request", func(t *testing.T) {
+		calls := 0
+		var gotID uint
+		app := newApp(t, func(id uint, _ time.Time) bool { calls++; gotID = id; return true })
+
+		resp, _ := app.Test(login(t, app, "/me"))
+
+		body, _ := io.ReadAll(resp.Body)
+		if string(body) != "7" || gotID != 7 || calls != 1 {
+			t.Errorf("body = %q, user = %d, calls = %d, want 7, 7, 1", body, gotID, calls)
+		}
+	})
+}
