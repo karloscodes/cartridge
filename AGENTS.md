@@ -30,7 +30,7 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - **Never build SQL with string concatenation or `fmt.Sprintf`.** Use GORM placeholders: `Where("email = ?", email)`.
 - **Hash passwords** with `crypto.GeneratePasswordHash` and check them with `crypto.VerifyPassword`.
 - **End old sessions** with `cartridge.WithSessionCheck`: return false when the user is gone or `issuedAt` is before the last password change.
-- **Rate-limit login, signup, and password reset** with `middleware.RateLimiter(middleware.WithMax(n), middleware.WithDuration(d))`.
+- **Rate-limit login, signup, and password reset** with `middleware.RateLimiter(middleware.WithMax(n), middleware.WithDuration(d))`. For a browser form, add `middleware.WithLimitReached(fn)` to render the page with a message instead of JSON.
 - **Set `AllowedHosts` in production** when the app builds links from `ctx.BaseURL()` or `ctx.Hostname()`, such as a password-reset email.
 - **Behind a proxy, set `ProxyHeader` and `TrustedProxies`** to the proxy addresses only. Without them `ctx.IP()` is the proxy and every client shares one rate limit.
 - **CORS:** `EnableCORS` allows any origin. Set `CORSConfig.AllowOrigins` for an endpoint that is not public.

@@ -25,6 +25,9 @@ type RateLimiterConfig struct {
 	Skip     func(*cartridge.Context) bool
 	Env      EnvironmentChecker              // Optional: environment checker to skip rate limiting in dev/test
 	Key      func(*cartridge.Context) string // Optional: the client key; default c.IP()
+	// LimitReached writes the response for a client over the limit. Optional:
+	// the default is a JSON body.
+	LimitReached cartridge.HandlerFunc
 }
 
 // RateLimiterOption defines a function to modify RateLimiterConfig.
@@ -51,6 +54,17 @@ func WithDuration(duration time.Duration) RateLimiterOption {
 func WithSkip(skip func(*cartridge.Context) bool) RateLimiterOption {
 	return func(cfg *RateLimiterConfig) {
 		cfg.Skip = skip
+	}
+}
+
+// WithLimitReached sets the response for a client over the limit. The status
+// is already 429, and the X-RateLimit and Retry-After headers are set. Use it
+// to render a page for a browser form, such as a login page with a message.
+// Without it the client gets a JSON body.
+// Example: WithLimitReached(func(c *cartridge.Context) error { return c.Render("login", data) })
+func WithLimitReached(handler cartridge.HandlerFunc) RateLimiterOption {
+	return func(cfg *RateLimiterConfig) {
+		cfg.LimitReached = handler
 	}
 }
 
@@ -125,6 +139,10 @@ func RateLimiter(options ...RateLimiterOption) cartridge.HandlerFunc {
 			// Retry-After tells well-behaved clients when the window resets.
 			c.Set("Retry-After", reset)
 			c.Set("X-RateLimit-Remaining", "0")
+			if cfg.LimitReached != nil {
+				c.Status(http.StatusTooManyRequests)
+				return cfg.LimitReached(c)
+			}
 			return c.Status(http.StatusTooManyRequests).JSON(cartridge.Map{
 				"error":       "Too Many Requests",
 				"message":     "Rate limit exceeded. Please try again later.",

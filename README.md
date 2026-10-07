@@ -347,7 +347,7 @@ To redirect unknown paths, call `s.SetCatchAllRedirect("/")` in your routes func
 |---|---|
 | `cartridge` | `SecFetchSiteMiddleware`, `SecurityHeaders`, `Recover`, `RequestID`, `RequestLogger`, `Compress`, `CORS`, write concurrency limiter |
 | `config` | Env-based config loader (`config.Load`) for `NewApp` |
-| `middleware` | `RateLimiter` |
+| `middleware` | `RateLimiter`. A client over the limit gets a 429 with a JSON body, or the page from `WithLimitReached` |
 | `cache` | Generic TTL cache (`NewCache`), GORM-backed cache, memory and database `Store`s |
 | `crypto` | AES-GCM `Encrypt`/`Decrypt`, bcrypt password helpers |
 | `flash` | Low-level flash cookie helpers behind `ctx.Flash*` |

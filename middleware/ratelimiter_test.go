@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -37,6 +38,25 @@ func TestRateLimiter(t *testing.T) {
 		assert.Equal(t, http.StatusOK, get(app, "a").Code)
 		assert.Equal(t, http.StatusTooManyRequests, get(app, "a").Code)
 		assert.Equal(t, http.StatusOK, get(app, "b").Code, "another key has its own budget")
+	})
+
+	t.Run("answers with the WithLimitReached response", func(t *testing.T) {
+		app := testsupport.NewTestServer(t).Server
+		app.Use(RateLimiter(WithMax(1), WithDuration(time.Minute), WithLimitReached(func(c *cartridge.Context) error {
+			c.Set("Content-Type", "text/html; charset=utf-8")
+			return c.SendString("<p>Too many tries. Wait a minute.</p>")
+		})))
+		app.Get("/", func(c *cartridge.Context) error { return c.SendStatus(http.StatusOK) })
+		first, _ := app.Test(httptest.NewRequest("GET", "/", nil))
+		assert.Equal(t, http.StatusOK, first.StatusCode)
+
+		resp, _ := app.Test(httptest.NewRequest("GET", "/", nil))
+
+		body, _ := io.ReadAll(resp.Body)
+		assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+		assert.Equal(t, "<p>Too many tries. Wait a minute.</p>", string(body))
+		assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+		assert.NotEmpty(t, resp.Header.Get("Retry-After"))
 	})
 
 	t.Run("reports the limit as a number", func(t *testing.T) {
