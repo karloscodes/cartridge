@@ -316,3 +316,41 @@ func TestManager_AppPragmas(t *testing.T) {
 		}
 	})
 }
+
+func TestManager_CheckpointWithReplicaReading(t *testing.T) {
+	// A replica such as Litestream keeps a read transaction open on purpose.
+	dbPath := filepath.Join(t.TempDir(), "replica.db")
+	m := NewManager(Config{Path: dbPath, BusyTimeout: 2000})
+	db, err := m.Connect()
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+	db.Exec("CREATE TABLE items(id INTEGER PRIMARY KEY)")
+	replica, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("open replica: %v", err)
+	}
+	defer func() { _ = replica.Close() }()
+	reading, err := replica.Begin()
+	if err != nil {
+		t.Fatalf("begin read: %v", err)
+	}
+	defer func() { _ = reading.Rollback() }()
+	var n int
+	if err := reading.QueryRow("SELECT count(*) FROM items").Scan(&n); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	db.Exec("INSERT INTO items DEFAULT VALUES")
+
+	start := time.Now()
+	err = m.CheckpointWAL("PASSIVE")
+	took := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("CheckpointWAL: %v", err)
+	}
+	if took > 500*time.Millisecond {
+		t.Errorf("PASSIVE took %v, want no wait for the reader", took)
+	}
+}
