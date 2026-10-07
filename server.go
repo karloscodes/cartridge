@@ -33,13 +33,18 @@ type ServerConfig struct {
 
 	// HTTP server configuration
 	ErrorHandler ErrorHandler
-	ReadTimeout  time.Duration
+	// ReadTimeout limits the time to read a request. Default: 30s.
+	ReadTimeout time.Duration
 	// WriteTimeout limits the time to write a response. Default: 30s. A
 	// stream (server-sent events, a large download) lifts it per request:
 	//
 	//	http.NewResponseController(ctx.Response()).SetWriteDeadline(time.Time{})
 	WriteTimeout time.Duration
-	BodyLimit    int // Maximum request body in bytes. Default: 4 MB
+	// BodyLimit is the maximum request body in bytes. Default: 4 MB.
+	//
+	// NewServer sets the default for each of these three when it is 0. A
+	// negative value turns the limit off.
+	BodyLimit int
 
 	// ProxyHeader names the header that Context.IP reads the client address
 	// from, for example "X-Forwarded-For". TrustedProxies lists the IPs or
@@ -87,13 +92,19 @@ type ServerConfig struct {
 	ConcurrencyTimeout  time.Duration
 }
 
+// Limits that NewServer sets when the config leaves them at 0.
+const (
+	defaultTimeout   = 30 * time.Second
+	defaultBodyLimit = 4 * 1024 * 1024
+)
+
 // DefaultServerConfig returns a configuration with sensible defaults.
 func DefaultServerConfig() *ServerConfig {
 	return &ServerConfig{
 		// Server defaults
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		BodyLimit:    4 * 1024 * 1024,
+		ReadTimeout:  defaultTimeout,
+		WriteTimeout: defaultTimeout,
+		BodyLimit:    defaultBodyLimit,
 
 		// Static assets
 		EnableStaticAssets: true,
@@ -193,6 +204,17 @@ func NewServer(cfg *ServerConfig) (*Server, error) {
 	}
 	if cfg.ErrorHandler == nil {
 		cfg.ErrorHandler = DefaultErrorHandler(cfg.Logger, cfg.Config.IsDevelopment())
+	}
+	// A ServerConfig built without DefaultServerConfig still gets the limits.
+	// Without them, any client can send an endless body or hold a connection open.
+	if cfg.ReadTimeout == 0 {
+		cfg.ReadTimeout = defaultTimeout
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = defaultTimeout
+	}
+	if cfg.BodyLimit == 0 {
+		cfg.BodyLimit = defaultBodyLimit
 	}
 
 	trusted, err := parsePrefixes(cfg.TrustedProxies)

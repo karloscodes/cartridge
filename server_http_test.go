@@ -369,6 +369,29 @@ func TestBodyLimit(t *testing.T) {
 		return req
 	}
 
+	t.Run("a config without a BodyLimit gets the 4 MB default", func(t *testing.T) {
+		app := newTestApp(t)
+		app.Post("/x", func(c *Context) error { return c.SendString("ok") })
+
+		resp, _ := app.Test(httptest.NewRequest("POST", "/x", strings.NewReader(strings.Repeat("a", 4*1024*1024+1))))
+
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Errorf("status = %d, want 413", resp.StatusCode)
+		}
+	})
+
+	t.Run("a negative BodyLimit turns the limit off", func(t *testing.T) {
+		app := newTestApp(t)
+		app.cfg.BodyLimit = -1
+		app.Post("/x", func(c *Context) error { return c.SendString("ok") })
+
+		resp, _ := app.Test(httptest.NewRequest("POST", "/x", strings.NewReader(strings.Repeat("a", 4*1024*1024+1))))
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want 200", resp.StatusCode)
+		}
+	})
+
 	t.Run("rejects a body with a Content-Length over the limit", func(t *testing.T) {
 		app := newTestApp(t)
 		app.cfg.BodyLimit = 10
