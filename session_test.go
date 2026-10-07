@@ -331,6 +331,18 @@ func TestSessionValid(t *testing.T) {
 		}
 	})
 
+	t.Run("an htmx request without a session is sent to the login page", func(t *testing.T) {
+		app := newApp(t, func(uint, time.Time) bool { return false })
+		req := login(t, app, "/me")
+		req.Header.Set("HX-Request", "true")
+
+		resp, _ := app.Test(req)
+
+		if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("HX-Redirect") != "/login" {
+			t.Errorf("status = %d, HX-Redirect = %q, want 401 with HX-Redirect /login", resp.StatusCode, resp.Header.Get("HX-Redirect"))
+		}
+	})
+
 	t.Run("a page behind the middleware is not stored by caches", func(t *testing.T) {
 		app := newApp(t, nil)
 

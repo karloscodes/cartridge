@@ -227,8 +227,10 @@ func (sm *SessionManager) resolve(c *Context) (*SessionData, bool) {
 }
 
 // Middleware returns a middleware that requires authentication.
-// Unauthenticated requests are redirected to LoginPath.
-// HTMX requests receive a 401 status instead.
+// Unauthenticated requests are redirected to LoginPath. HTMX requests receive
+// a 401 with an HX-Redirect header to LoginPath: htmx shows nothing for a 401
+// and does not follow a redirect into a new page, so without the header a
+// click after the session ends does nothing.
 //
 // Responses behind it carry "Cache-Control: private, no-store", so a proxy
 // or the browser's back button cannot show one user's page to another. A
@@ -236,8 +238,8 @@ func (sm *SessionManager) resolve(c *Context) (*SessionData, bool) {
 func (sm *SessionManager) Middleware() HandlerFunc {
 	return func(c *Context) error {
 		if !sm.IsAuthenticated(c) {
-			// For HTMX requests, respond with 401
 			if c.Get("HX-Request") == "true" {
+				c.Set("HX-Redirect", sm.loginPath)
 				return c.Status(http.StatusUnauthorized).SendString("authentication required")
 			}
 			return c.Redirect(sm.loginPath)
