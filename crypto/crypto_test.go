@@ -41,6 +41,24 @@ func TestEncryptDecrypt_WrongKey(t *testing.T) {
 	}
 }
 
+func TestEncryptDecrypt_EmptyKey(t *testing.T) {
+	t.Run("Encrypt rejects an empty key", func(t *testing.T) {
+		_, err := Encrypt("Secret message", "")
+
+		if err == nil {
+			t.Error("Encrypt with an empty key should fail")
+		}
+	})
+
+	t.Run("Decrypt rejects an empty key", func(t *testing.T) {
+		_, err := Decrypt("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "")
+
+		if err == nil {
+			t.Error("Decrypt with an empty key should fail")
+		}
+	})
+}
+
 func TestPasswordHash(t *testing.T) {
 	password := "secure-password-123"
 

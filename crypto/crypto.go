@@ -6,15 +6,24 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
+// errEmptyKey stops an unset secret from becoming an all-zero AES key,
+// which anyone can use to decrypt.
+var errEmptyKey = errors.New("crypto: key is empty")
+
 // Encrypt encrypts plaintext using AES-GCM with the provided key.
-// The key is padded/truncated to 32 bytes for AES-256.
+// The key is padded/truncated to 32 bytes for AES-256, so use a random key
+// of at least 32 bytes. An empty key is an error.
 func Encrypt(plaintext, key string) (string, error) {
+	if key == "" {
+		return "", errEmptyKey
+	}
 	keyBytes := normalizeKey(key)
 
 	block, err := aes.NewCipher(keyBytes)
@@ -37,8 +46,11 @@ func Encrypt(plaintext, key string) (string, error) {
 }
 
 // Decrypt decrypts ciphertext using AES-GCM with the provided key.
-// The key is padded/truncated to 32 bytes for AES-256.
+// The key is padded/truncated to 32 bytes for AES-256. An empty key is an error.
 func Decrypt(ciphertext, key string) (string, error) {
+	if key == "" {
+		return "", errEmptyKey
+	}
 	keyBytes := normalizeKey(key)
 
 	ciphertextBytes, err := base64.StdEncoding.DecodeString(ciphertext)
