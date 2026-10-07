@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 
@@ -94,11 +95,12 @@ func TestIsBusyError(t *testing.T) {
 		expected bool
 	}{
 		{"nil error", nil, false},
-		{"database is locked", errors.New("database is locked"), true},
-		{"database is busy", errors.New("database is busy"), true},
-		{"generic locked", errors.New("resource locked"), true},
-		{"generic busy", errors.New("server busy"), true},
-		{"SQL statements in progress", errors.New("SQL statements in progress"), true},
+		{"SQLITE_BUSY", errors.New("database is locked"), true},
+		{"SQLITE_LOCKED", errors.New("database table is locked"), true},
+		{"schema lock", errors.New("database schema is locked: main"), true},
+		{"wrapped", fmt.Errorf("store event: %w", errors.New("database is locked")), true},
+		{"busy in data", errors.New("website busybee.com not found"), false},
+		{"locked in data", errors.New("account locked"), false},
 		{"unrelated error", errors.New("connection refused"), false},
 	}
 
