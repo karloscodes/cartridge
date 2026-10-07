@@ -74,6 +74,7 @@ type appOptions struct {
 	routes        func(*Server)
 	workers       []BackgroundWorker
 	jobGroups     []jobGroup
+	serverConfig  func(*ServerConfig)
 	sessionPath   string
 	sessionValid  func(userID uint, issuedAt time.Time) bool
 	inertia       bool
@@ -128,6 +129,19 @@ func WithJobs(interval time.Duration, processors ...Processor) AppOption {
 func WithWorker(worker BackgroundWorker) AppOption {
 	return func(o *appOptions) {
 		o.workers = append(o.workers, worker)
+	}
+}
+
+// WithServerConfig changes the server config after NewApp sets its
+// defaults. Use it for AllowedHosts, TrustedProxies, and
+// ContentSecurityPolicy:
+//
+//	cartridge.WithServerConfig(func(c *cartridge.ServerConfig) {
+//	    c.AllowedHosts = []string{"example.com"}
+//	})
+func WithServerConfig(fn func(*ServerConfig)) AppOption {
+	return func(o *appOptions) {
+		o.serverConfig = fn
 	}
 }
 
@@ -197,6 +211,9 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 	serverCfg.ViewsEngine = newViews(cfg, o.templatesFS, o.templateFuncs)
 	if !cfg.IsDevelopment() {
 		serverCfg.StaticFS = o.staticFS
+	}
+	if o.serverConfig != nil {
+		o.serverConfig(serverCfg)
 	}
 
 	server, err := NewServer(serverCfg)

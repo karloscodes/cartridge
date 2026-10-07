@@ -45,6 +45,23 @@ func TestNewApp(t *testing.T) {
 		}
 	})
 
+	t.Run("WithServerConfig changes the server config", func(t *testing.T) {
+		app, err := NewApp(newAppTestConfig(t),
+			WithServerConfig(func(c *ServerConfig) { c.AllowedHosts = []string{"myapp.test"} }),
+			WithRoutes(func(s *Server) {
+				s.Get("/ping", func(c *Context) error { return c.SendString("pong") })
+			}))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		got := get(t, app, "/ping")
+
+		if got == "pong" {
+			t.Error("a request for example.com got the page, want it rejected")
+		}
+	})
+
 	t.Run("mounts the routes and connects the database", func(t *testing.T) {
 		app, err := NewApp(newAppTestConfig(t), WithRoutes(func(s *Server) {
 			s.Get("/ping", func(c *Context) error {

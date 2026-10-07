@@ -121,7 +121,7 @@ MYAPP_ENV=development go run .
 
 ### What you get by default
 
-- `ServerConfig.AllowedHosts` rejects requests for any other `Host`, so a forged host cannot reach `ctx.BaseURL()` and the links you build from it. Set it in production.
+- `ServerConfig.AllowedHosts` rejects requests for any other `Host`, so a forged host cannot reach `ctx.BaseURL()` and the links you build from it. Set it in production. With `NewApp`, set server options through `WithServerConfig(func(c *cartridge.ServerConfig) { ... })`.
 - Request ID, panic recovery, security headers, and compression. Set `ServerConfig.ContentSecurityPolicy` to send a CSP. Production sends HSTS over https.
 - Request logging. Development logs text to stdout. Production logs JSON to stdout and to a rotated file in `storage/logs`.
 - CSRF protection on every POST, PUT, PATCH, and DELETE route through the `Sec-Fetch-Site` header. No tokens needed. GET, HEAD, and OPTIONS are never checked, so keep them free of side effects. This is CSRF protection, not client authentication: curl can send any header.
@@ -400,6 +400,10 @@ Other changes:
 - `Context.IP()` skips proxy header entries it cannot read, and reads entries with a port or quotes. When no entry qualifies, it returns the peer.
 - `Run` returns the error when the server fails after it binds the port, and stops the workers.
 - `config.Load` no longer uses viper. The env vars, the `.env` format, and the defaults stay the same. Cartridge now has 31 modules in `go list -m all` instead of 42.
+
+## AI agents
+
+[AGENTS.md](AGENTS.md) holds the rules for an AI agent that builds an app on cartridge. Point your app's `CLAUDE.md` or `AGENTS.md` at it.
 
 ## Contributing
 
