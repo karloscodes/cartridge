@@ -1,7 +1,9 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -236,8 +238,14 @@ func registerDriver(pragmas []string) string {
 	pragmas = slices.Clone(pragmas)
 	name := fmt.Sprintf("sqlite3_cartridge_%d", driverSeq.Add(1))
 	sql.Register(name, &sqlite3.SQLiteDriver{ConnectHook: func(conn *sqlite3.SQLiteConn) error {
+		// Through the driver interface: without cgo, go-sqlite3 has a stub
+		// SQLiteConn with no Exec, and CGO_ENABLED=0 builds must compile.
+		execer, ok := any(conn).(driver.ExecerContext)
+		if !ok {
+			return fmt.Errorf("sqlite: the driver cannot run pragmas (built without cgo?)")
+		}
 		for _, pragma := range pragmas {
-			if _, err := conn.Exec(pragma, nil); err != nil {
+			if _, err := execer.ExecContext(context.Background(), pragma, nil); err != nil {
 				return fmt.Errorf("sqlite: %s: %w", pragma, err)
 			}
 		}
