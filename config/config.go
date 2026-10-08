@@ -68,6 +68,7 @@ var envVars = map[string]string{
 	"sessionsecret": "_SESSION_SECRET",
 	"loglevel":      "_LOG_LEVEL",
 	"datadirectory": "_DATA_DIR",
+	"logsdirectory": "_LOGS_DIR",
 	"debug":         "_DEBUG",
 }
 

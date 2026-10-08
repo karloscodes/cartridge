@@ -67,6 +67,7 @@ func TestLoadEnvVars(t *testing.T) {
 		t.Setenv("PINAPP_SESSION_SECRET", "from-env")
 		t.Setenv("PINAPP_LOG_LEVEL", "warn")
 		t.Setenv("PINAPP_DATA_DIR", "data")
+		t.Setenv("PINAPP_LOGS_DIR", "/app/logs")
 		t.Setenv("PINAPP_DEBUG", "true")
 
 		cfg, err := Load("pinapp")
@@ -75,7 +76,7 @@ func TestLoadEnvVars(t *testing.T) {
 			t.Fatalf("Load: %v", err)
 		}
 		if cfg.Environment != Development || cfg.Port != "3000" || cfg.SessionSecret != "from-env" ||
-			cfg.LogLevel != "warn" || cfg.DataDirectory != "data" || !cfg.Debug {
+			cfg.LogLevel != "warn" || cfg.DataDirectory != "data" || cfg.LogsDirectory != "/app/logs" || !cfg.Debug {
 			t.Errorf("env vars not applied: %+v", *cfg)
 		}
 		if cfg.DatabasePath != filepath.Join("data", "pinapp.development.db") {

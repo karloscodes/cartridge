@@ -141,6 +141,7 @@ MYAPP_ENV=development go run .
 | `MYAPP_SESSION_SECRET` | none | Required in production, at least 32 bytes. Falls back to `PRIVATE_KEY`. |
 | `MYAPP_LOG_LEVEL` | `error` (`info` in dev/test) | `debug`, `info`, `warn`, `error` |
 | `MYAPP_DATA_DIR` | `storage` | Holds the database file |
+| `MYAPP_LOGS_DIR` | `storage/logs` | The rotated log files. Every line also goes to stdout. In a container, set it outside the data directory, like `/app/logs`, so the backups hold only data |
 | `MYAPP_DEBUG` | `false` | |
 
 The SQLite file is `<data dir>/<app>.<env>.db`, for example `storage/myapp.production.db`. Each environment gets its own file.
