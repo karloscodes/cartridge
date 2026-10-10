@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -257,7 +259,7 @@ func (h *colorHandler) Handle(ctx context.Context, r slog.Record) error {
 	buf.WriteString(levelStr)
 	buf.WriteString(colorReset)
 	buf.WriteString(" ")
-	buf.WriteString(r.Message)
+	buf.WriteString(printable(r.Message))
 
 	// Add attributes
 	r.Attrs(func(a slog.Attr) bool {
@@ -266,13 +268,39 @@ func (h *colorHandler) Handle(ctx context.Context, r slog.Record) error {
 		buf.WriteString(a.Key)
 		buf.WriteString("=")
 		buf.WriteString(colorReset)
-		buf.WriteString(a.Value.String())
+		// A stack trace keeps its lines. Every other value could come from
+		// a request, so it must not write to the terminal or start a line.
+		if a.Key == "stack" {
+			buf.WriteString(a.Value.String())
+		} else {
+			buf.WriteString(printable(a.Value.String()))
+		}
 		return true
 	})
 
 	buf.WriteString("\n")
 	_, err := h.w.Write([]byte(buf.String()))
 	return err
+}
+
+// printable replaces the control characters in s, such as a line break or
+// the ESC of a terminal escape sequence, with their Go escape. A request
+// path can hold them, and they could forge a log line or change the
+// terminal.
+func printable(s string) string {
+	if !strings.ContainsFunc(s, unicode.IsControl) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			quoted := strconv.QuoteRune(r)
+			b.WriteString(quoted[1 : len(quoted)-1])
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func (h *colorHandler) Enabled(ctx context.Context, level slog.Level) bool {

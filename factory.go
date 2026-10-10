@@ -80,6 +80,7 @@ type appOptions struct {
 	workers       []BackgroundWorker
 	jobGroups     []jobGroup
 	serverConfig  func(*ServerConfig)
+	defaults      string
 	sessionPath   string
 	sessionValid  func(userID uint, issuedAt time.Time) bool
 	inertia       bool
@@ -153,6 +154,19 @@ func WithWorker(worker BackgroundWorker) AppOption {
 func WithServerConfig(fn func(*ServerConfig)) AppOption {
 	return func(o *appOptions) {
 		o.serverConfig = fn
+	}
+}
+
+// WithDefaults loads the stricter defaults that cartridge added up to the
+// given version. See ServerConfig.LoadDefaults. A new app uses the newest
+// version:
+//
+//	cartridge.WithDefaults("1.7")
+//
+// WithServerConfig runs after it, so it can turn one default off again.
+func WithDefaults(version string) AppOption {
+	return func(o *appOptions) {
+		o.defaults = version
 	}
 }
 
@@ -269,6 +283,11 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 	}
 	// Only a Vite build, which Inertia apps have, puts a hash in file names.
 	serverCfg.StaticNamesHashed = o.inertia
+	if o.defaults != "" {
+		if err := serverCfg.LoadDefaults(o.defaults); err != nil {
+			return nil, err
+		}
+	}
 	if o.serverConfig != nil {
 		o.serverConfig(serverCfg)
 	}

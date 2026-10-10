@@ -64,12 +64,21 @@ type ServerConfig struct {
 	TrustedProxies []string
 
 	// AllowedHosts lists the Host header values this server answers, for
-	// example "example.com". An entry matches with or without the port. A
+	// example "example.com". An entry matches with or without the port. An
+	// entry that starts with a dot, ".example.com", also allows every
+	// subdomain. A
 	// request for another host gets a 400, so a forged Host header cannot
 	// reach Context.Hostname or Context.BaseURL and the links built from
 	// them. Loopback hosts (localhost, 127.0.0.1, ::1) always pass, so
 	// health checks work. Empty allows every host.
 	AllowedHosts []string
+
+	// BlockExternalRedirects makes Context.Redirect refuse a location on
+	// another host: it returns an error, and the client gets a 500. A
+	// redirect that must leave the site uses Context.RedirectExternal. So a
+	// request value that reaches Redirect cannot send the user to another
+	// site. LoadDefaults("1.7") turns it on.
+	BlockExternalRedirects bool
 
 	// ViewsEngine renders templates for Context.Render.
 	ViewsEngine Views
@@ -117,6 +126,50 @@ const (
 	defaultTimeout   = 30 * time.Second
 	defaultBodyLimit = 4 * 1024 * 1024
 )
+
+// versionedDefaults lists, in order, the stricter defaults that each
+// cartridge version added. A new default that can break an app goes here,
+// not into DefaultServerConfig.
+var versionedDefaults = []struct {
+	version string
+	apply   func(*ServerConfig)
+}{
+	{"1.6", func(*ServerConfig) {}},
+	{"1.7", func(c *ServerConfig) { c.BlockExternalRedirects = true }},
+}
+
+// LoadDefaults turns on the stricter defaults that cartridge added up to
+// and including the given version, such as "1.7". It works like
+// load_defaults in Rails: a release can add a safer default without a
+// change for apps that did not ask for it. A new app loads the newest
+// version. An older app raises the version when it is ready, and can turn
+// one default off again after the call:
+//
+//	cfg := cartridge.DefaultServerConfig()
+//	if err := cfg.LoadDefaults("1.7"); err != nil { ... }
+//	cfg.BlockExternalRedirects = false
+//
+// Without LoadDefaults, the server behaves as in 1.6. An unknown version is
+// an error.
+func (c *ServerConfig) LoadDefaults(version string) error {
+	last := -1
+	for i, d := range versionedDefaults {
+		if d.version == version {
+			last = i
+		}
+	}
+	if last < 0 {
+		known := make([]string, len(versionedDefaults))
+		for i, d := range versionedDefaults {
+			known[i] = d.version
+		}
+		return fmt.Errorf("cartridge: no defaults for version %q, want one of %s", version, strings.Join(known, ", "))
+	}
+	for _, d := range versionedDefaults[:last+1] {
+		d.apply(c)
+	}
+	return nil
+}
 
 // DefaultServerConfig returns a configuration with sensible defaults.
 func DefaultServerConfig() *ServerConfig {
@@ -742,12 +795,38 @@ func hostAllowed(host string, allowed []string) bool {
 	if strings.EqualFold(name, "localhost") || name == "127.0.0.1" || name == "::1" {
 		return true
 	}
+	lower := strings.ToLower(name)
 	for _, a := range allowed {
+		// ".example.com" allows example.com and its subdomains. Only a plain
+		// host name can match by its end: text such as
+		// "evil.com#x.example.com" also ends in ".example.com".
+		if domain, ok := strings.CutPrefix(strings.ToLower(a), "."); ok {
+			if plainHostName(lower) && (lower == domain || strings.HasSuffix(lower, "."+domain)) {
+				return true
+			}
+			continue
+		}
 		if strings.EqualFold(a, host) || strings.EqualFold(a, name) {
 			return true
 		}
 	}
 	return false
+}
+
+// plainHostName reports whether name holds only letters, digits, dashes,
+// and dots, and starts with a letter or a digit.
+func plainHostName(name string) bool {
+	if name == "" || name[0] == '.' || name[0] == '-' {
+		return false
+	}
+	for _, r := range name {
+		letter := 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z'
+		digit := '0' <= r && r <= '9'
+		if !letter && !digit && r != '-' && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // trustsProxy reports whether ip is in TrustedProxies.

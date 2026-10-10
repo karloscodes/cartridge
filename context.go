@@ -516,8 +516,38 @@ func (ctx *Context) SendFile(path string) error {
 	return nil
 }
 
-// Redirect sends a redirect to location, with status 302 by default.
+// Redirect sends a redirect to location, with status 302 by default. With
+// ServerConfig.BlockExternalRedirects, it returns an error for a location
+// on another host; use RedirectExternal for that.
 func (ctx *Context) Redirect(location string, status ...int) error {
+	if ctx.server != nil && ctx.server.cfg.BlockExternalRedirects && !isLocalRedirect(location, ctx.Hostname()) {
+		return fmt.Errorf("cartridge: Redirect to another host: %q; use RedirectExternal for a redirect that must leave the site", location)
+	}
+	return ctx.redirect(location, status...)
+}
+
+// RedirectExternal sends a redirect to a location on any host. Never give
+// it a value from the request.
+func (ctx *Context) RedirectExternal(location string, status ...int) error {
+	return ctx.redirect(location, status...)
+}
+
+// isLocalRedirect reports whether a browser that follows location stays on
+// host. A relative location is local. A browser drops white space at the
+// start and reads "\" as "/", so "//evil.com" in those forms is not local.
+func isLocalRedirect(location, host string) bool {
+	location = strings.ReplaceAll(strings.TrimSpace(location), `\`, "/")
+	u, err := url.Parse(location)
+	if err != nil {
+		return false
+	}
+	if u.Host != "" {
+		return strings.EqualFold(u.Host, host) && (u.Scheme == "" || u.Scheme == "http" || u.Scheme == "https") && !strings.HasPrefix(location, "//")
+	}
+	return u.Scheme == "" && !strings.HasPrefix(location, "//")
+}
+
+func (ctx *Context) redirect(location string, status ...int) error {
 	ctx.status = http.StatusFound
 	if len(status) > 0 {
 		ctx.status = status[0]
