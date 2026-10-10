@@ -127,7 +127,9 @@ MYAPP_ENV=development go run .
 
 ### What you get by default
 
-- `ServerConfig.AllowedHosts` rejects requests for any other `Host`, so a forged host cannot reach `ctx.BaseURL()` and the links you build from it. Set it in production. With `NewApp`, set server options through `WithServerConfig(func(c *cartridge.ServerConfig) { ... })`.
+- `WithDefaults("1.7")` loads the stricter defaults that cartridge added since 1.6, like `load_defaults` in Rails. A new app uses the newest version; an older app raises it when it is ready. Today it turns on `BlockExternalRedirects`: `ctx.Redirect` returns an error for another host, and `ctx.RedirectExternal` is the way out. `WithServerConfig` runs after it and can turn one default off.
+- [docs/rails-security-checklist.md](docs/rails-security-checklist.md) compares cartridge with the security features and the past advisories of Rails.
+- `ServerConfig.AllowedHosts` rejects requests for any other `Host`, so a forged host cannot reach `ctx.BaseURL()` and the links you build from it. Set it in production. An entry that starts with a dot, `.example.com`, also allows every subdomain. With `NewApp`, set server options through `WithServerConfig(func(c *cartridge.ServerConfig) { ... })`.
 - Request ID, panic recovery, security headers, and compression. Set `ServerConfig.ContentSecurityPolicy` to send a CSP. Production sends HSTS over https.
 - Request logging. Development logs text to stdout. Production logs JSON to stdout and to a rotated file in `storage/logs`.
 - CSRF protection on every POST, PUT, PATCH, and DELETE route through the `Sec-Fetch-Site` header. No tokens needed. GET, HEAD, and OPTIONS are never checked, so keep them free of side effects. This is CSRF protection, not client authentication: curl can send any header.
@@ -166,6 +168,8 @@ Every handler and middleware has one signature: `func(*cartridge.Context) error`
 | `ctx.Bind(&dst)` | Decodes the body only (JSON, form, multipart). Form fields need a `form` tag. Returns a 400, 413, or 415 `*Error` |
 | `ctx.QueryParser(&dst)`, `ctx.ParamsParser(&dst)` | Decode the query or route params. Fields need a `query` or `params` tag |
 | `ctx.FlashSuccess/FlashError/FlashInfo(msg)` | Sets a one-time flash cookie. Returns `ctx` for chaining. |
+| `ctx.RedirectLocal(target, "/fallback")` | 302 to a target from the request, only when it is on this host |
+| `ctx.RedirectExternal(url)` | 302 to another site. The only redirect that leaves the site with `BlockExternalRedirects` |
 | `ctx.RedirectBack("/fallback")` | 302 to the `Referer` path on this host, or to the fallback |
 | `ctx.Render("page", data, "layouts/app")` | Renders a template as `text/html`. See [Templates](#templates) |
 | `ctx.RenderAs("text/vnd.turbo-stream.html", "page", data)` | Renders a template with another content type. A text type gets `; charset=utf-8` |

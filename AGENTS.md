@@ -8,6 +8,7 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - Use `cartridge.NewApplication` only for PostgreSQL or a custom server. Then start from `cartridge.DefaultServerConfig()`.
 - Change server options through `cartridge.WithServerConfig(func(c *cartridge.ServerConfig) { ... })`.
 - Do not add a router, a session library, a CSRF library, or a dotenv library. Cartridge has them.
+- A new app loads the newest defaults: `cartridge.WithDefaults("1.7")`. They turn on the stricter behaviour that cartridge added since 1.6. Do not remove the option, and do not lower its version.
 - End `main` with `if err := app.Run(); err != nil { log.Fatal(err) }`. `Run` returns nil after a clean shutdown, so `log.Fatal(app.Run())` exits 1.
 - Put the app's wiring in one `newApp(cfg *config.Config) (*cartridge.App, error)` that also runs the migrations. `main` and the tests call it.
 - [examples/notes](examples/notes) is a complete app that follows these rules: sign-in, a list, a form with validation errors, flash messages, and HTTP tests.
@@ -41,7 +42,10 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - **Do not turn off CSRF** (`EnableSecFetchSite: cartridge.Bool(false)`) on a route that reads the session cookie. Turn it off only for a public endpoint with its own credential, such as an API key or a webhook signature.
 - **Protect each private route** with `s.Session().Middleware()` in `RouteConfig.CustomMiddleware`. A route without it is public.
 - **Authorize the record, not only the user.** Scope each query by the user from `ctx.Session.GetUserID(ctx)`. Do not trust an ID from the request.
-- **Never pass a request value to `ctx.Redirect`.** Use `ctx.RedirectLocal(ctx.Query("next"), "/")` or `ctx.RedirectBack("/")`.
+- **Never pass a request value to `ctx.Redirect`.** Use `ctx.RedirectLocal(ctx.Query("next"), "/")` or `ctx.RedirectBack("/")`. With `WithDefaults("1.7")`, `ctx.Redirect` returns an error for another host. Use `ctx.RedirectExternal(url)` only for a fixed URL that must leave the site, such as a payment page.
+- **Never pass a request value to `ctx.Render` as the template name.** Choose the template in code.
+- **Bind into a request struct, never into a GORM model.** `ctx.Bind` sets every exported field that a JSON body names, so a model would let the client set `IsAdmin` or `UserID`. Copy the allowed fields to the model by hand.
+- **Never pass a request value to GORM as a condition or a name.** `db.First(&user, ctx.Params("id"))` is SQL injection when the value is not a number. Convert an ID with `ctx.ParamsInt("id")`, or write `db.First(&user, "id = ?", id)`. The same holds for `Order`, `Select`, `Group`, `Table`, `Joins`, and `Pluck`: choose their text in code, for example from a fixed map of sort names.
 - **Never pass a request value to `ctx.SendFile`** or to a file path.
 - **Never build SQL with string concatenation or `fmt.Sprintf`.** Use GORM placeholders: `Where("email = ?", email)`.
 - **Hash passwords** with `crypto.GeneratePasswordHash` and check them with `crypto.VerifyPassword`.
