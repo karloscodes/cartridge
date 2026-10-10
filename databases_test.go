@@ -1,11 +1,14 @@
 package cartridge
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -151,6 +154,112 @@ func TestNamedDatabases(t *testing.T) {
 
 		if err == nil {
 			t.Error("NewApp returned no error")
+		}
+	})
+}
+
+func TestShutdownClosesDatabases(t *testing.T) {
+	cfg := newAppTestConfig(t)
+	app, err := NewApp(cfg, WithDatabase("shared", sqlite.Config{Path: filepath.Join(t.TempDir(), "shared.db")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := func(m *sqlite.Manager) *sql.DB {
+		db, err := m.Connect()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sqlDB, err := db.DB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sqlDB
+	}
+	main, shared := open(app.DBManager), open(app.Databases["shared"])
+
+	err = app.Shutdown(context.Background())
+
+	if err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if main.Ping() == nil || shared.Ping() == nil {
+		t.Error("a database is still open after Shutdown")
+	}
+}
+
+type processorFunc func(ctx *JobContext) error
+
+func (f processorFunc) ProcessBatch(ctx *JobContext) error { return f(ctx) }
+
+func TestJobNamedDatabases(t *testing.T) {
+	// runJob runs fn once in a job of an app with the database "shared".
+	runJob := func(t *testing.T, shared sqlite.Config, fn func(ctx *JobContext) error) error {
+		t.Helper()
+		result := make(chan error, 1)
+		job := processorFunc(func(ctx *JobContext) error {
+			select {
+			case result <- fn(ctx):
+			default:
+			}
+			return nil
+		})
+		app, err := NewApp(newAppTestConfig(t), WithDatabase("shared", shared), WithJobs(time.Hour, job))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+		if err := app.startWorkers(); err != nil {
+			t.Fatal(err)
+		}
+		return <-result
+	}
+
+	t.Run("a job reads a named database", func(t *testing.T) {
+		var user sharedUser
+
+		err := runJob(t, sqlite.Config{Path: seedShared(t)}, func(ctx *JobContext) error {
+			db, err := ctx.Database("shared")
+			if err != nil {
+				return err
+			}
+			return db.First(&user).Error
+		})
+
+		if err != nil || user.Name != "Ada" {
+			t.Errorf("got %q, %v, want Ada", user.Name, err)
+		}
+	})
+
+	t.Run("a job writes a named database", func(t *testing.T) {
+		path := seedShared(t)
+
+		err := runJob(t, sqlite.Config{Path: path}, func(ctx *JobContext) error {
+			return ctx.DatabaseWriteTx("shared", func(tx *gorm.DB) error {
+				return tx.Create(&sharedUser{Name: "Grace"}).Error
+			})
+		})
+
+		if err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		m := sqlite.NewManager(sqlite.Config{Path: path})
+		t.Cleanup(func() { _ = m.Close() })
+		db, _ := m.Connect()
+		var count int64
+		db.Model(&sharedUser{}).Count(&count)
+		if count != 2 {
+			t.Errorf("users = %d, want 2", count)
+		}
+	})
+
+	t.Run("an unknown name is an error, not a panic", func(t *testing.T) {
+		err := runJob(t, sqlite.Config{Path: seedShared(t)}, func(ctx *JobContext) error {
+			_, err := ctx.Database("other")
+			return err
+		})
+
+		if err == nil {
+			t.Error("Database returned nil, want an error")
 		}
 	})
 }

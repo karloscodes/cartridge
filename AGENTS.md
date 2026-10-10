@@ -33,7 +33,7 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - Give a partial more than one value with `dict`: `{{template "notes/row" (dict "Note" . "Compact" true)}}`.
 - Link every file in `web/static` with `{{asset "app.css"}}`, not with a fixed `/assets/app.css` path. The digested URL gets an immutable cache, and a deploy with a changed file gets a new URL.
 - Write the import map with `{{importmap "application.js" "controllers/*.js" "name=file.js"}}`. Do not build it in Go.
-- `asset` does not rewrite `url()` or `@import` inside CSS. Link a CSS file that changes often from the HTML with `asset`.
+- `asset` does not rewrite `url()` or `@import` inside CSS. Link a CSS file that changes often from the HTML with `asset`. A file at its plain URL is checked by the browser on each use.
 
 ## Security rules
 
@@ -68,5 +68,6 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 
 ## More databases
 
-- Open a second SQLite file with `cartridge.WithDatabase("name", sqlite.Config{Path: ...})`. Read it with `ctx.Database("name")` and write it with `ctx.DatabaseWriteTx("name", fn)`. Do not open a `sqlite.Manager` by hand, and do not override `DatabaseDSN` to point at another file.
+- Do not close the databases in `main`. `Run` and `Shutdown` close them.
+- Open a second SQLite file with `cartridge.WithDatabase("name", sqlite.Config{Path: ...})`. Read it with `ctx.Database("name")` and write it with `ctx.DatabaseWriteTx("name", fn)`. In a job: `jobCtx.Database("name")` (it returns an error, not a panic) and `jobCtx.DatabaseWriteTx`. Do not open a `sqlite.Manager` by hand, and do not override `DatabaseDSN` to point at another file.
 - Open a file that the app must not change with `sqlite.Config{Path: ..., ReadOnly: true}`. Writes then return `sqlite.ErrReadOnly`. Do not put `mode=ro` in the path.

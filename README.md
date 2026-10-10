@@ -276,7 +276,7 @@ Embedded files are hashed once, at startup. There is no build step. An unknown f
 
 A file from a glob is a module named by its path without the extension: `controllers/hello_controller.js` is `controllers/hello_controller`. An index file is named by its folder: `controllers/index.js` is `controllers`. A glob that matches no file is an error. The script tag has `data-turbo-track="reload"`, so Turbo reloads the page when a deploy changes a module. With a `ContentSecurityPolicy`, allow this inline script.
 
-`asset` does not change the `url()` and `@import` paths inside a CSS file. Those files keep their plain URL and its cache.
+`asset` does not change the `url()` and `@import` paths inside a CSS file. Those files keep their plain URL. A plain URL is sent with `Cache-Control: no-cache` and an `ETag`, so the browser checks it on each use and a deploy with a changed file reaches it. Only a Vite build has a hash in its file names: `WithInertia` (or `ServerConfig.StaticNamesHashed`) gives plain URLs a one-year cache.
 
 Outside a template, `app.Server.Asset("app.js")` and `app.Server.Importmap(...)` return the same values. An app from `NewApplication` adds them to its own template functions.
 
@@ -429,6 +429,8 @@ func renameAccount(ctx *cartridge.Context) error {
 - `ctx.DatabaseWriteTx(name, fn)` writes through the write queue of that database. See [Writes under load](#writes-under-load).
 - `Logger`, `MaxOpenConns`, and `MaxIdleConns` default to those of the main database.
 - The managers are in `app.Databases`. With `NewApplication`, set `ServerConfig.Databases`.
+- A job reads one with `db, err := jobCtx.Database("shared")` and writes it with `jobCtx.DatabaseWriteTx("shared", fn)`.
+- `Run` and `Shutdown` close the main database and the named ones.
 
 ### Read-only files
 

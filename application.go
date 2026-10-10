@@ -2,6 +2,7 @@ package cartridge
 
 import (
 	"context"
+	"io"
 	"net"
 	"os/signal"
 	"syscall"
@@ -120,12 +121,32 @@ func (a *Application) StartAsync() error {
 	return nil
 }
 
-// Shutdown stops the server, then the workers. The server waits for open
-// requests until ctx is done.
+// Shutdown stops the server, then the workers, then closes the databases.
+// The server waits for open requests until ctx is done.
 func (a *Application) Shutdown(ctx context.Context) error {
 	err := a.Server.Shutdown(ctx)
 	a.stopWorkers()
+	a.closeDatabases()
 	return err
+}
+
+// closeDatabases closes the main database and the named ones, when their
+// managers have a Close method. A SQLite manager then saves its query
+// statistics for the next start. A closed manager opens again on its next use.
+func (a *Application) closeDatabases() {
+	managers := map[string]DBManager{"main": a.DBManager}
+	for name, m := range a.Server.cfg.Databases {
+		managers[name] = m
+	}
+	for name, m := range managers {
+		closer, ok := m.(io.Closer)
+		if !ok {
+			continue
+		}
+		if err := closer.Close(); err != nil {
+			a.Logger.Error("failed to close the database", "database", name, "error", err)
+		}
+	}
 }
 
 // startWorkers starts each worker. When one fails, it stops the workers
@@ -186,6 +207,7 @@ func (a *Application) serveUntil(ctx context.Context, ln net.Listener, timeout t
 		if err != nil {
 			a.Logger.Error("Server failed", "error", err)
 			a.stopWorkers()
+			a.closeDatabases()
 		}
 		return err
 	case <-ctx.Done():
