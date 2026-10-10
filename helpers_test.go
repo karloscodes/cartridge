@@ -592,3 +592,80 @@ func assertFlashCookie(t *testing.T, resp *http.Response, wantType, wantMessage 
 	}
 	t.Fatalf("expected a %q flash cookie in response, found none", flash.FlashCookieName)
 }
+
+func TestIsPrefetch(t *testing.T) {
+	newApp := func(t *testing.T) *Server {
+		app := newTestApp(t)
+		app.Get("/page", func(c *Context) error {
+			if c.IsPrefetch() {
+				return c.SendString("prefetch")
+			}
+			return c.SendString("visit")
+		})
+		return app
+	}
+
+	for _, header := range []struct{ name, value string }{
+		{"Sec-Purpose", "prefetch"},
+		{"Sec-Purpose", "prefetch;prerender"},
+		{"Purpose", "prefetch"},
+		{"X-Sec-Purpose", "Prefetch"},
+	} {
+		t.Run(header.name+": "+header.value+" is a prefetch", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/page", nil)
+			req.Header.Set(header.name, header.value)
+
+			resp, _ := newApp(t).Test(req)
+
+			if got := body(t, resp); got != "prefetch" {
+				t.Errorf("got %q", got)
+			}
+		})
+	}
+
+	t.Run("a request without a purpose is a visit", func(t *testing.T) {
+		resp, _ := newApp(t).Test(httptest.NewRequest("GET", "/page", nil))
+
+		if got := body(t, resp); got != "visit" {
+			t.Errorf("got %q", got)
+		}
+	})
+}
+
+func TestSetCookie(t *testing.T) {
+	send := func(t *testing.T, cfg Config) *http.Cookie {
+		t.Helper()
+		app := newTestApp(t)
+		app.Get("/folder", func(c *Context) error {
+			c.Config = cfg
+			c.SetCookie("inbox_filter", "waiting")
+			return c.SendString("ok")
+		})
+		resp, _ := app.Test(httptest.NewRequest("GET", "/folder", nil))
+		cookie := findCookie(resp, "inbox_filter")
+		if cookie == nil {
+			t.Fatal("no inbox_filter cookie")
+		}
+		return cookie
+	}
+
+	t.Run("sets an HttpOnly, SameSite=Lax cookie for the whole site, until the browser closes", func(t *testing.T) {
+		cookie := send(t, &testConfig{})
+
+		if cookie.Value != "waiting" || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.Path != "/" {
+			t.Errorf("cookie = %+v", cookie)
+		}
+		if cookie.MaxAge != 0 || !cookie.Expires.IsZero() {
+			t.Errorf("cookie expires: %+v", cookie)
+		}
+	})
+
+	t.Run("the cookie is Secure only in production", func(t *testing.T) {
+		dev := send(t, &testConfig{})
+		prod := send(t, &prodConfig{})
+
+		if dev.Secure || !prod.Secure {
+			t.Errorf("Secure: test %v, production %v; want false, true", dev.Secure, prod.Secure)
+		}
+	})
+}

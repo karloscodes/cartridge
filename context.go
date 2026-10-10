@@ -219,6 +219,21 @@ func (ctx *Context) Cookie(c *Cookie) {
 	http.SetCookie(ctx.w, hc)
 }
 
+// SetCookie sets a cookie with safe defaults: HttpOnly, SameSite=Lax,
+// Path=/, and Secure in production. It lasts until the browser closes. The
+// value must be cookie-safe, so encode other text, for example with
+// url.QueryEscape. Use Cookie for other settings.
+func (ctx *Context) SetCookie(name, value string) {
+	ctx.Cookie(&Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		HTTPOnly: true,
+		SameSite: "Lax",
+		Secure:   ctx.Config != nil && ctx.Config.IsProduction(),
+	})
+}
+
 // ClearCookie expires the named cookies. With no names, it expires every
 // cookie the request sent.
 func (ctx *Context) ClearCookie(names ...string) {
@@ -280,6 +295,19 @@ func parseForwardedAddr(raw string) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	return addr.Unmap().WithZone(""), true
+}
+
+// IsPrefetch reports whether the browser asks for the page before the user
+// opens it, as Turbo does on hover. The Sec-Purpose, Purpose, or
+// X-Sec-Purpose header then contains "prefetch". Skip work that only a real
+// visit must do, such as remembering the last page in a cookie.
+func (ctx *Context) IsPrefetch() bool {
+	for _, header := range []string{"Sec-Purpose", "Purpose", "X-Sec-Purpose"} {
+		if strings.Contains(strings.ToLower(ctx.r.Header.Get(header)), "prefetch") {
+			return true
+		}
+	}
+	return false
 }
 
 // Hostname returns the Host header.
