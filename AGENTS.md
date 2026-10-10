@@ -74,9 +74,18 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 
 - An app chooses one way for its schema: GORM models with `NewAutoMigrator`, or SQL files with `cartridge.NewSQLMigrator`. Do not use both for the same table. Look at what the app has before you add a table.
 - In an app with SQL files, add a new numbered file for each schema change. Never change a file that ran.
-- Read with `query.All[T](ctx.Context(), ctx.SQL(), "SELECT ... WHERE id = ?", id)` and `query.One[T]`. Write with `ctx.WriteSQL(func(tx *sql.Tx) error { ... })`. Do not open a `*sql.DB` by hand.
+- Read with `query.All[T](ctx.Context(), ctx.SQL(), "SELECT ... WHERE id = ?", id)` and `query.One[T]`. Write inside `ctx.WriteSQL(func(tx *sql.Tx) error { ... })` with `query.Exec(ctx.Context(), tx, "INSERT ...", args...)`. Do not open a `*sql.DB` by hand.
+- The SQL text of `query.All`, `query.One`, and `query.Exec` must be a constant. When the compiler refuses a query, do not go around it with `tx.ExecContext` or `db.QueryContext`: pass the value as an argument, or choose between constant queries in code.
 - **Always pass a request value as an argument, never inside the SQL text.** Do not build SQL with `fmt.Sprintf` or `+`. For a sort order, choose the column from a fixed map.
 - Name every column in a `SELECT`. `SELECT *` breaks when a migration adds a column that the struct does not have.
+
+## Cron jobs and cache
+
+- Run periodic work with `cartridge.WithCron("name", "0 8 * * *", fn)` or `"@every 30s"`. Do not start a goroutine with a ticker, and do not check the clock inside a job to decide if it is time.
+- Keep the name of a cron job when its schedule changes. A new name is a new job.
+- A cron job can run again after a failure and after a restart. Write it so that a second run does no harm.
+- Cache with `cache.Fetch(ctx.Context(), ctx.Cache(), key, ttl, fn)`. Put what the value depends on in the key, such as the user ID. Never cache one user's data under a key that another user reads.
+- Do not build a cache with a map and a mutex.
 
 ## More databases
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/karloscodes/cartridge/cache"
 	"github.com/karloscodes/cartridge/inertia"
 	"github.com/karloscodes/cartridge/sqlite"
 )
@@ -44,6 +45,7 @@ type App struct {
 	*Application
 	DBManager *sqlite.Manager
 	Session   *SessionManager            // nil without WithSession
+	Cache     cache.Store                // nil without WithCache
 	Databases map[string]*sqlite.Manager // from WithDatabase, by name
 }
 
@@ -85,6 +87,17 @@ type appOptions struct {
 	sessionValid  func(userID uint, issuedAt time.Time) bool
 	inertia       bool
 	databases     map[string]sqlite.Config
+	managers      map[string]DBManager
+	crons         []cronSpec
+	cache         bool
+	cacheOptions  []cache.Option
+	cacheDatabase string
+	cronDatabase  string
+}
+
+type cronSpec struct {
+	name, spec string
+	fn         CronFunc
 }
 
 type jobGroup struct {
@@ -205,6 +218,68 @@ func WithDatabase(name string, cfg sqlite.Config) AppOption {
 	}
 }
 
+// WithDatabaseManager adds a database that the app opened itself under
+// name, for example a PostgreSQL database on another server:
+//
+//	shared := database.NewManager(postgres.NewDriver(), database.DefaultConfig(dsn), logger)
+//	cartridge.WithDatabaseManager("shared", shared)
+//
+// A handler reads it with ctx.Database(name). Run and Shutdown close it.
+func WithDatabaseManager(name string, m DBManager) AppOption {
+	return func(o *appOptions) {
+		if o.managers == nil {
+			o.managers = map[string]DBManager{}
+		}
+		o.managers[name] = m
+	}
+}
+
+// WithCache gives the app a cache in its database, in the table
+// cartridge_cache, like Solid Cache in Rails. Every process on the database
+// shares it, and it survives a restart. A handler reads it through
+// ctx.Cache() and cache.Fetch. The store is in App.Cache.
+//
+//	cartridge.WithCache(cache.WithTTL(time.Hour), cache.WithMaxEntries(10000))
+func WithCache(opts ...cache.Option) AppOption {
+	return func(o *appOptions) {
+		o.cache = true
+		o.cacheOptions = opts
+	}
+}
+
+// WithCacheDatabase keeps the cache of WithCache in the named database
+// (from WithDatabase or WithDatabaseManager), not in the main one. Use it
+// to keep cache writes away from the main SQLite file, or to share one
+// cache between servers.
+func WithCacheDatabase(name string) AppOption {
+	return func(o *appOptions) {
+		o.cacheDatabase = name
+	}
+}
+
+// WithCron runs fn on a schedule. See CronScheduler.Add for the name and
+// the spec:
+//
+//	cartridge.WithCron("send-digest", "TZ=Europe/Madrid 0 8 * * *", sendDigest)
+//	cartridge.WithCron("sweep-events", "@every 30s", sweepEvents)
+//
+// The next run of each job is stored in the database, so a restart loses
+// no run, and several processes on one database run each tick once.
+func WithCron(name, spec string, fn CronFunc) AppOption {
+	return func(o *appOptions) {
+		o.crons = append(o.crons, cronSpec{name: name, spec: spec, fn: fn})
+	}
+}
+
+// WithCronDatabase keeps the schedule state of WithCron in the named
+// database (from WithDatabase or WithDatabaseManager), not in the main one.
+// Use it when several servers share one database for their schedules.
+func WithCronDatabase(name string) AppOption {
+	return func(o *appOptions) {
+		o.cronDatabase = name
+	}
+}
+
 // WithInertia prepares the inertia package: in development it re-reads the
 // Vite manifest on every request. Set the page title and other settings
 // with the inertia package functions.
@@ -276,6 +351,15 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 		databases[name] = sqlite.NewManager(dbCfg)
 		serverCfg.Databases[name] = databases[name]
 	}
+	for name, m := range o.managers {
+		if name == "" || m == nil {
+			return nil, fmt.Errorf("cartridge: WithDatabaseManager needs a name and a manager")
+		}
+		if _, taken := serverCfg.Databases[name]; taken {
+			return nil, fmt.Errorf("cartridge: two databases have the name %q", name)
+		}
+		serverCfg.Databases[name] = m
+	}
 	serverCfg.ErrorHandler = o.errorHandler
 	serverCfg.ViewsEngine = newViews(cfg, o.templatesFS, funcs)
 	if !cfg.IsDevelopment() {
@@ -290,6 +374,32 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 	}
 	if o.serverConfig != nil {
 		o.serverConfig(serverCfg)
+	}
+
+	var store *cache.DatabaseStore
+	if o.cache {
+		var m DBManager = dbManager
+		if o.cacheDatabase != "" {
+			named, ok := serverCfg.Databases[o.cacheDatabase]
+			if !ok {
+				return nil, fmt.Errorf("cartridge: WithCacheDatabase: no database named %q", o.cacheDatabase)
+			}
+			m = named
+		}
+		db, err := m.Connect()
+		if err != nil {
+			return nil, fmt.Errorf("cartridge: cache: %w", err)
+		}
+		sqlDB, err := db.DB()
+		if err != nil {
+			return nil, fmt.Errorf("cartridge: cache: %w", err)
+		}
+		if store, err = cache.NewDatabaseStore(sqlDB, o.cacheOptions...); err != nil {
+			return nil, fmt.Errorf("cartridge: cache: %w", err)
+		}
+		serverCfg.Cache = store
+	} else if o.cacheDatabase != "" {
+		return nil, fmt.Errorf("cartridge: WithCacheDatabase needs WithCache")
 	}
 
 	server, err := NewServer(serverCfg)
@@ -324,6 +434,26 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 		workers = append(workers, dispatcher)
 	}
 
+	if len(o.crons) > 0 {
+		scheduler := NewCronScheduler(logger, dbManager)
+		scheduler.Databases = serverCfg.Databases
+		if o.cronDatabase != "" {
+			state, ok := serverCfg.Databases[o.cronDatabase]
+			if !ok {
+				return nil, fmt.Errorf("cartridge: WithCronDatabase: no database named %q", o.cronDatabase)
+			}
+			scheduler.StoreIn(state)
+		}
+		for _, c := range o.crons {
+			if err := scheduler.Add(c.name, c.spec, c.fn); err != nil {
+				return nil, err
+			}
+		}
+		workers = append(workers, scheduler)
+	} else if o.cronDatabase != "" {
+		return nil, fmt.Errorf("cartridge: WithCronDatabase needs WithCron")
+	}
+
 	application, err := NewApplication(ApplicationOptions{
 		Config:            cfg,
 		Logger:            logger,
@@ -335,7 +465,11 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 		return nil, fmt.Errorf("cartridge: create application: %w", err)
 	}
 
-	return &App{Application: application, DBManager: dbManager, Session: session, Databases: databases}, nil
+	app := &App{Application: application, DBManager: dbManager, Session: session, Databases: databases}
+	if store != nil {
+		app.Cache = store
+	}
+	return app, nil
 }
 
 // newViews returns nil without templates. Development reads web/templates

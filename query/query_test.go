@@ -183,3 +183,19 @@ func TestOne(t *testing.T) {
 		}
 	})
 }
+
+func TestExec(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+
+	result, err := query.Exec(ctx, db, "UPDATE notes SET tag = ? WHERE user_id = ?", "done", 7)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, _ := result.RowsAffected()
+	done, _ := query.One[int](ctx, db, "SELECT COUNT(*) FROM notes WHERE tag = 'done'")
+	if changed != 2 || done != 2 {
+		t.Errorf("changed %d rows, %d have the tag, want 2 and 2", changed, done)
+	}
+}

@@ -4,11 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/karloscodes/cartridge/cache"
 	"github.com/karloscodes/cartridge/query"
+	"github.com/karloscodes/cartridge/sqlite"
 )
 
 type plainNote struct {
@@ -185,6 +190,83 @@ func TestSQLMigrator(t *testing.T) {
 
 		if err := app.MigrateDatabase(NewSQLMigrator(fstest.MapFS{"0003_it's.sql": {Data: []byte("SELECT 1;")}})); err == nil {
 			t.Error("Migrate returned nil, want an error")
+		}
+	})
+}
+
+func TestWithCache(t *testing.T) {
+	t.Run("a handler caches a value in the database, and it survives a restart", func(t *testing.T) {
+		cfg := newAppTestConfig(t)
+		loads := 0
+		newApp := func() *App {
+			app, err := NewApp(cfg, WithCache(), WithRoutes(func(s *Server) {
+				s.Get("/stats", func(c *Context) error {
+					value, err := cache.Fetch(c.Context(), c.Cache(), "stats", time.Minute, func() (int, error) {
+						loads++
+						return 42, nil
+					})
+					if err != nil {
+						return err
+					}
+					return c.JSON(value)
+				})
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return app
+		}
+		first := newApp()
+		get(t, first, "/stats")
+		_ = first.Shutdown(context.Background())
+		second := newApp()
+		t.Cleanup(func() { _ = second.Shutdown(context.Background()) })
+
+		got := get(t, second, "/stats")
+
+		if got != "42" || loads != 1 {
+			t.Errorf("got %s after %d loads, want 42 from one load", got, loads)
+		}
+	})
+
+	t.Run("WithCacheDatabase keeps the cache in the named database", func(t *testing.T) {
+		app, err := NewApp(newAppTestConfig(t),
+			WithDatabase("shared", sqlite.Config{Path: filepath.Join(t.TempDir(), "shared.db")}),
+			WithCache(), WithCacheDatabase("shared"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+
+		err = app.Cache.Write(context.Background(), "k", []byte("v"))
+
+		inShared, sharedErr := query.One[int](context.Background(), cronSQL(t, app.Databases["shared"]), "SELECT COUNT(*) FROM cartridge_cache")
+		_, mainErr := query.One[int](context.Background(), cronSQL(t, app.DBManager), "SELECT COUNT(*) FROM cartridge_cache")
+		if err != nil || sharedErr != nil || inShared != 1 || mainErr == nil {
+			t.Errorf("write: %v, shared has %d (%v), main table exists = %v", err, inShared, sharedErr, mainErr == nil)
+		}
+	})
+
+	t.Run("without WithCache, Context.Cache is a 500, not a crash", func(t *testing.T) {
+		app, err := NewApp(newAppTestConfig(t), WithRoutes(func(s *Server) {
+			s.Get("/stats", func(c *Context) error { return c.JSON(c.Cache().Exist(c.Context(), "k")) })
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+		rec := httptest.NewRecorder()
+
+		app.Server.ServeHTTP(rec, httptest.NewRequest("GET", "/stats", nil))
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("status = %d, want 500", rec.Code)
+		}
+	})
+
+	t.Run("an unknown cache database fails NewApp", func(t *testing.T) {
+		if _, err := NewApp(newAppTestConfig(t), WithCache(), WithCacheDatabase("nowhere")); err == nil {
+			t.Error("NewApp returned nil, want an error")
 		}
 	})
 }

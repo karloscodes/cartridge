@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+
+	"github.com/karloscodes/cartridge/cache"
 )
 
 // Map is a shortcut for map[string]any, handy for JSON responses and template data.
@@ -113,6 +115,20 @@ func (ctx *Context) namedDatabase(name string) DBManager {
 		return nil
 	}
 	return ctx.server.cfg.Databases[name]
+}
+
+// Cache returns the app's cache store, from WithCache or
+// ServerConfig.Cache. Use it with cache.Fetch:
+//
+//	stats, err := cache.Fetch(ctx.Context(), ctx.Cache(), "stats:"+id, time.Minute, loadStats)
+//
+// It panics when the app has no cache; the recover middleware turns that
+// into a 500.
+func (ctx *Context) Cache() cache.Store {
+	if ctx.server == nil || ctx.server.cfg.Cache == nil {
+		panic("cartridge: the app has no cache; add WithCache")
+	}
+	return ctx.server.cfg.Cache
 }
 
 // Next runs the next handler in the chain.

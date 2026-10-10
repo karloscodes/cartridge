@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -210,7 +211,11 @@ func TestPostgres(t *testing.T) {
 
 	t.Run("the database cache store keeps, expires, and deletes entries", func(t *testing.T) {
 		m, _ := newManager(t, 2)
-		store, err := cache.NewDatabaseStore(connect(t, m))
+		sqlDB, err := connect(t, m).DB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		store, err := cache.NewDatabaseStore(sqlDB)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -232,6 +237,11 @@ func TestPostgres(t *testing.T) {
 		}
 		if err != nil || deleted < 1 || store.Exist(ctx, "user:1") {
 			t.Errorf("deleted %d, err %v", deleted, err)
+		}
+		fetched, fetchErr := cache.Fetch(ctx, store, "count", time.Minute, func() (int, error) { return 3, nil })
+		again, againErr := cache.Fetch(ctx, store, "count", time.Minute, func() (int, error) { return 0, errors.New("not called") })
+		if fetchErr != nil || againErr != nil || fetched != 3 || again != 3 {
+			t.Errorf("Fetch gave %d then %d, errors %v %v", fetched, again, fetchErr, againErr)
 		}
 	})
 
@@ -266,33 +276,6 @@ func TestPostgres(t *testing.T) {
 		}
 	})
 
-	t.Run("the GORM cache fetches once, then reads the stored value", func(t *testing.T) {
-		m := newManagerFor(t)
-		db := connect(t, m)
-		if err := db.AutoMigrate(&cache.CacheRecord{}); err != nil {
-			t.Fatal(err)
-		}
-		fetches := 0
-		c, err := cache.NewGormCache(db, slog.New(slog.NewTextHandler(io.Discard, nil)), time.Hour, func(key string) (string, error) {
-			fetches++
-			return "value of " + key, nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		first, err1 := c.Get("user:1")
-		again, err2 := c.Get("user:1")
-		removed := c.InvalidateByPrefix("user:")
-
-		if err1 != nil || err2 != nil || first != "value of user:1" || again != first || fetches != 1 {
-			t.Errorf("got %q then %q, %d fetches, errors %v %v", first, again, fetches, err1, err2)
-		}
-		if removed != 1 {
-			t.Errorf("removed %d entries, want 1", removed)
-		}
-	})
-
 	t.Run("SQL files migrate the schema, and WriteSQL and query use it without GORM", func(t *testing.T) {
 		m := newManagerFor(t)
 		db := connect(t, m)
@@ -317,6 +300,34 @@ func TestPostgres(t *testing.T) {
 		names, queryErr := query.All[string](ctx, sqlDB, "SELECT name FROM items WHERE done = FALSE ORDER BY id")
 		if err != nil || queryErr != nil || len(names) != 2 || names[0] != "seed" || names[1] != "written" {
 			t.Errorf("names = %v, write: %v, query: %v", names, err, queryErr)
+		}
+	})
+
+	t.Run("two cron schedulers on the database run each tick once", func(t *testing.T) {
+		m := newManagerFor(t)
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		var runs atomic.Int32
+		job := func(*cartridge.JobContext) error { runs.Add(1); return nil }
+		start := func() *cartridge.CronScheduler {
+			scheduler := cartridge.NewCronScheduler(logger, m)
+			if err := scheduler.Add("tick", "@every 200ms", job); err != nil {
+				t.Fatal(err)
+			}
+			if err := scheduler.Start(); err != nil {
+				t.Fatal(err)
+			}
+			return scheduler
+		}
+
+		begin := time.Now()
+		first, second := start(), start()
+		time.Sleep(900 * time.Millisecond)
+		first.Stop()
+		second.Stop()
+
+		ticks := int32(time.Since(begin)/(200*time.Millisecond)) + 1
+		if got := runs.Load(); got < 2 || got > ticks {
+			t.Errorf("runs = %d, want 2 to %d: one run per tick", got, ticks)
 		}
 	})
 }

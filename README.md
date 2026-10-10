@@ -353,6 +353,59 @@ cartridge.WithJobs(time.Hour, PruneSessions{}), // each call gets its own schedu
 
 `WithWorker(w)` runs any `BackgroundWorker` (`Start() error`, `Stop()`). Jobs and workers start with `app.Run()` and stop during graceful shutdown.
 
+### Cron jobs
+
+`WithCron` runs a function on a schedule:
+
+```go
+cartridge.WithCron("send-digest", "TZ=Europe/Madrid 0 8 * * *", sendDigest),
+cartridge.WithCron("sweep-events", "@every 30s", sweepEvents),
+
+func sendDigest(ctx *cartridge.JobContext) error {
+	// ctx.DB, ctx.SQL(), ctx.WriteTx, ctx.WriteSQL, ctx.Logger
+	return nil
+}
+```
+
+| Schedule | Meaning |
+|---|---|
+| `30 8 * * 1-5` | minute, hour, day of month, month, day of week. A field takes `*`, a number, a range `1-5`, a list `1,15`, and a step `*/15` |
+| `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly` | shortcuts |
+| `@every 30s` | a fixed pause between the starts of two runs |
+| `TZ=Europe/Madrid 0 8 * * *` | another time zone. The default is UTC |
+
+The next run of each job is in the table `cartridge_cron`:
+
+- A restart loses no run and repeats none. A run that was due while the app was down happens once at the start.
+- Several processes on one database run each tick once.
+- A job never overlaps itself. An error or a panic is logged and stored in `last_error`, and the job runs again at its next time.
+- The name identifies the job in the table. Keep it when the schedule changes.
+
+`WithCronDatabase("shared")` keeps the table in a named database, for example one that several servers share. Name a database with `WithDatabase` (SQLite) or `WithDatabaseManager` (any manager, such as PostgreSQL on another server).
+
+## Cache
+
+`WithCache` gives the app a cache in its database, in the table `cartridge_cache`, like Solid Cache in Rails. Every process on the database shares it, and it survives a restart.
+
+```go
+cartridge.WithCache(cache.WithTTL(time.Hour), cache.WithMaxEntries(10000)),
+
+func stats(ctx *cartridge.Context) error {
+	value, err := cache.Fetch(ctx.Context(), ctx.Cache(), "stats:"+siteID, time.Minute, func() (Stats, error) {
+		return loadStats(siteID)
+	})
+	if err != nil {
+		return err
+	}
+	return ctx.JSON(value)
+}
+```
+
+- `cache.Fetch` returns the stored value, or calls the function, stores the result as JSON, and returns it. When many requests miss the same key at the same time, the function runs once.
+- `ctx.Cache()` is a `cache.Store`: `Read`, `Write`, `WriteWithTTL`, `Delete`, `DeleteByPrefix`, `Clear`, `Exist`.
+- `WithCacheDatabase("shared")` keeps the cache in a named database, away from the main SQLite file or shared between servers.
+- `cache.NewMemoryStore()` is the same interface in memory, for a value that is read on every request. With `NewApplication`, set `ServerConfig.Cache`.
+
 ## Database
 
 ### Migrations
@@ -411,6 +464,9 @@ func createNote(ctx *cartridge.Context) error {
 | `ctx.WriteSQL(fn)` | One write transaction with a `*sql.Tx`, through the same write queue as `WriteTx` |
 | `jobCtx.SQL()`, `jobCtx.WriteSQL(fn)` | The same in a job |
 | `query.All[T]`, `query.One[T]` | Read rows into structs, or one column into values. `One` returns `sql.ErrNoRows` without a row |
+| `query.Exec` | Runs an `INSERT`, `UPDATE`, or `DELETE` |
+
+**SQL injection.** `query.All`, `query.One`, and `query.Exec` take the SQL text only as a constant of the source code. A text built at run time, with `fmt.Sprintf` or with `+` and a variable, does not compile. So a request value can only be an argument, and the driver never reads an argument as SQL. For a part that cannot be an argument, such as a sort column, choose between constant queries in code.
 
 A column fills the field with its name: the `db` tag, or the field name in snake case (`CreatedAt` reads `created_at`). A column without a field is an error. A column that can be `NULL` needs a pointer field or a `sql.Null` type. The placeholder is the one of the database: `?` for SQLite and MySQL, `$1` for PostgreSQL.
 
@@ -565,7 +621,7 @@ To redirect unknown paths, call `s.SetCatchAllRedirect("/")` in your routes func
 | `cartridge` | `SecFetchSiteMiddleware`, `SecurityHeaders`, `Recover`, `RequestID`, `RequestLogger`, `Compress`, `CORS`, write concurrency limiter |
 | `config` | Env-based config loader (`config.Load`) for `NewApp` |
 | `middleware` | `RateLimiter`. A client over the limit gets a 429 with a JSON body, or the page from `WithLimitReached` |
-| `cache` | Generic TTL cache (`NewCache`), GORM-backed cache, memory and database `Store`s |
+| `cache` | The cache `Store` interface, a database store and a memory store, and `cache.Fetch` |
 | `crypto` | AES-GCM `Encrypt`/`Decrypt`, bcrypt password helpers |
 | `flash` | Low-level flash cookie helpers behind `ctx.Flash*` |
 | `inertia` | Inertia rendering, deferred props, Vite manifest |
