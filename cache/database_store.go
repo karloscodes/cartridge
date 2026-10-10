@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // DatabaseStore is a database-backed cache using GORM.
@@ -58,7 +59,7 @@ func (s *DatabaseStore) Read(ctx context.Context, key string) ([]byte, bool) {
 	var entry CacheEntry
 	now := time.Now().UnixMilli()
 
-	result := s.db.WithContext(ctx).Where("key = ? AND expires_at > ?", key, now).First(&entry)
+	result := s.db.WithContext(ctx).Where(keyIs(key)).Where("expires_at > ?", now).First(&entry)
 	if result.Error != nil {
 		return nil, false
 	}
@@ -95,12 +96,12 @@ func (s *DatabaseStore) WriteWithTTL(ctx context.Context, key string, value []by
 
 // Delete removes a key from the cache.
 func (s *DatabaseStore) Delete(ctx context.Context, key string) error {
-	return s.db.WithContext(ctx).Where("key = ?", key).Delete(&CacheEntry{}).Error
+	return s.db.WithContext(ctx).Where(keyIs(key)).Delete(&CacheEntry{}).Error
 }
 
 // DeleteByPrefix removes all keys matching the prefix.
 func (s *DatabaseStore) DeleteByPrefix(ctx context.Context, prefix string) (int, error) {
-	result := s.db.WithContext(ctx).Where("key LIKE ?", prefix+"%").Delete(&CacheEntry{})
+	result := s.db.WithContext(ctx).Where(keyHasPrefix(prefix)).Delete(&CacheEntry{})
 	return int(result.RowsAffected), result.Error
 }
 
@@ -113,7 +114,7 @@ func (s *DatabaseStore) Clear(ctx context.Context) error {
 func (s *DatabaseStore) Exist(ctx context.Context, key string) bool {
 	now := time.Now().UnixMilli()
 	var count int64
-	s.db.WithContext(ctx).Model(&CacheEntry{}).Where("key = ? AND expires_at > ?", key, now).Count(&count)
+	s.db.WithContext(ctx).Model(&CacheEntry{}).Where(keyIs(key)).Where("expires_at > ?", now).Count(&count)
 	return count > 0
 }
 
@@ -153,16 +154,39 @@ func (s *DatabaseStore) enforceLimit(ctx context.Context) {
 		return
 	}
 
-	// Delete oldest entries (FIFO) to get back to max
+	// Delete oldest entries (FIFO) to get back to max. Two queries, because
+	// MySQL does not take a LIMIT in an IN subquery.
 	excess := count - s.opts.MaxEntries
+	var oldest []string
+	s.db.WithContext(ctx).Model(&CacheEntry{}).
+		Order("created_at ASC").
+		Limit(int(excess)).
+		Pluck("key", &oldest)
+	if len(oldest) == 0 {
+		return
+	}
 	s.db.WithContext(ctx).
-		Where("key IN (?)",
-			s.db.Model(&CacheEntry{}).
-				Select("key").
-				Order("created_at ASC").
-				Limit(int(excess)),
-		).
+		Where(clause.IN{Column: clause.Column{Name: "key"}, Values: toAny(oldest)}).
 		Delete(&CacheEntry{})
+}
+
+// "key" is a reserved word in MySQL. These conditions let GORM quote the
+// column name for the database in use.
+
+func keyIs(key string) clause.Expression {
+	return clause.Eq{Column: clause.Column{Name: "key"}, Value: key}
+}
+
+func keyHasPrefix(prefix string) clause.Expression {
+	return clause.Like{Column: clause.Column{Name: "key"}, Value: prefix + "%"}
+}
+
+func toAny(values []string) []any {
+	out := make([]any, len(values))
+	for i, v := range values {
+		out[i] = v
+	}
+	return out
 }
 
 // startCleanup runs periodic cleanup of expired entries.

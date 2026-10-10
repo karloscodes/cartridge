@@ -53,7 +53,7 @@ func (c *GormCache[V]) Get(key string) (V, error) {
 	var zero V
 
 	now := time.Now().Unix()
-	tx := c.db.Where("key = ?", key).First(&record)
+	tx := c.db.Where(keyIs(key)).First(&record)
 
 	if tx.Error == nil {
 		c.logger.Debug("Record found. Checking expiry.", slog.String("key", key), slog.Int64("now", now), slog.Int64("lastUpdated", record.LastUpdated), slog.Int64("ttlSeconds", record.TTLSeconds))
@@ -78,7 +78,7 @@ func (c *GormCache[V]) Get(key string) (V, error) {
 	defer c.mu.Unlock()
 
 	// Double-check after acquiring lock
-	tx = c.db.Where("key = ?", key).First(&record)
+	tx = c.db.Where(keyIs(key)).First(&record)
 	nowDoubleCheck := time.Now().Unix()
 	if tx.Error == nil {
 		c.logger.Debug("Double-check: Record found.", slog.String("key", key), slog.Int64("now", nowDoubleCheck), slog.Int64("lastUpdated", record.LastUpdated), slog.Int64("ttlSeconds", record.TTLSeconds))
@@ -148,7 +148,7 @@ func (c *GormCache[V]) setInternal(key string, value V) error {
 func (c *GormCache[V]) Remove(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	tx := c.db.Delete(&CacheRecord{}, "key = ?", key)
+	tx := c.db.Where(keyIs(key)).Delete(&CacheRecord{})
 	if tx.Error != nil {
 		c.logger.Error("Failed to remove cache entry", slog.String("key", key), slog.Any("error", tx.Error))
 	} else if tx.RowsAffected > 0 {
@@ -173,7 +173,7 @@ func (c *GormCache[V]) InvalidateByPrefix(prefix string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	tx := c.db.Where("key LIKE ?", prefix+"%").Delete(&CacheRecord{})
+	tx := c.db.Where(keyHasPrefix(prefix)).Delete(&CacheRecord{})
 	if tx.Error != nil {
 		c.logger.Error("Failed to invalidate cache by prefix", slog.String("prefix", prefix), slog.Any("error", tx.Error))
 		return 0
