@@ -20,6 +20,9 @@ import (
 //	{{render "partials/nav" .}}  renders another template
 //	{{embed}}                    in a layout, renders the page
 //
+// They also have timeAgo, pluralize, truncate, squish, and dict. See
+// defaultViewFuncs.
+//
 // Renders run in parallel. Each file is parsed once, or on every render
 // with reload.
 type HTMLViews struct {
@@ -146,22 +149,21 @@ func (v *HTMLViews) parse() (*viewSet, error) {
 	return &viewSet{pages: pages, layouts: layouts}, nil
 }
 
-// setFuncs returns the functions of one template set. The app's functions
-// win over embed and render.
+// setFuncs returns the functions of one template set: the default
+// functions, embed, and render. The app's functions win over them.
 func (v *HTMLViews) setFuncs(set *template.Template, embed func() (template.HTML, error)) template.FuncMap {
-	funcs := template.FuncMap{
-		"embed": embed,
-		"render": func(name string, data any) (template.HTML, error) {
-			t := set.Lookup(name)
-			if t == nil {
-				return "", fmt.Errorf("template %q not found", name)
-			}
-			var buf bytes.Buffer
-			if err := t.Execute(&buf, data); err != nil {
-				return "", err
-			}
-			return template.HTML(buf.String()), nil
-		},
+	funcs := defaultViewFuncs()
+	funcs["embed"] = embed
+	funcs["render"] = func(name string, data any) (template.HTML, error) {
+		t := set.Lookup(name)
+		if t == nil {
+			return "", fmt.Errorf("template %q not found", name)
+		}
+		var buf bytes.Buffer
+		if err := t.Execute(&buf, data); err != nil {
+			return "", err
+		}
+		return template.HTML(buf.String()), nil
 	}
 	maps.Copy(funcs, v.funcs)
 	return funcs

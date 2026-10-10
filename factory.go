@@ -106,7 +106,8 @@ func WithAssets(templates, static fs.FS) AppOption {
 	}
 }
 
-// WithTemplateFuncs adds functions to the templates.
+// WithTemplateFuncs adds functions to the templates. A function wins over a
+// default function with the same name, such as asset or timeAgo.
 func WithTemplateFuncs(funcs template.FuncMap) AppOption {
 	return func(o *appOptions) {
 		o.templateFuncs = funcs
