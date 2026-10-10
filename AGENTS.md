@@ -80,6 +80,7 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 
 ## More databases
 
+- With `cartridge.WithReadPool()`, reads and writes use separate connections. Inside `ctx.WriteTx`, use `tx` for every query, also for reads: `ctx.DB()` there does not see the transaction's own writes, and a write on it waits for the transaction.
 - Do not close the databases in `main`. `Run` and `Shutdown` close them.
 - Open a second SQLite file with `cartridge.WithDatabase("name", sqlite.Config{Path: ...})`. Read it with `ctx.Database("name")` and write it with `ctx.DatabaseWriteTx("name", fn)`. In a job: `jobCtx.Database("name")` (it returns an error, not a panic) and `jobCtx.DatabaseWriteTx`. Do not open a `sqlite.Manager` by hand, and do not override `DatabaseDSN` to point at another file.
 - Open a file that the app must not change with `sqlite.Config{Path: ..., ReadOnly: true}`. Writes then return `sqlite.ErrReadOnly`. Do not put `mode=ro` in the path.

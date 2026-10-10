@@ -14,8 +14,15 @@ import (
 //
 //	notes, err := query.All[Note](ctx.Context(), ctx.SQL(), "SELECT id, body FROM notes WHERE user_id = ?", userID)
 //
-// Like DB, it panics when the database connection fails.
+// With sqlite.Config.ReadPool, SQL returns the pool of read-only
+// connections: write through WriteSQL. Like DB, it panics when the
+// database connection fails.
 func (ctx *Context) SQL() *sql.DB {
+	if m, ok := ctx.DBManager.(interface{ Reader() *sql.DB }); ok {
+		if reader := m.Reader(); reader != nil {
+			return reader
+		}
+	}
 	db, err := ctx.DB().DB()
 	if err != nil {
 		panic("cartridge: database connection failed: " + err.Error())

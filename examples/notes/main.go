@@ -45,6 +45,7 @@ func newApp(cfg *config.Config) (*cartridge.App, error) {
 	var app *cartridge.App
 	app, err := cartridge.NewApp(cfg,
 		cartridge.WithDefaults("1.7"),
+		cartridge.WithReadPool(),
 		cartridge.WithAssets(web.Templates(), web.Static()),
 		cartridge.WithSession("/login"),
 		// A session ends when its user is gone. The check runs on requests,

@@ -82,6 +82,7 @@ type appOptions struct {
 	serverConfig  func(*ServerConfig)
 	defaults      string
 	sessionPath   string
+	readPool      bool
 	sessionValid  func(userID uint, issuedAt time.Time) bool
 	inertia       bool
 	databases     map[string]sqlite.Config
@@ -187,6 +188,17 @@ func WithSessionCheck(valid func(userID uint, issuedAt time.Time) bool) AppOptio
 	}
 }
 
+// WithReadPool opens each SQLite database of the app with two pools: one
+// write connection, and a pool of read-only connections. See
+// sqlite.Config.ReadPool. App code does not change: a SELECT runs on a read
+// connection, and every write and transaction runs on the write
+// connection, one at a time.
+func WithReadPool() AppOption {
+	return func(o *appOptions) {
+		o.readPool = true
+	}
+}
+
 // WithDatabase opens another SQLite database under name, next to the main
 // one. A handler reads it with ctx.Database(name) and writes it with
 // ctx.DatabaseWriteTx(name, fn). The config's Logger, MaxOpenConns, and
@@ -240,6 +252,7 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 	slog.SetDefault(logger)
 
 	dbManager := sqlite.NewManager(sqlite.Config{
+		ReadPool:     o.readPool,
 		Path:         cfg.DatabaseDSN(),
 		MaxOpenConns: cfg.GetMaxOpenConns(),
 		MaxIdleConns: cfg.GetMaxIdleConns(),
@@ -266,6 +279,9 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 		}
 		if dbCfg.Logger == nil {
 			dbCfg.Logger = logger
+		}
+		if o.readPool {
+			dbCfg.ReadPool = true
 		}
 		if dbCfg.MaxOpenConns == 0 {
 			dbCfg.MaxOpenConns = cfg.GetMaxOpenConns()

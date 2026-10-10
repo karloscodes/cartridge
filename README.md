@@ -416,6 +416,32 @@ A column fills the field with its name: the `db` tag, or the field name in snake
 
 For queries that the compiler checks, run [sqlc](https://sqlc.dev) on the same migration files: its generated code takes `ctx.SQL()` and the `*sql.Tx` of `WriteSQL`.
 
+### Two pools: one writer, many readers
+
+`WithReadPool()` opens each SQLite database with two connection pools: one write connection, and a pool of read-only connections.
+
+```go
+app, err := cartridge.NewApp(cfg,
+	cartridge.WithReadPool(),
+	// ...
+)
+```
+
+With `NewApplication`, set `sqlite.Config{ReadPool: true}`. App code does not change:
+
+- A `SELECT` outside a transaction runs on a read connection. Reads never wait for a write.
+- Every other statement, and every transaction, runs on the one write connection, one at a time. Writes wait for each other in Go, so two of them cannot fail with `database is locked` against each other.
+- `MaxOpenConns` is the number of read connections.
+- `ctx.SQL()` returns the read-only pool. A statement that writes fails on it: write through `ctx.WriteSQL`.
+
+Three things to check before you turn it on:
+
+- Inside a transaction, use the transaction handle (`tx`) for every query. A write on `ctx.DB()` inside `WriteTx` waits for the connection that the transaction holds.
+- Code that takes `db.DB()` gets the write connection. Code that holds several connections from it at once must use `Manager.Reader()`.
+- A database in memory keeps one pool.
+
+It is off by default in 1.x. In 2.0 it is the only way.
+
 ### Writes under load
 
 SQLite allows one writer. `WriteTx` runs a write transaction when its turn comes. Writers wait in arrival order and hold no pool connection while they wait, so reads go on:

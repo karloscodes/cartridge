@@ -188,3 +188,66 @@ func TestSQLMigrator(t *testing.T) {
 		}
 	})
 }
+
+func TestWithReadPool(t *testing.T) {
+	newApp := func(t *testing.T, routes func(s *Server)) *App {
+		t.Helper()
+		app, err := NewApp(newAppTestConfig(t), WithReadPool(), WithRoutes(routes))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+		if err := app.MigrateDatabase(NewSQLMigrator(plainMigrations)); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		return app
+	}
+
+	t.Run("handlers read and write as before, with GORM and with SQL", func(t *testing.T) {
+		app := newApp(t, func(s *Server) {
+			s.Get("/add", func(c *Context) error {
+				if err := c.DB().Exec("INSERT INTO notes (body) VALUES (?)", "gorm").Error; err != nil {
+					return err
+				}
+				return c.WriteSQL(func(tx *sql.Tx) error {
+					_, err := tx.ExecContext(c.Context(), "INSERT INTO notes (body) VALUES (?)", "sql")
+					return err
+				})
+			})
+			s.Get("/count", func(c *Context) error {
+				var viaGORM int64
+				if err := c.DB().Table("notes").Count(&viaGORM).Error; err != nil {
+					return err
+				}
+				viaSQL, err := query.One[int64](c.Context(), c.SQL(), "SELECT COUNT(*) FROM notes")
+				if err != nil {
+					return err
+				}
+				return c.JSON([]int64{viaGORM, viaSQL})
+			})
+		})
+		get(t, app, "/add")
+
+		got := get(t, app, "/count")
+
+		if got != "[3,3]" {
+			t.Errorf("got %s, want [3,3]: the seed row and two new rows", got)
+		}
+	})
+
+	t.Run("SQL returns read-only connections", func(t *testing.T) {
+		app := newApp(t, func(s *Server) {
+			s.Get("/write", func(c *Context) error {
+				_, err := c.SQL().ExecContext(c.Context(), "INSERT INTO notes (body) VALUES ('x')")
+				if err != nil {
+					return c.SendString("refused")
+				}
+				return c.SendString("written")
+			})
+		})
+
+		if got := get(t, app, "/write"); got != "refused" {
+			t.Errorf("got %q, want the write on SQL() refused", got)
+		}
+	})
+}

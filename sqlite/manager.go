@@ -57,6 +57,20 @@ type Config struct {
 	// an unknown pragma name without an error, so check the spelling.
 	Pragmas []string
 
+	// ReadPool opens the file with two pools: one write connection, and
+	// MaxOpenConns read-only connections. A SELECT outside a transaction
+	// runs on a read connection. Every other statement and every
+	// transaction runs on the write connection, one at a time. App code
+	// does not change. Writes then wait for each other in Go and do not
+	// fail with "database is locked" against each other, and reads never
+	// wait for a write.
+	//
+	// Use the transaction handle for every query inside a transaction: a
+	// write on the outer handle waits for the connection that the
+	// transaction holds. A database in memory keeps one pool. Default:
+	// false, one pool for reads and writes.
+	ReadPool bool
+
 	// ReadOnly opens an existing file read-only (mode=ro). The manager then
 	// keeps the journal mode of the file, does not run PRAGMA optimize, and
 	// Write returns ErrReadOnly. SQLite still needs to create the -shm file
@@ -76,6 +90,7 @@ type Manager struct {
 	dbMutex    sync.Mutex
 	writeTurn  chan struct{} // holds one token while a Write runs
 	driverName string        // set on first open when Pragmas is not empty
+	split      *splitPool    // set on open with ReadPool
 }
 
 // NewManager creates a new SQLite database manager.
@@ -160,10 +175,33 @@ func (m *Manager) Close() error {
 	if err := sqlDB.Close(); err != nil {
 		return fmt.Errorf("sqlite: close: %w", err)
 	}
+	// With two pools, sqlDB is the writer. The reader closes here, or
+	// first, above, when the database is read-only and has no writer.
+	if m.split != nil && m.split.reader != sqlDB {
+		if err := m.split.reader.Close(); err != nil {
+			return fmt.Errorf("sqlite: close: %w", err)
+		}
+	}
+	m.split = nil
 
 	m.db = nil
 	m.dbOnce = sync.Once{}
 	return nil
+}
+
+// Reader returns the pool of read-only connections of a manager with
+// ReadPool. It returns nil without ReadPool, for a database in memory, and
+// when the database cannot open. A statement that writes fails on it.
+func (m *Manager) Reader() *sql.DB {
+	if _, err := m.Connect(); err != nil {
+		return nil
+	}
+	m.dbMutex.Lock()
+	defer m.dbMutex.Unlock()
+	if m.split == nil {
+		return nil
+	}
+	return m.split.reader
 }
 
 // CheckpointWAL forces a WAL checkpoint with the given mode.
@@ -201,6 +239,14 @@ func (m *Manager) open() error {
 		}
 		dialector = sqlite.New(sqlite.Config{DriverName: m.driverName, DSN: dsn})
 	}
+	if m.cfg.ReadPool && !inMemory(m.cfg.Path) {
+		split, err := m.openSplit()
+		if err != nil {
+			return err
+		}
+		m.split = split
+		dialector = sqlite.New(sqlite.Config{Conn: split})
+	}
 
 	db, err := gorm.Open(dialector, &gorm.Config{
 		Logger:                 gormLogger,
@@ -219,14 +265,18 @@ func (m *Manager) open() error {
 		return fmt.Errorf("sqlite: access sql.DB: %w", err)
 	}
 
-	sqlDB.SetMaxOpenConns(m.cfg.MaxOpenConns)
-	sqlDB.SetMaxIdleConns(m.cfg.MaxIdleConns)
-	sqlDB.SetConnMaxLifetime(m.cfg.ConnMaxLifetime)
+	// With two pools, openSplit set the limits of each pool.
+	if m.split == nil {
+		sqlDB.SetMaxOpenConns(m.cfg.MaxOpenConns)
+		sqlDB.SetMaxIdleConns(m.cfg.MaxIdleConns)
+		sqlDB.SetConnMaxLifetime(m.cfg.ConnMaxLifetime)
+	}
 
 	m.logger.Info("sqlite connection established",
 		slog.String("path", m.cfg.Path),
 		slog.Int("max_open", m.cfg.MaxOpenConns),
 		slog.Int("max_idle", m.cfg.MaxIdleConns),
+		slog.Bool("read_pool", m.split != nil),
 	)
 
 	// Without statistics the query planner guesses. The SQLite docs ask a
@@ -239,6 +289,57 @@ func (m *Manager) open() error {
 
 	m.db = db
 	return nil
+}
+
+// inMemory reports whether the path names a database in memory. Each
+// connection to one is another database, so it cannot have two pools.
+func inMemory(path string) bool {
+	return strings.Contains(path, ":memory:") || strings.Contains(path, "mode=memory")
+}
+
+// openSplit opens the write connection and the read-only pool. The writer
+// comes first: it creates a new file and puts it in WAL mode, which a
+// read-only connection cannot do.
+func (m *Manager) openSplit() (*splitPool, error) {
+	driverName := "sqlite3"
+	if m.driverName != "" {
+		driverName = m.driverName
+	}
+	open := func(dsn string, conns int) (*sql.DB, error) {
+		db, err := sql.Open(driverName, dsn)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: open: %w", err)
+		}
+		// sql.Open opens no connection. Ping does, so a wrong path shows now.
+		if err := db.Ping(); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite: open: %w", err)
+		}
+		db.SetMaxOpenConns(conns)
+		db.SetMaxIdleConns(conns)
+		db.SetConnMaxLifetime(m.cfg.ConnMaxLifetime)
+		return db, nil
+	}
+
+	split := &splitPool{path: m.cfg.Path}
+	if !m.cfg.ReadOnly {
+		writer, err := open(buildDSN(m.cfg.Path, m.cfg.BusyTimeout, m.cfg.EnableWAL, m.cfg.TxImmediate), 1)
+		if err != nil {
+			return nil, err
+		}
+		split.writer = writer
+	}
+	// _query_only stops a write in SQLite before it reaches the file, which
+	// mode=ro guards. A reader needs no write lock at BEGIN.
+	reader, err := open(buildDSN(readOnlyURI(m.cfg.Path), m.cfg.BusyTimeout, false, false)+"&_query_only=on", m.cfg.MaxOpenConns)
+	if err != nil {
+		if split.writer != nil {
+			_ = split.writer.Close()
+		}
+		return nil, err
+	}
+	split.reader = reader
+	return split, nil
 }
 
 // optimize refreshes the query planner statistics. A failure costs only
