@@ -86,12 +86,18 @@ func (ctx *Context) DatabaseWriteTx(name string, fn func(tx *gorm.DB) error) err
 
 // WriteTx runs fn in one write transaction for this job. See Write.
 func (ctx *JobContext) WriteTx(fn func(tx *gorm.DB) error) error {
-	c := ctx.Context
-	if c == nil {
-		c = context.Background()
-	}
 	if ctx.dbManager == nil {
-		return transaction(c, ctx.DB, fn)
+		return transaction(ctx.context(), ctx.DB, fn)
 	}
-	return Write(c, ctx.dbManager, fn)
+	return Write(ctx.context(), ctx.dbManager, fn)
+}
+
+// DatabaseWriteTx runs fn in one write transaction on the named database
+// for this job. See Context.DatabaseWriteTx.
+func (ctx *JobContext) DatabaseWriteTx(name string, fn func(tx *gorm.DB) error) error {
+	m := ctx.databases[name]
+	if m == nil {
+		return fmt.Errorf("cartridge: no database named %q", name)
+	}
+	return Write(ctx.context(), m, fn)
 }

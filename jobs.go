@@ -2,6 +2,7 @@ package cartridge
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -13,7 +14,32 @@ type JobContext struct {
 	context.Context
 	Logger    Logger
 	DB        *gorm.DB
-	dbManager DBManager // for Write; nil in a JobContext built by hand
+	dbManager DBManager            // for Write; nil in a JobContext built by hand
+	databases map[string]DBManager // the named databases
+}
+
+// Database returns a session of the named database, bound to the job
+// context. See Context.Database. It returns an error when no database has
+// the name or the connection fails: a panic in a job would stop the app.
+func (ctx *JobContext) Database(name string) (*gorm.DB, error) {
+	m := ctx.databases[name]
+	if m == nil {
+		return nil, fmt.Errorf("cartridge: no database named %q", name)
+	}
+	db, err := m.Connect()
+	if err != nil {
+		return nil, err
+	}
+	return db.WithContext(ctx.context()), nil
+}
+
+// context returns the job's context, or the background context for a
+// JobContext built by hand.
+func (ctx *JobContext) context() context.Context {
+	if ctx.Context == nil {
+		return context.Background()
+	}
+	return ctx.Context
 }
 
 // Processor defines the interface for processing a batch of work.
@@ -23,6 +49,10 @@ type Processor interface {
 
 // JobDispatcher runs processors periodically in a background loop.
 type JobDispatcher struct {
+	// Databases holds more databases by name, for JobContext.Database and
+	// JobContext.DatabaseWriteTx. NewApp fills it from WithDatabase.
+	Databases map[string]DBManager
+
 	logger     Logger
 	dbManager  DBManager
 	processors []Processor
@@ -105,6 +135,7 @@ func (d *JobDispatcher) processBatch() {
 		Logger:    d.logger,
 		DB:        db,
 		dbManager: d.dbManager,
+		databases: d.Databases,
 	}
 
 	for _, processor := range d.processors {
