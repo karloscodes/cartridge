@@ -79,8 +79,16 @@ type ServerConfig struct {
 	StaticFS           fs.FS  // Embedded filesystem for static assets (production), served under StaticPrefix
 	StaticDirectory    string // Directory for static assets (development)
 	StaticPrefix       string
-	PublicFS           fs.FS  // Root-level public files (favicon.svg, robots.txt), served at / (production)
-	PublicDirectory    string // Directory for public files in development (e.g. "web/public")
+	// StaticNamesHashed says that the names of the embedded static files
+	// hold a hash of their content, as in a Vite build. The server then
+	// sends a file at its plain URL with a one-year cache. When it is false,
+	// a plain URL is sent with "Cache-Control: no-cache" and an ETag, so a
+	// deploy with a changed file reaches the browser; link such files with
+	// Server.Asset for the one-year cache. DefaultServerConfig sets it to
+	// true. NewApp sets it to true only with WithInertia.
+	StaticNamesHashed bool
+	PublicFS          fs.FS  // Root-level public files (favicon.svg, robots.txt), served at / (production)
+	PublicDirectory   string // Directory for public files in development (e.g. "web/public")
 
 	// Middleware configuration
 	EnableRequestID bool
@@ -121,6 +129,7 @@ func DefaultServerConfig() *ServerConfig {
 		// Static assets
 		EnableStaticAssets: true,
 		StaticPrefix:       "/assets",
+		StaticNamesHashed:  true,
 
 		// Middleware defaults (all enabled)
 		EnableRequestID:     true,
@@ -536,12 +545,6 @@ func (s *Server) mountStaticAssets(mux *http.ServeMux) {
 	if fsys == nil {
 		return
 	}
-	// Hash the embedded files now, at startup, not on the first request.
-	digests, err := s.assetDigests()
-	if err != nil {
-		s.cfg.Logger.Error("cannot digest the static files", slog.Any("error", err))
-	}
-
 	files := http.StripPrefix(prefix, http.FileServerFS(fsys))
 	mux.Handle("GET "+prefix+"/", s.chain(nil, func(c *Context) error {
 		name := strings.TrimPrefix(c.Path(), prefix+"/")
@@ -549,12 +552,20 @@ func (s *Server) mountStaticAssets(mux *http.ServeMux) {
 			return NewError(http.StatusNotFound)
 		}
 		if info, err := fs.Stat(fsys, name); err == nil && !info.IsDir() {
-			// Vite puts a content hash in built file names, so embedded
-			// assets can be cached for a year. Files on disk can change at
-			// any time, so the browser must check them on each use.
-			if embedded {
+			// A name with a content hash (Vite) can be cached for a year.
+			// A plain name can get new content at any deploy, and a file on
+			// disk at any time, so the browser must check them on each use.
+			// The ETag makes that check a 304 for an embedded file, which
+			// has no modification time.
+			switch {
+			case embedded && s.cfg.StaticNamesHashed:
 				c.Set("Cache-Control", "public, max-age=31536000")
-			} else {
+			case embedded:
+				c.Set("Cache-Control", "no-cache")
+				if digests, err := s.assetDigests(); err == nil {
+					c.Set("ETag", digests.etag(name))
+				}
+			default:
 				c.Set("Cache-Control", "no-cache")
 			}
 			files.ServeHTTP(c.Response(), c.Request())
@@ -562,7 +573,8 @@ func (s *Server) mountStaticAssets(mux *http.ServeMux) {
 		}
 
 		// A digested name from Server.Asset.
-		if digests == nil {
+		digests, err := s.assetDigests()
+		if err != nil {
 			return NewError(http.StatusNotFound)
 		}
 		original, ok := digests.original(name)

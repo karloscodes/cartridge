@@ -100,13 +100,42 @@ func TestAsset(t *testing.T) {
 		}
 	})
 
-	t.Run("a plain embedded file keeps its one-year cache", func(t *testing.T) {
+	t.Run("a plain embedded file with a hashed name keeps its one-year cache", func(t *testing.T) {
 		app := newAssetServer(t, fstest.MapFS{"app.js": {Data: []byte("x")}})
+		app.cfg.StaticNamesHashed = true
 
 		resp, _ := app.Test(httptest.NewRequest("GET", "/assets/app.js", nil))
 
 		if got := resp.Header.Get("Cache-Control"); got != "public, max-age=31536000" {
 			t.Errorf("Cache-Control = %q", got)
+		}
+	})
+
+	t.Run("a plain embedded file without a hashed name is checked on each use", func(t *testing.T) {
+		app := newAssetServer(t, fstest.MapFS{"font.woff2": {Data: []byte("x")}})
+		first, _ := app.Test(httptest.NewRequest("GET", "/assets/font.woff2", nil))
+		again := httptest.NewRequest("GET", "/assets/font.woff2", nil)
+		again.Header.Set("If-None-Match", first.Header.Get("ETag"))
+
+		resp, _ := app.Test(again)
+
+		if got := first.Header.Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("Cache-Control = %q, want no-cache", got)
+		}
+		if first.Header.Get("ETag") == "" || resp.StatusCode != http.StatusNotModified {
+			t.Errorf("ETag = %q, second status = %d, want an ETag and 304", first.Header.Get("ETag"), resp.StatusCode)
+		}
+	})
+
+	t.Run("a changed embedded file gets another ETag", func(t *testing.T) {
+		etag := func(content string) string {
+			app := newAssetServer(t, fstest.MapFS{"font.woff2": {Data: []byte(content)}})
+			resp, _ := app.Test(httptest.NewRequest("GET", "/assets/font.woff2", nil))
+			return resp.Header.Get("ETag")
+		}
+
+		if etag("one") == etag("two") {
+			t.Error("two contents share an ETag")
 		}
 	})
 

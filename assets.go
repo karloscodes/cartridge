@@ -98,6 +98,16 @@ func (a *assetDigests) original(digested string) (string, bool) {
 	return name, err == nil && !info.IsDir()
 }
 
+// etag returns the digest of an embedded file as an ETag.
+func (a *assetDigests) etag(name string) string {
+	digested := a.byName[name]
+	base := strings.TrimSuffix(digested, path.Ext(digested))
+	if len(base) < digestLength {
+		return ""
+	}
+	return `"` + base[len(base)-digestLength:] + `"`
+}
+
 // digestName returns the name with the digest of the file's content.
 func digestName(fsys fs.FS, name string) (string, error) {
 	content, err := fs.ReadFile(fsys, name)
@@ -147,7 +157,9 @@ func (s *Server) staticFiles() (fs.FS, string, bool) {
 	return os.DirFS(dir), prefix, false
 }
 
-// assetDigests hashes the embedded static files on its first call.
+// assetDigests hashes the embedded static files on its first call: the
+// first Asset or Importmap, or the first request that needs a digest. An
+// app that uses none of them hashes nothing.
 func (s *Server) assetDigests() (*assetDigests, error) {
 	s.digestsOnce.Do(func() {
 		fsys, prefix, embedded := s.staticFiles()
@@ -163,13 +175,14 @@ func (s *Server) assetDigests() (*assetDigests, error) {
 // Asset returns the URL of a static file with a digest of its content in
 // the name, for example "/assets/app-1a2b3c4d.js" for "app.js". The server
 // serves a digested URL with a one-year immutable cache, and a new deploy
-// with a changed file gives a new URL. Embedded files are hashed once, at
-// startup. Files on disk (development) are hashed on each call, and their
+// with a changed file gives a new URL. Embedded files are hashed once, on
+// the first call. Files on disk (development) are hashed on each call, and their
 // digested URLs are sent with "Cache-Control: no-cache". Templates of an
 // app from NewApp call it as {{asset "app.js"}}.
 //
 // Asset does not change the url() and @import paths inside a CSS file.
-// Those files keep their plain URL.
+// Those files keep their plain URL. See ServerConfig.StaticNamesHashed for
+// how a plain URL is cached.
 func (s *Server) Asset(name string) (string, error) {
 	digests, err := s.assetDigests()
 	if err != nil {

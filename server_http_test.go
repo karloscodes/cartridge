@@ -709,6 +709,7 @@ func TestStaticAssets(t *testing.T) {
 		app := newTestApp(t)
 		app.cfg.EnableStaticAssets = true
 		app.cfg.StaticFS = assets
+		app.cfg.StaticNamesHashed = true
 		app.cfg.StaticPrefix = "/assets"
 		return app
 	}

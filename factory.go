@@ -181,7 +181,7 @@ func WithSessionCheck(valid func(userID uint, issuedAt time.Time) bool) AppOptio
 //
 //	cartridge.WithDatabase("shared", sqlite.Config{Path: "data/shared.sqlite3", ReadOnly: true})
 //
-// The databases are in App.Databases. Close them when the app stops.
+// The databases are in App.Databases. Run and Shutdown close them.
 func WithDatabase(name string, cfg sqlite.Config) AppOption {
 	return func(o *appOptions) {
 		if o.databases == nil {
@@ -267,6 +267,8 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 	if !cfg.IsDevelopment() {
 		serverCfg.StaticFS = o.staticFS
 	}
+	// Only a Vite build, which Inertia apps have, puts a hash in file names.
+	serverCfg.StaticNamesHashed = o.inertia
 	if o.serverConfig != nil {
 		o.serverConfig(serverCfg)
 	}
@@ -298,7 +300,9 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 
 	workers := o.workers
 	for _, group := range o.jobGroups {
-		workers = append(workers, NewJobDispatcher(logger, dbManager, group.interval, group.processors...))
+		dispatcher := NewJobDispatcher(logger, dbManager, group.interval, group.processors...)
+		dispatcher.Databases = serverCfg.Databases
+		workers = append(workers, dispatcher)
 	}
 
 	application, err := NewApplication(ApplicationOptions{
