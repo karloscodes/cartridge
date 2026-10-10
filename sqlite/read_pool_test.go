@@ -225,3 +225,297 @@ func TestReadPool(t *testing.T) {
 		}
 	})
 }
+
+func TestWriteWithReadPool(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("commits, and rolls back on an error", func(t *testing.T) {
+		m, db := newPoolManager(t, sqlite.Config{})
+		stop := errors.New("stop")
+
+		okErr := m.Write(ctx, func(tx *gorm.DB) error { return tx.Create(&poolNote{Body: "kept"}).Error })
+		failErr := m.Write(ctx, func(tx *gorm.DB) error {
+			if err := tx.Create(&poolNote{Body: "lost"}).Error; err != nil {
+				return err
+			}
+			return stop
+		})
+
+		var count int64
+		db.Model(&poolNote{}).Count(&count)
+		if okErr != nil || !errors.Is(failErr, stop) || count != 1 {
+			t.Errorf("count = %d, errors %v and %v, want 1 row", count, okErr, failErr)
+		}
+	})
+
+	t.Run("a write that waits longer than WriteWait returns ErrBusy", func(t *testing.T) {
+		m, _ := newPoolManager(t, sqlite.Config{WriteWait: 100 * time.Millisecond})
+		inWrite, release := make(chan struct{}), make(chan struct{})
+		first := make(chan error, 1)
+		go func() {
+			first <- m.Write(ctx, func(tx *gorm.DB) error {
+				close(inWrite)
+				<-release
+				return nil
+			})
+		}()
+		<-inWrite
+
+		start := time.Now()
+		err := m.Write(ctx, func(tx *gorm.DB) error { return nil })
+		waited := time.Since(start)
+		close(release)
+
+		if !errors.Is(err, sqlite.ErrBusy) || waited < 90*time.Millisecond || waited > 2*time.Second {
+			t.Errorf("err = %v after %v, want ErrBusy after about 100ms", err, waited)
+		}
+		if err := <-first; err != nil {
+			t.Errorf("first write: %v", err)
+		}
+	})
+
+	t.Run("a caller that leaves while it waits gets its context error", func(t *testing.T) {
+		m, _ := newPoolManager(t, sqlite.Config{})
+		inWrite, release := make(chan struct{}), make(chan struct{})
+		go func() {
+			_ = m.Write(ctx, func(tx *gorm.DB) error {
+				close(inWrite)
+				<-release
+				return nil
+			})
+		}()
+		<-inWrite
+		waiting, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+
+		err := m.Write(waiting, func(tx *gorm.DB) error { return nil })
+		close(release)
+
+		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, sqlite.ErrBusy) {
+			t.Errorf("err = %v, want the context error", err)
+		}
+	})
+
+	t.Run("a write commits after its caller leaves mid-transaction", func(t *testing.T) {
+		m, db := newPoolManager(t, sqlite.Config{})
+		leaving, cancel := context.WithCancel(ctx)
+
+		err := m.Write(leaving, func(tx *gorm.DB) error {
+			cancel()
+			return tx.Create(&poolNote{Body: "kept"}).Error
+		})
+
+		var count int64
+		db.Model(&poolNote{}).Count(&count)
+		if err != nil || count != 1 {
+			t.Errorf("count = %d, err = %v, want the row", count, err)
+		}
+	})
+
+	t.Run("a write outside Write waits for a Write, and then works", func(t *testing.T) {
+		m, db := newPoolManager(t, sqlite.Config{})
+		inWrite, release := make(chan struct{}), make(chan struct{})
+		first := make(chan error, 1)
+		go func() {
+			first <- m.Write(ctx, func(tx *gorm.DB) error {
+				close(inWrite)
+				<-release
+				return tx.Create(&poolNote{Body: "in Write"}).Error
+			})
+		}()
+		<-inWrite
+		outside := make(chan error, 1)
+		go func() { outside <- db.Create(&poolNote{Body: "outside"}).Error }()
+
+		select {
+		case err := <-outside:
+			t.Fatalf("the outside write did not wait: %v", err)
+		case <-time.After(100 * time.Millisecond):
+		}
+		close(release)
+
+		if err := <-outside; err != nil {
+			t.Errorf("outside write: %v", err)
+		}
+		if err := <-first; err != nil {
+			t.Errorf("Write: %v", err)
+		}
+	})
+
+	t.Run("after a panic in fn, the next write works", func(t *testing.T) {
+		m, db := newPoolManager(t, sqlite.Config{WriteWait: 500 * time.Millisecond})
+		func() {
+			defer func() { _ = recover() }()
+			_ = m.Write(ctx, func(tx *gorm.DB) error { panic("boom") })
+		}()
+
+		err := m.Write(ctx, func(tx *gorm.DB) error { return tx.Create(&poolNote{Body: "after"}).Error })
+
+		var count int64
+		db.Model(&poolNote{}).Count(&count)
+		if err != nil || count != 1 {
+			t.Errorf("count = %d, err = %v, want the write after the panic", count, err)
+		}
+	})
+}
+
+func TestReadsAfterSchemaChange(t *testing.T) {
+	t.Run("a read sees a new column, at the latest on its second run", func(t *testing.T) {
+		_, db := newPoolManager(t, sqlite.Config{})
+		rows := func() ([]map[string]any, error) {
+			var out []map[string]any
+			err := db.Raw("SELECT * FROM pool_notes ORDER BY id").Scan(&out).Error
+			return out, err
+		}
+		if err := db.Create(&poolNote{Body: "one"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if before, err := rows(); err != nil || len(before) != 1 {
+			t.Fatalf("before: %d rows, %v", len(before), err)
+		}
+
+		alterErr := db.Exec("ALTER TABLE pool_notes ADD COLUMN title TEXT DEFAULT 'none'").Error
+		createErr := db.Create(&poolNote{Body: "two"}).Error
+		// A read connection learns of the change when its next statement
+		// runs, so the first read can still have the old columns.
+		_, firstErr := rows()
+		after, err := rows()
+
+		if alterErr != nil || createErr != nil || firstErr != nil || err != nil {
+			t.Fatalf("alter: %v, create: %v, reads: %v, %v", alterErr, createErr, firstErr, err)
+		}
+		if len(after) != 2 || after[1]["title"] != "none" {
+			t.Errorf("after = %v, want two rows with the new column", after)
+		}
+	})
+
+	t.Run("many different read statements all work", func(t *testing.T) {
+		_, db := newPoolManager(t, sqlite.Config{})
+		if err := db.Create(&poolNote{Body: "x"}).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		for i := range 300 {
+			// Each length of the IN list is another SQL text.
+			ids := make([]int, i+1)
+			for j := range ids {
+				ids[j] = j
+			}
+			var count int64
+			if err := db.Model(&poolNote{}).Where("id IN ?", ids).Count(&count).Error; err != nil {
+				t.Fatalf("query %d: %v", i, err)
+			}
+			if i >= 1 && count != 1 {
+				t.Fatalf("query %d: count = %d, want 1", i, count)
+			}
+		}
+	})
+}
+
+func TestDataVersion(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("stays the same without a write, and changes with one", func(t *testing.T) {
+		m, db := newPoolManager(t, sqlite.Config{})
+		first, err1 := m.DataVersion(ctx)
+		same, err2 := m.DataVersion(ctx)
+
+		createErr := db.Create(&poolNote{Body: "x"}).Error
+		changed, err3 := m.DataVersion(ctx)
+
+		if err := errors.Join(err1, err2, err3, createErr); err != nil {
+			t.Fatal(err)
+		}
+		if first == "" || first != same || changed == first {
+			t.Errorf("tokens %q, %q, then %q: want the same twice, then another", first, same, changed)
+		}
+	})
+
+	t.Run("changes when another process writes the file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "shared.db")
+		m, _ := newPoolManager(t, sqlite.Config{Path: path})
+		other, _ := newPoolManager(t, sqlite.Config{Path: path})
+		otherDB, _ := other.Connect()
+		before, err := m.DataVersion(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := otherDB.Create(&poolNote{Body: "from elsewhere"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		after, err := m.DataVersion(ctx)
+
+		if err != nil || after == before {
+			t.Errorf("token %q then %q (%v), want a change", before, after, err)
+		}
+	})
+
+	t.Run("a rolled back write does not change it", func(t *testing.T) {
+		m, _ := newPoolManager(t, sqlite.Config{})
+		before, _ := m.DataVersion(ctx)
+
+		_ = m.Write(ctx, func(tx *gorm.DB) error {
+			_ = tx.Create(&poolNote{Body: "lost"}).Error
+			return errors.New("stop")
+		})
+		after, err := m.DataVersion(ctx)
+
+		if err != nil || after != before {
+			t.Errorf("token %q then %q (%v), want no change", before, after, err)
+		}
+	})
+
+	t.Run("works without the read pool, and is new after a reopen", func(t *testing.T) {
+		m := sqlite.NewManager(sqlite.Config{Path: filepath.Join(t.TempDir(), "one.db")})
+		t.Cleanup(func() { _ = m.Close() })
+		before, err1 := m.DataVersion(ctx)
+
+		_ = m.Close()
+		after, err2 := m.DataVersion(ctx)
+
+		if err1 != nil || err2 != nil || before == "" || after == before {
+			t.Errorf("tokens %q and %q, errors %v %v: want two different tokens", before, after, err1, err2)
+		}
+	})
+
+	t.Run("a database in memory has none", func(t *testing.T) {
+		m := sqlite.NewManager(sqlite.Config{Path: ":memory:"})
+		t.Cleanup(func() { _ = m.Close() })
+
+		if _, err := m.DataVersion(ctx); err == nil {
+			t.Error("DataVersion returned nil, want an error")
+		}
+	})
+}
+
+func TestPragmasWithReadPool(t *testing.T) {
+	type child struct {
+		ID       uint
+		ParentID uint
+	}
+	_, db := newPoolManager(t, sqlite.Config{Pragmas: []string{"PRAGMA foreign_keys = ON"}})
+	schema := `
+		CREATE TABLE parents (id INTEGER PRIMARY KEY);
+		CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parents (id));`
+	if err := db.Exec(schema).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("an app pragma runs on the write connection", func(t *testing.T) {
+		err := db.Create(&child{ParentID: 99}).Error
+
+		if err == nil {
+			t.Error("a child without its parent was saved, want the foreign key to stop it")
+		}
+	})
+
+	t.Run("an app pragma runs on the read connections", func(t *testing.T) {
+		var on int
+		err := db.Raw("SELECT foreign_keys FROM pragma_foreign_keys").Scan(&on).Error
+
+		if err != nil || on != 1 {
+			t.Errorf("foreign_keys on a read connection = %d (%v), want 1", on, err)
+		}
+	})
+}

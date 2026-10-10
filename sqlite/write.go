@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -37,6 +38,12 @@ func (m *Manager) Write(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	if err != nil {
 		return err
 	}
+	m.dbMutex.Lock()
+	split := m.split
+	m.dbMutex.Unlock()
+	if split != nil {
+		return m.writeOnConnection(ctx, db, split.writer, fn)
+	}
 
 	wait := time.NewTimer(m.cfg.WriteWait)
 	defer wait.Stop()
@@ -53,6 +60,36 @@ func (m *Manager) Write(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	if IsBusyError(err) {
 		// Another process, or a write outside Write, held the lock
 		// longer than busy_timeout.
+		return fmt.Errorf("%w: %w", ErrBusy, err)
+	}
+	return err
+}
+
+// writeOnConnection is Write for a manager with ReadPool. The one write
+// connection is the queue: database/sql makes each caller wait for it. So
+// there is no turn to take first, only a limit on the wait.
+func (m *Manager) writeOnConnection(ctx context.Context, db *gorm.DB, writer *sql.DB, fn func(tx *gorm.DB) error) error {
+	// Only the wait has a deadline. A deadline on the transaction's own
+	// context would roll it back.
+	waitCtx, cancel := context.WithTimeout(ctx, m.cfg.WriteWait)
+	conn, err := writer.Conn(waitCtx)
+	cancel()
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w: waited %v for the write connection", ErrBusy, m.cfg.WriteWait)
+		}
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+
+	tx := db.Session(&gorm.Session{NewDB: true, Context: context.WithoutCancel(ctx)})
+	tx.Statement.ConnPool = conn
+	err = tx.Transaction(fn)
+	if IsBusyError(err) {
+		// Another process held SQLite's lock longer than busy_timeout.
 		return fmt.Errorf("%w: %w", ErrBusy, err)
 	}
 	return err

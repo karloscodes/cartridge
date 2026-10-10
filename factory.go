@@ -83,6 +83,7 @@ type appOptions struct {
 	defaults      string
 	sessionPath   string
 	readPool      bool
+	pragmas       []string
 	sessionValid  func(userID uint, issuedAt time.Time) bool
 	inertia       bool
 	databases     map[string]sqlite.Config
@@ -199,6 +200,17 @@ func WithReadPool() AppOption {
 	}
 }
 
+// WithPragmas runs the pragmas on every connection of the main database.
+// Cartridge sets WAL, synchronous=NORMAL, busy_timeout, and immediate
+// transactions. Each app adds what it needs. See sqlite.Config.Pragmas.
+//
+//	cartridge.WithPragmas("PRAGMA foreign_keys = ON", "PRAGMA mmap_size = 268435456")
+func WithPragmas(pragmas ...string) AppOption {
+	return func(o *appOptions) {
+		o.pragmas = pragmas
+	}
+}
+
 // WithDatabase opens another SQLite database under name, next to the main
 // one. A handler reads it with ctx.Database(name) and writes it with
 // ctx.DatabaseWriteTx(name, fn). The config's Logger, MaxOpenConns, and
@@ -253,6 +265,7 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 
 	dbManager := sqlite.NewManager(sqlite.Config{
 		ReadPool:     o.readPool,
+		Pragmas:      o.pragmas,
 		Path:         cfg.DatabaseDSN(),
 		MaxOpenConns: cfg.GetMaxOpenConns(),
 		MaxIdleConns: cfg.GetMaxIdleConns(),
@@ -283,6 +296,7 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 		if o.readPool {
 			dbCfg.ReadPool = true
 		}
+
 		if dbCfg.MaxOpenConns == 0 {
 			dbCfg.MaxOpenConns = cfg.GetMaxOpenConns()
 		}

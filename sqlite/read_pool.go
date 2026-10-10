@@ -15,6 +15,12 @@ import (
 // SQLite allows one writer. With one write connection, writes wait for each
 // other in Go and never fail with "database is locked" against each other,
 // and readers keep their own connections.
+//
+// It keeps no prepared statements. After a schema change by another
+// connection, the first "SELECT *" on a connection can still return the old
+// column list: SQLite notices the change only when the statement runs. A
+// prepared statement would repeat that once for each statement it holds.
+// So change the schema at startup, before the app serves requests.
 type splitPool struct {
 	reader *sql.DB
 	writer *sql.DB // nil for a read-only database

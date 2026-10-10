@@ -433,12 +433,27 @@ With `NewApplication`, set `sqlite.Config{ReadPool: true}`. App code does not ch
 - Every other statement, and every transaction, runs on the one write connection, one at a time. Writes wait for each other in Go, so two of them cannot fail with `database is locked` against each other.
 - `MaxOpenConns` is the number of read connections.
 - `ctx.SQL()` returns the read-only pool. A statement that writes fails on it: write through `ctx.WriteSQL`.
+- `ctx.WriteTx` has no queue of its own: the one write connection is the queue. It waits for that connection at most `WriteWait` (5 seconds), and then returns `sqlite.ErrBusy`, as before.
+- A write outside `WriteTx` waits for the connection as long as its request lives.
 
 Three things to check before you turn it on:
 
 - Inside a transaction, use the transaction handle (`tx`) for every query. A write on `ctx.DB()` inside `WriteTx` waits for the connection that the transaction holds.
 - Code that takes `db.DB()` gets the write connection. Code that holds several connections from it at once must use `Manager.Reader()`.
 - A database in memory keeps one pool.
+- Change the schema at startup, before the app serves requests. After a schema change by another connection, the first `SELECT *` on a connection can still return the old columns.
+
+`ctx.DataVersion()` returns a token that changes after every commit to the database file, by this process or another one. Put it in a cache key or an `ETag` to keep a value until the data changes, with no code that invalidates it:
+
+```go
+version, err := ctx.DataVersion()
+if err != nil {
+	return err
+}
+stats, err := cache.Fetch(ctx.Context(), memoryStore, "stats:"+siteID+":"+version, time.Hour, loadStats)
+```
+
+The token is good for the life of the process, so use it with a cache in memory. It works with or without the read pool.
 
 It is off by default in 1.x. In 2.0 it is the only way.
 
@@ -475,7 +490,11 @@ sqlite.NewManager(sqlite.Config{
 })
 ```
 
-Measure a pragma on real data before you add it. SQLite ignores an unknown pragma name without an error.
+With `NewApp`, pass them with `cartridge.WithPragmas("PRAGMA foreign_keys = ON", ...)`.
+
+Cartridge adds no other pragma: each app sets its own. Measure a pragma on real data before you add it. SQLite ignores an unknown pragma name without an error. With the read pool, a pragma runs on the write connection and on every read connection, and a read connection refuses a pragma that writes.
+
+`foreign_keys = ON` needs a check of the app first. SQLite does not enforce foreign keys by default. With it on, a write that leaves a row without its parent fails, and a migration that rebuilds a table, as GORM's `AutoMigrate` does to change or drop a column, drops the old table with the rows that refer to it.
 
 ### More databases
 

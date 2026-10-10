@@ -30,6 +30,25 @@ func (ctx *Context) SQL() *sql.DB {
 	return db
 }
 
+// DataVersion returns a token that changes after every commit to the main
+// database. Put it in a cache key or an ETag to keep a value until the data
+// changes:
+//
+//	version, err := ctx.DataVersion()
+//	stats, err := cache.Fetch(ctx.Context(), store, "stats:"+siteID+":"+version, time.Hour, load)
+//
+// The token is good for the life of the process, so use it with a cache in
+// memory. It needs a SQLite database file. See sqlite.Manager.DataVersion.
+func (ctx *Context) DataVersion() (string, error) {
+	m, ok := ctx.DBManager.(interface {
+		DataVersion(context.Context) (string, error)
+	})
+	if !ok {
+		return "", fmt.Errorf("cartridge: the database manager has no data version")
+	}
+	return m.DataVersion(ctx.Context())
+}
+
 // WriteSQL runs fn in one write transaction for this request, like WriteTx,
 // with a *sql.Tx. It uses the same write queue. See Write.
 func (ctx *Context) WriteSQL(fn func(tx *sql.Tx) error) error {

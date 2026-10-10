@@ -55,6 +55,9 @@ type Config struct {
 	// app-specific settings, such as "PRAGMA mmap_size = 268435456". A
 	// pragma that fails stops the connection from opening. SQLite ignores
 	// an unknown pragma name without an error, so check the spelling.
+	//
+	// With ReadPool they run on the write connection and on every read
+	// connection. A read connection refuses a pragma that writes.
 	Pragmas []string
 
 	// ReadPool opens the file with two pools: one write connection, and
@@ -69,6 +72,9 @@ type Config struct {
 	// write on the outer handle waits for the connection that the
 	// transaction holds. A database in memory keeps one pool. Default:
 	// false, one pool for reads and writes.
+	//
+	// With ReadPool, Write needs no queue of its own: it waits for the
+	// write connection, at most WriteWait.
 	ReadPool bool
 
 	// ReadOnly opens an existing file read-only (mode=ro). The manager then
@@ -91,6 +97,11 @@ type Manager struct {
 	writeTurn  chan struct{} // holds one token while a Write runs
 	driverName string        // set on first open when Pragmas is not empty
 	split      *splitPool    // set on open with ReadPool
+
+	versionMu    sync.Mutex
+	versionDB    *sql.DB   // one read-only connection, for DataVersion
+	versionConn  *sql.Conn // pinned: data_version is per connection
+	versionNonce string    // new for each pinned connection
 }
 
 // NewManager creates a new SQLite database manager.
@@ -183,6 +194,7 @@ func (m *Manager) Close() error {
 		}
 	}
 	m.split = nil
+	m.closeVersion()
 
 	m.db = nil
 	m.dbOnce = sync.Once{}
@@ -222,11 +234,11 @@ func (m *Manager) open() error {
 		return nil
 	}
 
-	dsn := buildDSN(m.cfg.Path, m.cfg.BusyTimeout, m.cfg.EnableWAL, m.cfg.TxImmediate)
+	dsn := m.dsn(m.cfg.Path, m.cfg.EnableWAL, m.cfg.TxImmediate)
 	if m.cfg.ReadOnly {
 		// A read-only connection cannot set the journal mode, and a reader
 		// needs no write lock at BEGIN.
-		dsn = buildDSN(readOnlyURI(m.cfg.Path), m.cfg.BusyTimeout, false, false)
+		dsn = m.dsn(readOnlyURI(m.cfg.Path), false, false)
 	}
 
 	// Create GORM logger
@@ -323,7 +335,7 @@ func (m *Manager) openSplit() (*splitPool, error) {
 
 	split := &splitPool{path: m.cfg.Path}
 	if !m.cfg.ReadOnly {
-		writer, err := open(buildDSN(m.cfg.Path, m.cfg.BusyTimeout, m.cfg.EnableWAL, m.cfg.TxImmediate), 1)
+		writer, err := open(m.dsn(m.cfg.Path, m.cfg.EnableWAL, m.cfg.TxImmediate), 1)
 		if err != nil {
 			return nil, err
 		}
@@ -331,7 +343,7 @@ func (m *Manager) openSplit() (*splitPool, error) {
 	}
 	// _query_only stops a write in SQLite before it reaches the file, which
 	// mode=ro guards. A reader needs no write lock at BEGIN.
-	reader, err := open(buildDSN(readOnlyURI(m.cfg.Path), m.cfg.BusyTimeout, false, false)+"&_query_only=on", m.cfg.MaxOpenConns)
+	reader, err := open(m.readerDSN(), m.cfg.MaxOpenConns)
 	if err != nil {
 		if split.writer != nil {
 			_ = split.writer.Close()
@@ -340,6 +352,83 @@ func (m *Manager) openSplit() (*splitPool, error) {
 	}
 	split.reader = reader
 	return split, nil
+}
+
+// dsn builds the DSN of a connection.
+func (m *Manager) dsn(path string, wal, txImmediate bool) string {
+	return buildDSN(path, m.cfg.BusyTimeout, wal, txImmediate)
+}
+
+// readerDSN opens the file read-only. _query_only stops a write in SQLite
+// before it reaches the file, which mode=ro guards. A reader needs no write
+// lock at BEGIN.
+func (m *Manager) readerDSN() string {
+	return m.dsn(readOnlyURI(m.cfg.Path), false, false) + "&_query_only=on"
+}
+
+// DataVersion returns a token that changes after every commit to the
+// database file, by this process or by another one. Use it to keep a value
+// until the data changes: put the token in a cache key or in an ETag.
+//
+//	version, err := m.DataVersion(ctx)
+//	key := "dashboard:" + userID + ":" + version
+//
+// Compare tokens only for equality. A token is good for the life of the
+// process: do not keep it in a cache that outlives a restart. It reads
+// SQLite's PRAGMA data_version on one connection that stays open, because
+// that value is per connection.
+func (m *Manager) DataVersion(ctx context.Context) (string, error) {
+	if inMemory(m.cfg.Path) {
+		return "", fmt.Errorf("sqlite: DataVersion needs a database file")
+	}
+	if _, err := m.Connect(); err != nil {
+		return "", err
+	}
+
+	m.versionMu.Lock()
+	defer m.versionMu.Unlock()
+	if m.versionConn == nil {
+		driverName := "sqlite3"
+		if m.driverName != "" {
+			driverName = m.driverName
+		}
+		db, err := sql.Open(driverName, m.readerDSN())
+		if err != nil {
+			return "", fmt.Errorf("sqlite: data version: %w", err)
+		}
+		db.SetMaxOpenConns(1)
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			_ = db.Close()
+			return "", fmt.Errorf("sqlite: data version: %w", err)
+		}
+		// Values of two connections do not compare, so each pinned
+		// connection gets its own prefix.
+		m.versionDB, m.versionConn = db, conn
+		m.versionNonce = fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+
+	var version int64
+	if err := m.versionConn.QueryRowContext(ctx, "PRAGMA data_version").Scan(&version); err != nil {
+		// The next call opens a new connection.
+		m.closeVersionLocked()
+		return "", fmt.Errorf("sqlite: data version: %w", err)
+	}
+	return fmt.Sprintf("%s-%d", m.versionNonce, version), nil
+}
+
+func (m *Manager) closeVersion() {
+	m.versionMu.Lock()
+	defer m.versionMu.Unlock()
+	m.closeVersionLocked()
+}
+
+func (m *Manager) closeVersionLocked() {
+	if m.versionConn != nil {
+		_ = m.versionConn.Close()
+		_ = m.versionDB.Close()
+	}
+	m.versionDB, m.versionConn = nil, nil
 }
 
 // optimize refreshes the query planner statistics. A failure costs only
