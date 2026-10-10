@@ -1,6 +1,7 @@
 package testsupport
 
 import (
+	"database/sql"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -80,6 +81,17 @@ func NewTestApp(t *testing.T, appName string, build func(cfg *config.Config) (*c
 func (ta *TestApp) DB() *gorm.DB {
 	ta.t.Helper()
 	db, err := ta.DBManager.Connect()
+	if err != nil {
+		ta.t.Fatalf("testsupport: connect the database: %v", err)
+	}
+	return db
+}
+
+// SQL returns the *sql.DB of the main database, to set up or check rows
+// without GORM, for example with the app's sqlc queries.
+func (ta *TestApp) SQL() *sql.DB {
+	ta.t.Helper()
+	db, err := ta.DB().DB()
 	if err != nil {
 		ta.t.Fatalf("testsupport: connect the database: %v", err)
 	}

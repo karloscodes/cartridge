@@ -97,6 +97,21 @@ jobs:
         env:
           CARTRIDGE_MYSQL_DSN: root:test@tcp(localhost:3306)/cartridge_test
 
+  # The Go code of the example's SQL queries must match its .sql files.
+  sqlc:
+    name: Generated SQL code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: sqlc-dev/setup-sqlc@v4
+        with:
+          sqlc-version: "1.31.1"
+
+      - name: Check that the generated code is current
+        working-directory: examples/notes
+        run: sqlc diff
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
