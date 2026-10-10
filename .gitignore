@@ -31,7 +31,8 @@ go.work.sum
 # .idea/
 # .vscode/
 
-examples
+# The data and logs of an example run in development
+examples/*/storage/
 *.db
 *.db-*
 *.log

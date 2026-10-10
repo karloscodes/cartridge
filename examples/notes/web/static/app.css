@@ -1,0 +1,20 @@
+body { margin: 0; font: 16px/1.5 system-ui, sans-serif; color: #1c1917; background: #fafaf9; }
+main { max-width: 36rem; margin: 0 auto; padding: 2rem 1rem; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 1rem; }
+header h1 { flex: 1; }
+label { display: block; margin-top: 1rem; font-weight: 600; }
+input, textarea { box-sizing: border-box; width: 100%; padding: 0.5rem; border: 1px solid #d6d3d1; border-radius: 0.5rem; font: inherit; }
+button { margin-top: 1rem; padding: 0.5rem 1rem; border: 0; border-radius: 0.5rem; background: #ea580c; color: #fff; font: inherit; }
+button.quiet { margin: 0; background: none; color: inherit; text-decoration: underline; }
+.note { padding: 1rem 0; border-bottom: 1px solid #e7e5e4; }
+.note p { margin: 0; white-space: pre-line; }
+.meta { color: #78716c; font-size: 0.875rem; }
+.flash { padding: 0.75rem 1rem; border-radius: 0.5rem; background: #1c1917; color: #fafaf9; }
+.problem { color: #b91c1c; }
+@media (prefers-color-scheme: dark) {
+  body { color: #e7e5e4; background: #1c1917; }
+  input, textarea { color: inherit; background: #292524; border-color: #44403c; }
+  .note { border-color: #44403c; }
+  .flash { background: #e7e5e4; color: #1c1917; }
+  .problem { color: #f87171; }
+}

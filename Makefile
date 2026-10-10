@@ -11,7 +11,7 @@ help:
 	@echo "  lint     - Run linters"
 	@echo "  format   - Format code"
 	@echo "  deps     - Download dependencies"
-	@echo "  example  - Run basic example"
+	@echo "  example  - Run the notes example in development"
 
 # Build the library
 build:
@@ -52,10 +52,10 @@ deps:
 	go mod download
 	go mod tidy
 
-# Run basic example
+# Run the notes example in development
 example:
-	@echo "Running basic example..."
-	go run examples/basic/main.go
+	@echo "Running the notes example on http://127.0.0.1:8080 ..."
+	cd examples/notes && NOTES_ENV=development go run .
 
 # Install development tools
 dev-tools:
@@ -77,7 +77,7 @@ setup: deps dev-tools
 # Build for production
 build-prod:
 	@echo "Building for production..."
-	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o cartridge-linux ./examples/basic
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o cartridge-linux ./examples/notes
 
 # Run security scan
 security:

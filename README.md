@@ -91,7 +91,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Fatal(app.Run()) // blocks; shuts down gracefully on SIGINT/SIGTERM
+	// Run blocks. It returns nil after a graceful shutdown on SIGINT or
+	// SIGTERM, so log.Fatal(app.Run()) would exit 1 after a clean stop.
+	if err := app.Run(); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func home(ctx *cartridge.Context) error {
@@ -119,6 +123,8 @@ MYAPP_ENV=development go run .
 
 `MYAPP_ENV` defaults to `production`. Production refuses to start without a session secret, so set the env var for local work.
 
+[examples/notes](examples/notes) is a complete small app: sign-in, a list, a form with validation errors, flash messages, and HTTP tests. Run it with `make example`.
+
 ### What you get by default
 
 - `ServerConfig.AllowedHosts` rejects requests for any other `Host`, so a forged host cannot reach `ctx.BaseURL()` and the links you build from it. Set it in production. With `NewApp`, set server options through `WithServerConfig(func(c *cartridge.ServerConfig) { ... })`.
@@ -127,7 +133,7 @@ MYAPP_ENV=development go run .
 - CSRF protection on every POST, PUT, PATCH, and DELETE route through the `Sec-Fetch-Site` header. No tokens needed. GET, HEAD, and OPTIONS are never checked, so keep them free of side effects. This is CSRF protection, not client authentication: curl can send any header.
 - Error responses that show the client only the status text, or the `Message` of a `cartridge.NewError` with a code below 500. The full error goes to the log.
 - SQLite in WAL mode with `busy_timeout` and immediate transactions.
-- Development reads templates and static files from `web/` on disk and reloads templates on each request. Other environments use the embedded files.
+- Development reads templates and static files from `web/` on disk and reloads templates on each request. Static files from disk get `Cache-Control: no-cache`, so the browser never uses a stale file. Other environments use the embedded files.
 
 ## Configuration
 
@@ -155,11 +161,16 @@ Every handler and middleware has one signature: `func(*cartridge.Context) error`
 | Member | What it does |
 |---|---|
 | `ctx.DB()` | GORM session bound to the request context |
+| `ctx.Database("name")`, `ctx.DatabaseWriteTx("name", fn)` | Read and write a database from `WithDatabase`. See [More databases](#more-databases) |
 | `ctx.Input("key")` | One value from form, JSON body, route param, or query, in that order |
 | `ctx.Bind(&dst)` | Decodes the body only (JSON, form, multipart). Form fields need a `form` tag. Returns a 400, 413, or 415 `*Error` |
 | `ctx.QueryParser(&dst)`, `ctx.ParamsParser(&dst)` | Decode the query or route params. Fields need a `query` or `params` tag |
 | `ctx.FlashSuccess/FlashError/FlashInfo(msg)` | Sets a one-time flash cookie. Returns `ctx` for chaining. |
 | `ctx.RedirectBack("/fallback")` | 302 to the `Referer` path on this host, or to the fallback |
+| `ctx.Render("page", data, "layouts/app")` | Renders a template as `text/html`. See [Templates](#templates) |
+| `ctx.RenderAs("text/vnd.turbo-stream.html", "page", data)` | Renders a template with another content type. A text type gets `; charset=utf-8` |
+| `ctx.SetCookie("name", "value")` | Sets a cookie with `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` in production, until the browser closes. Use `ctx.Cookie(&cartridge.Cookie{...})` for other settings |
+| `ctx.IsPrefetch()` | True when the browser asks for the page before the user opens it, as Turbo does on hover (`Sec-Purpose`, `Purpose`, or `X-Sec-Purpose` contains `prefetch`). Skip side effects that only a real visit must cause |
 | `ctx.Inertia("Page", props)` | Renders an Inertia page and injects the flash message |
 | `ctx.Logger`, `ctx.Config`, `ctx.Session` | App dependencies |
 
@@ -202,6 +213,72 @@ cfg.TrustedProxies = []string{"10.0.0.0/8", "127.0.0.1"}
 ```go
 http.NewResponseController(ctx.Response()).SetWriteDeadline(time.Time{})
 ```
+
+## Templates
+
+`WithAssets(templates, static)` gives the app its templates and static files. A template's name is its path without `.html`, so `templates/notes/index.html` is `notes/index`:
+
+```go
+return ctx.Render("notes/index", cartridge.Map{"Notes": notes}, "layouts/app")
+```
+
+In a layout, `{{embed}}` writes the page. `{{render "notes/row" .}}` and `{{template "notes/row" .}}` write another template. Renders run in parallel. Each file is parsed once, or on each render in development.
+
+Every template has these functions:
+
+| Function | Example | Result |
+|---|---|---|
+| `timeAgo` | `{{timeAgo .CreatedAt}}` | `5 minutes ago`, `in 3 days`, `just now`. A month is 30 days and a year is 365 days. A zero or nil time gives nothing |
+| `pluralize` | `{{pluralize .Count "reply"}}`, `{{pluralize .Count "person" "people"}}` | `1 reply`, `2 replies`. It takes any integer type |
+| `truncate` | `{{truncate 140 .Body}}` | At most 140 characters, with `…` at the cut |
+| `squish` | `{{squish .Body}}` | No white space at the ends, and one space for each run inside |
+| `dict` | `{{template "chip" (dict "Label" "Open" "Count" 3)}}` | A map, to give a template more than one value |
+| `asset`, `importmap` | `{{asset "app.css"}}` | Digested static URLs, in templates of `NewApp`. See [Static files](#static-files) |
+
+Add your own functions with `WithTemplateFuncs`. A function of yours wins over a default function with the same name:
+
+```go
+cartridge.WithTemplateFuncs(template.FuncMap{
+	"money": func(cents int64) string { return fmt.Sprintf("$%.2f", float64(cents)/100) },
+}),
+```
+
+`ctx.RenderAs` renders a template with another content type, for example a Turbo Stream:
+
+```go
+if strings.Contains(ctx.Get("Accept"), "text/vnd.turbo-stream.html") {
+	return ctx.RenderAs("text/vnd.turbo-stream.html", "notes/more", data)
+}
+return ctx.Render("notes/index", data, "layouts/app")
+```
+
+### Static files
+
+The files in `web/static` are served under `/assets`. Link them with `{{asset}}`. The URL holds a hash of the file's content, so it changes when the file changes:
+
+```html
+<link rel="stylesheet" href="{{asset "app.css"}}"> <!-- /assets/app-1a2b3c4d.css -->
+```
+
+| URL | Production (embedded files) | Development (files on disk) |
+|---|---|---|
+| Digested, from `asset` | `Cache-Control: public, max-age=31536000, immutable` | `Cache-Control: no-cache`. The file is hashed on each render, so a changed file gets a new URL |
+| Plain, like `/assets/app.css` | `Cache-Control: public, max-age=31536000` | `Cache-Control: no-cache` |
+
+Embedded files are hashed once, at startup. There is no build step. An unknown file name is a template error, so a typo fails the render.
+
+`{{importmap}}` writes a `<script type="importmap">` with digested URLs, and a `<link rel="modulepreload">` for each module. Each argument is a glob or `name=file`:
+
+```html
+{{importmap "application.js" "@hotwired/turbo=turbo.min.js" "controllers/*.js"}}
+<script type="module">import "application"</script>
+```
+
+A file from a glob is a module named by its path without the extension: `controllers/hello_controller.js` is `controllers/hello_controller`. An index file is named by its folder: `controllers/index.js` is `controllers`. A glob that matches no file is an error. The script tag has `data-turbo-track="reload"`, so Turbo reloads the page when a deploy changes a module. With a `ContentSecurityPolicy`, allow this inline script.
+
+`asset` does not change the `url()` and `@import` paths inside a CSS file. Those files keep their plain URL and its cache.
+
+Outside a template, `app.Server.Asset("app.js")` and `app.Server.Importmap(...)` return the same values. An app from `NewApplication` adds them to its own template functions.
 
 ## Sessions
 
@@ -320,6 +397,49 @@ sqlite.NewManager(sqlite.Config{
 
 Measure a pragma on real data before you add it. SQLite ignores an unknown pragma name without an error.
 
+### More databases
+
+`WithDatabase` opens another SQLite file next to the main one:
+
+```go
+cartridge.WithDatabase("shared", sqlite.Config{Path: filepath.Join(cfg.DataDirectory, "shared.sqlite3")}),
+```
+
+```go
+func showAccount(ctx *cartridge.Context) error {
+	var account Account
+	if err := ctx.Database("shared").First(&account, "slug = ?", ctx.Params("slug")).Error; err != nil {
+		return err
+	}
+	return ctx.Render("accounts/show", account)
+}
+
+func renameAccount(ctx *cartridge.Context) error {
+	err := ctx.DatabaseWriteTx("shared", func(tx *gorm.DB) error {
+		return tx.Model(&Account{}).Where("slug = ?", ctx.Params("slug")).Update("name", ctx.Input("name")).Error
+	})
+	if err != nil {
+		return err
+	}
+	return ctx.FlashSuccess("Renamed").RedirectBack("/")
+}
+```
+
+- `ctx.Database(name)` is a GORM session bound to the request, like `ctx.DB()`. An unknown name panics, and the client gets a 500.
+- `ctx.DatabaseWriteTx(name, fn)` writes through the write queue of that database. See [Writes under load](#writes-under-load).
+- `Logger`, `MaxOpenConns`, and `MaxIdleConns` default to those of the main database.
+- The managers are in `app.Databases`. With `NewApplication`, set `ServerConfig.Databases`.
+
+### Read-only files
+
+Set `ReadOnly` for a file that the app must not change, such as a copy of another app's data:
+
+```go
+cartridge.WithDatabase("tenant", sqlite.Config{Path: "data/main.sqlite3", ReadOnly: true}),
+```
+
+The manager opens the file with `mode=ro` and keeps its journal mode. It does not run `PRAGMA optimize`, because that writes statistics. `Write` and `ctx.DatabaseWriteTx` return `sqlite.ErrReadOnly`. The file must exist. For a WAL file, SQLite creates the `-shm` file, so the directory must be writable.
+
 ### PostgreSQL
 
 Use `NewApplication` with the generic manager and the Postgres driver:
@@ -379,11 +499,43 @@ To redirect unknown paths, call `s.SetCatchAllRedirect("/")` in your routes func
 | `flash` | Low-level flash cookie helpers behind `ctx.Flash*` |
 | `inertia` | Inertia rendering, deferred props, Vite manifest |
 | `sqlite`, `postgres`, `database` | Connection managers and drivers |
-| `testsupport` | In-memory test DB and test server |
+| `testsupport` | `NewTestApp` for the app's own App on a temporary database file, `NewTestServer` for handlers alone |
 
 ## Testing your app
 
-`testsupport` starts a server on an in-memory SQLite database, with no mocks. Its requests send `Sec-Fetch-Site: same-origin`, as a browser does, so they pass CSRF protection. It has no views engine, so test handlers that do not call `ctx.Render`:
+`testsupport.NewTestApp` builds your app with the function that `main` uses, on a new SQLite file in `t.TempDir()`. The test runs your real migrations and renders your real views, with no mocks:
+
+```go
+// main.go
+func newApp(cfg *config.Config) (*cartridge.App, error) {
+	app, err := cartridge.NewApp(cfg, cartridge.WithAssets(web.Templates(), web.Static()), cartridge.WithRoutes(routes))
+	if err != nil {
+		return nil, err
+	}
+	return app, app.MigrateDatabase(cartridge.NewAutoMigrator(&Note{}))
+}
+
+// main_test.go
+func TestNotes(t *testing.T) {
+	ta := testsupport.NewTestApp(t, "myapp", newApp)
+
+	ta.PostForm("/notes", url.Values{"body": {"Hello"}})
+	resp := ta.Get("/")
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "Hello")
+}
+```
+
+- The config is for the test environment. `NewTestApp` reads no env var and no `.env` file. To start from a copy of a database, copy it into `cfg.DataDirectory` in your build function, before `NewApp`.
+- Requests send `Sec-Fetch-Site: same-origin`, as a browser does, so they pass CSRF protection.
+- `ta.Client()` keeps the cookies the app sets, like one browser. Sign in once, and the next requests have the session and the flash message. `ta.Get` and the other `ta` methods send no cookies.
+- `ta.DB()` is the main database, to add or count rows.
+- At cleanup, `NewTestApp` closes the databases.
+
+[examples/notes/main_test.go](examples/notes/main_test.go) tests sign-in, validation errors, and flash messages this way.
+
+`testsupport.NewTestServer` tests handlers alone, on an in-memory SQLite database with `AutoMigrate`. It has no views engine, so use it for handlers that do not call `ctx.Render`:
 
 ```go
 func TestCreateNote(t *testing.T) {

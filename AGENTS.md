@@ -8,6 +8,9 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - Use `cartridge.NewApplication` only for PostgreSQL or a custom server. Then start from `cartridge.DefaultServerConfig()`.
 - Change server options through `cartridge.WithServerConfig(func(c *cartridge.ServerConfig) { ... })`.
 - Do not add a router, a session library, a CSRF library, or a dotenv library. Cartridge has them.
+- End `main` with `if err := app.Run(); err != nil { log.Fatal(err) }`. `Run` returns nil after a clean shutdown, so `log.Fatal(app.Run())` exits 1.
+- Put the app's wiring in one `newApp(cfg *config.Config) (*cartridge.App, error)` that also runs the migrations. `main` and the tests call it.
+- [examples/notes](examples/notes) is a complete app that follows these rules: sign-in, a list, a form with validation errors, flash messages, and HTTP tests.
 
 ## Handlers
 
@@ -18,6 +21,19 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - Read one value with `ctx.Input("key")`. It also reads route params and the query.
 - Use `ctx.DB()` for the database. It is a GORM session bound to the request.
 - After a form post: `return ctx.FlashError("...").RedirectBack("/fallback")`.
+- For a form with errors, render the form again with status 422: `ctx.Status(http.StatusUnprocessableEntity).Render("notes/new", data, "layouts/app")`.
+- Render a response that is not HTML, such as a Turbo Stream, with `ctx.RenderAs("text/vnd.turbo-stream.html", "notes/more", data)`. Do not build a second views engine.
+- Set a cookie with `ctx.SetCookie(name, value)`. It is HttpOnly, SameSite=Lax, and Secure in production.
+- `ctx.IsPrefetch()` is true when the browser asks for the page before the user opens it. Do not let a prefetch remember anything, such as the last folder.
+
+## Templates and static files
+
+- Templates of `NewApp` have `timeAgo`, `pluralize`, `truncate`, `squish`, and `dict`. Do not write these helpers again.
+- Add app functions with `cartridge.WithTemplateFuncs(template.FuncMap{...})`. An app function wins over a default with the same name.
+- Give a partial more than one value with `dict`: `{{template "notes/row" (dict "Note" . "Compact" true)}}`.
+- Link every file in `web/static` with `{{asset "app.css"}}`, not with a fixed `/assets/app.css` path. The digested URL gets an immutable cache, and a deploy with a changed file gets a new URL.
+- Write the import map with `{{importmap "application.js" "controllers/*.js" "name=file.js"}}`. Do not build it in Go.
+- `asset` does not rewrite `url()` or `@import` inside CSS. Link a CSS file that changes often from the HTML with `asset`.
 
 ## Security rules
 
@@ -41,8 +57,16 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 ## Development and tests
 
 - Development and test bind `127.0.0.1` only. Set `{APP}_HOST=0.0.0.0` to open a dev server to the network or to Docker.
-- Test through HTTP with `testsupport.NewTestServer`. It uses an in-memory SQLite database. Do not mock the database.
+- Test the real app with `testsupport.NewTestApp(t, "myapp", newApp)`. It runs the app's own migrations and views on a new SQLite file per test. Do not mock the database.
+- Use `ta.Client()` for a flow over several requests, such as sign-in. It keeps the cookies like a browser. The `ta.Get` and `ta.PostForm` methods send no cookies.
+- To start from a copy of a database, copy it into `cfg.DataDirectory` in the build function, before `NewApp`.
+- `testsupport.NewTestServer` tests handlers alone, on an in-memory database without views.
 - `server.Test(req)` serves one request in memory.
 - Write in one transaction with `ctx.WriteTx(func(tx *gorm.DB) error { ... })` (in a job: `jobCtx.WriteTx`). Writes wait for their turn, one at a time. Use `tx` for every query inside, run nothing slow inside, and do not nest `WriteTx`.
 - `WriteTx` returns `sqlite.ErrBusy` when a write waits too long. Answer it with 503 and a `Retry-After` header, so the client slows down. Do not retry on the server.
 - Add app-specific pragmas with `sqlite.Config.Pragmas`. They run on every connection.
+
+## More databases
+
+- Open a second SQLite file with `cartridge.WithDatabase("name", sqlite.Config{Path: ...})`. Read it with `ctx.Database("name")` and write it with `ctx.DatabaseWriteTx("name", fn)`. Do not open a `sqlite.Manager` by hand, and do not override `DatabaseDSN` to point at another file.
+- Open a file that the app must not change with `sqlite.Config{Path: ..., ReadOnly: true}`. Writes then return `sqlite.ErrReadOnly`. Do not put `mode=ro` in the path.

@@ -1,0 +1,11 @@
+<header>
+  <h1>Your notes</h1>
+  <p class="meta">{{pluralize (len .Notes) "note"}}</p>
+  <a href="/notes/new">New note</a>
+  <form method="post" action="/logout"><button class="quiet">Sign out</button></form>
+</header>
+{{range .Notes}}
+  {{template "notes/note" .}}
+{{else}}
+  <p class="meta">No notes yet. Write the first one.</p>
+{{end}}

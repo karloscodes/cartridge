@@ -1,0 +1,4 @@
+<article class="note">
+  <p>{{truncate 280 .Body}}</p>
+  <time class="meta" datetime="{{.CreatedAt.UTC.Format "2006-01-02T15:04:05Z"}}">{{timeAgo .CreatedAt}}</time>
+</article>

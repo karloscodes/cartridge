@@ -74,8 +74,10 @@
 //		log.Fatal(err)
 //	}
 //
-//	// Start with signal handling and graceful shutdown
-//	app.Run()
+//	// Run handles SIGINT and SIGTERM, and returns nil after a graceful shutdown.
+//	if err := app.Run(); err != nil {
+//		log.Fatal(err)
+//	}
 //
 // # Handler Signature
 //

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notes</title>
+  <link rel="stylesheet" href="{{asset "app.css"}}">
+  {{importmap "app.js"}}
+  <script type="module">import "app"</script>
+</head>
+<body>
+  <main>
+    {{- with .Flash}}{{with .Message}}
+    <p class="flash" role="status">{{.}}</p>
+    {{- end}}{{end}}
+    {{embed}}
+  </main>
+</body>
+</html>
