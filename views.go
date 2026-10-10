@@ -2,11 +2,13 @@ package cartridge
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
+	"maps"
 	"path"
 	"strings"
 	"sync"
@@ -17,15 +19,30 @@ import (
 //
 //	{{render "partials/nav" .}}  renders another template
 //	{{embed}}                    in a layout, renders the page
+//
+// Renders run in parallel. Each file is parsed once, or on every render
+// with reload.
 type HTMLViews struct {
 	fsys   fs.FS
 	funcs  template.FuncMap
 	reload bool // parse the files on every render (development)
 
-	mu       sync.Mutex // guards tmpl
-	layoutMu sync.Mutex // one layout render at a time, because embed is swapped per render
-	tmpl     *template.Template
+	mu  sync.Mutex // guards set
+	set *viewSet
 }
+
+// viewSet holds one parse of the files, twice. A page renders from pages,
+// where {{embed}} is an error. A layout renders from layouts, where
+// {{embed}} writes embedMarker, and Render puts the page in its place. So
+// no render changes a template that another render uses.
+type viewSet struct {
+	pages   *template.Template
+	layouts *template.Template
+}
+
+// embedMarker stands for the page in the output of a layout. It is random,
+// so a page or its data cannot contain it.
+var embedMarker = []byte("<!--cartridge-embed-" + rand.Text() + "-->")
 
 // NewHTMLViews creates a view engine for the .html files in fsys.
 func NewHTMLViews(fsys fs.FS, funcs template.FuncMap, reload bool) *HTMLViews {
@@ -35,11 +52,11 @@ func NewHTMLViews(fsys fs.FS, funcs template.FuncMap, reload bool) *HTMLViews {
 // Render executes the named template into w. With a layout, the layout
 // renders and {{embed}} inserts the page.
 func (v *HTMLViews) Render(w io.Writer, name string, data any, layouts ...string) error {
-	t, err := v.templates()
+	set, err := v.templates()
 	if err != nil {
 		return err
 	}
-	page := t.Lookup(name)
+	page := set.pages.Lookup(name)
 	if page == nil {
 		return fmt.Errorf("cartridge: template %q not found", name)
 	}
@@ -47,7 +64,7 @@ func (v *HTMLViews) Render(w io.Writer, name string, data any, layouts ...string
 		return page.Execute(w, data)
 	}
 
-	layout := t.Lookup(layouts[0])
+	layout := set.layouts.Lookup(layouts[0])
 	if layout == nil {
 		return fmt.Errorf("cartridge: layout %q not found", layouts[0])
 	}
@@ -55,36 +72,87 @@ func (v *HTMLViews) Render(w io.Writer, name string, data any, layouts ...string
 	if err := page.Execute(&body, data); err != nil {
 		return err
 	}
+	var out bytes.Buffer
+	if err := layout.Execute(&out, data); err != nil {
+		return err
+	}
+	return writeEmbedded(w, out.Bytes(), body.Bytes())
+}
 
-	v.layoutMu.Lock()
-	defer v.layoutMu.Unlock()
-	layout.Funcs(template.FuncMap{"embed": func() template.HTML { return template.HTML(body.String()) }})
-	return layout.Execute(w, data)
+// writeEmbedded writes the layout output with the page in place of each
+// embedMarker.
+func writeEmbedded(w io.Writer, layout, page []byte) error {
+	for {
+		i := bytes.Index(layout, embedMarker)
+		if i < 0 {
+			break
+		}
+		if _, err := w.Write(layout[:i]); err != nil {
+			return err
+		}
+		if _, err := w.Write(page); err != nil {
+			return err
+		}
+		layout = layout[i+len(embedMarker):]
+	}
+	_, err := w.Write(layout)
+	return err
 }
 
 // templates returns the parsed templates, parsing them when needed.
-func (v *HTMLViews) templates() (*template.Template, error) {
+func (v *HTMLViews) templates() (*viewSet, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.tmpl != nil && !v.reload {
-		return v.tmpl, nil
+	if v.set != nil && !v.reload {
+		return v.set, nil
 	}
-	t, err := v.parse()
+	set, err := v.parse()
 	if err != nil {
 		return nil, err
 	}
-	v.tmpl = t
-	return t, nil
+	v.set = set
+	return set, nil
 }
 
-func (v *HTMLViews) parse() (*template.Template, error) {
-	root := template.New("")
+func (v *HTMLViews) parse() (*viewSet, error) {
+	pages := template.New("")
+	pages.Funcs(v.setFuncs(pages, func() (template.HTML, error) {
+		return "", errors.New("embed used outside a layout")
+	}))
+
+	err := fs.WalkDir(v.fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || path.Ext(p) != ".html" {
+			return err
+		}
+		content, err := fs.ReadFile(v.fsys, p)
+		if err != nil {
+			return err
+		}
+		_, err = pages.New(strings.TrimSuffix(p, ".html")).Parse(string(content))
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cartridge: parse templates: %w", err)
+	}
+
+	// html/template can clone a set only before it executes, so clone now.
+	layouts, err := pages.Clone()
+	if err != nil {
+		return nil, fmt.Errorf("cartridge: parse templates: %w", err)
+	}
+	layouts.Funcs(v.setFuncs(layouts, func() (template.HTML, error) {
+		return template.HTML(embedMarker), nil
+	}))
+	return &viewSet{pages: pages, layouts: layouts}, nil
+}
+
+// setFuncs returns the functions of one template set. The app's functions
+// win over embed and render.
+func (v *HTMLViews) setFuncs(set *template.Template, embed func() (template.HTML, error)) template.FuncMap {
 	funcs := template.FuncMap{
-		"embed": func() (template.HTML, error) {
-			return "", errors.New("embed used outside a layout")
-		},
+		"embed": embed,
 		"render": func(name string, data any) (template.HTML, error) {
-			t := root.Lookup(name)
+			t := set.Lookup(name)
 			if t == nil {
 				return "", fmt.Errorf("template %q not found", name)
 			}
@@ -95,24 +163,6 @@ func (v *HTMLViews) parse() (*template.Template, error) {
 			return template.HTML(buf.String()), nil
 		},
 	}
-	for name, fn := range v.funcs {
-		funcs[name] = fn
-	}
-	root.Funcs(funcs)
-
-	err := fs.WalkDir(v.fsys, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || path.Ext(p) != ".html" {
-			return err
-		}
-		content, err := fs.ReadFile(v.fsys, p)
-		if err != nil {
-			return err
-		}
-		_, err = root.New(strings.TrimSuffix(p, ".html")).Parse(string(content))
-		return err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cartridge: parse templates: %w", err)
-	}
-	return root, nil
+	maps.Copy(funcs, v.funcs)
+	return funcs
 }
