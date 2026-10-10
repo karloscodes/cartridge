@@ -519,3 +519,67 @@ func TestPragmasWithReadPool(t *testing.T) {
 		}
 	})
 }
+
+func TestReadPoolOf(t *testing.T) {
+	t.Run("gives read connections that work while a write holds the write connection", func(t *testing.T) {
+		m, db := newPoolManager(t, sqlite.Config{})
+		if err := db.Create(&poolNote{Body: "one"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		pool, ok := sqlite.ReadPoolOf(db)
+		if !ok {
+			t.Fatal("ReadPoolOf returned no pool")
+		}
+		inWrite, release := make(chan struct{}), make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			done <- m.Write(context.Background(), func(tx *gorm.DB) error {
+				close(inWrite)
+				<-release
+				return nil
+			})
+		}()
+		<-inWrite
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		conn, connErr := pool.Conn(ctx)
+		var count int
+		var queryErr, writeErr error
+		if connErr == nil {
+			queryErr = conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pool_notes").Scan(&count)
+			_, writeErr = conn.ExecContext(ctx, "DELETE FROM pool_notes")
+			_ = conn.Close()
+		}
+		close(release)
+		<-done
+
+		if connErr != nil || queryErr != nil || count != 1 {
+			t.Errorf("count = %d, conn: %v, query: %v", count, connErr, queryErr)
+		}
+		if writeErr == nil {
+			t.Error("a write on the read connection worked, want an error")
+		}
+	})
+
+	t.Run("is false without the read pool and inside a transaction", func(t *testing.T) {
+		single := sqlite.NewManager(sqlite.Config{Path: filepath.Join(t.TempDir(), "one.db")})
+		t.Cleanup(func() { _ = single.Close() })
+		singleDB, err := single.Connect()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, db := newPoolManager(t, sqlite.Config{})
+		insideTx := true
+
+		_, withoutPool := sqlite.ReadPoolOf(singleDB)
+		_ = db.Transaction(func(tx *gorm.DB) error {
+			_, insideTx = sqlite.ReadPoolOf(tx)
+			return nil
+		})
+
+		if withoutPool || insideTx {
+			t.Errorf("without pool = %v, inside a transaction = %v, want false and false", withoutPool, insideTx)
+		}
+	})
+}

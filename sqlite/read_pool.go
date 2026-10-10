@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"gorm.io/gorm"
 )
 
 // splitPool sends each statement to one of two pools of the same SQLite
@@ -99,4 +101,28 @@ func (p *splitPool) GetDBConn() (*sql.DB, error) {
 		return p.writer, nil
 	}
 	return p.reader, nil
+}
+
+// ReadPoolOf returns the pool of read-only connections behind a GORM handle
+// of a manager with ReadPool. Use it for code that needs its own connection
+// for a read, such as a long report:
+//
+//	if pool, ok := sqlite.ReadPoolOf(db); ok {
+//	    conn, err := pool.Conn(ctx)
+//	    ...
+//	}
+//
+// db.DB() is the wrong pool for that: with ReadPool it is the one write
+// connection, and holding it stops every write. ok is false without
+// ReadPool, and for the handle of a transaction.
+func ReadPoolOf(db *gorm.DB) (*sql.DB, bool) {
+	if db == nil || db.Statement == nil {
+		return nil, false
+	}
+	// In a transaction, the statement runs on the *sql.Tx, not on the pool.
+	split, ok := db.Statement.ConnPool.(*splitPool)
+	if !ok {
+		return nil, false
+	}
+	return split.reader, true
 }

@@ -439,7 +439,7 @@ With `NewApplication`, set `sqlite.Config{ReadPool: true}`. App code does not ch
 Three things to check before you turn it on:
 
 - Inside a transaction, use the transaction handle (`tx`) for every query. A write on `ctx.DB()` inside `WriteTx` waits for the connection that the transaction holds.
-- Code that takes `db.DB()` gets the write connection. Code that holds several connections from it at once must use `Manager.Reader()`.
+- Code that takes `db.DB()` gets the write connection, and holding it stops every write. Code that needs its own connection for a read takes it from `sqlite.ReadPoolOf(db)` or `Manager.Reader()`.
 - A database in memory keeps one pool.
 - Change the schema at startup, before the app serves requests. After a schema change by another connection, the first `SELECT *` on a connection can still return the old columns.
 
