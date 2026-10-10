@@ -464,6 +464,14 @@ app, err := cartridge.NewApplication(cartridge.ApplicationOptions{
 
 To support another database, implement `database.Driver`.
 
+`SSLMode`, `Timezone`, and `SearchPath` go into the DSN, so every connection of the pool has them. A URL and a keyword DSN (`host=... dbname=...`) both work, and an option that the DSN sets itself wins.
+
+The PostgreSQL tests need a database. They skip themselves without `CARTRIDGE_POSTGRES_DSN`:
+
+```bash
+CARTRIDGE_POSTGRES_DSN=postgres://postgres:test@127.0.0.1:5432/cartridge_test go test ./postgres
+```
+
 ## Inertia.js
 
 Add `WithInertia()`. In development, Cartridge then re-reads the Vite manifest on each request:

@@ -1,8 +1,9 @@
 package postgres
 
 import (
-	"fmt"
 	"log/slog"
+	"net/url"
+	"regexp"
 	"strings"
 
 	"gorm.io/driver/postgres"
@@ -29,39 +30,63 @@ func (d *Driver) Open(dsn string) gorm.Dialector {
 	return postgres.Open(dsn)
 }
 
-// ConfigureDSN adds PostgreSQL-specific options to the DSN.
+// ConfigureDSN adds the SSL mode, the time zone, and the search path to the
+// DSN, so every connection of the pool gets them. It reads both DSN forms:
+// a URL ("postgres://host/db") and keywords ("host=... dbname=..."). An
+// option that the DSN sets itself stays as it is.
 func (d *Driver) ConfigureDSN(dsn string, cfg *database.Config) string {
-	// If DSN already has query params, append; otherwise add
-	separator := "?"
-	if strings.Contains(dsn, "?") {
-		separator = "&"
+	options := [][2]string{
+		{"sslmode", cfg.Postgres.SSLMode},
+		{"TimeZone", cfg.Postgres.Timezone},
+		{"search_path", cfg.Postgres.SearchPath},
 	}
-
-	var params []string
-
-	if cfg.Postgres.SSLMode != "" {
-		params = append(params, fmt.Sprintf("sslmode=%s", cfg.Postgres.SSLMode))
+	isURL := strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://")
+	for _, option := range options {
+		name, value := option[0], option[1]
+		if value == "" || dsnSets(dsn, name, isURL) {
+			continue
+		}
+		if !isURL {
+			dsn += " " + name + "=" + keywordValue(value)
+			continue
+		}
+		separator := "?"
+		if strings.Contains(dsn, "?") {
+			separator = "&"
+		}
+		dsn += separator + name + "=" + url.QueryEscape(value)
 	}
-	if cfg.Postgres.Timezone != "" {
-		params = append(params, fmt.Sprintf("TimeZone=%s", cfg.Postgres.Timezone))
-	}
-
-	if len(params) > 0 {
-		dsn += separator + strings.Join(params, "&")
-	}
-
 	return dsn
 }
 
-// AfterConnect sets up PostgreSQL-specific configuration.
-func (d *Driver) AfterConnect(db *gorm.DB, cfg *database.Config, logger *slog.Logger) error {
-	// Set search path if specified
-	if cfg.Postgres.SearchPath != "" {
-		if err := db.Exec(fmt.Sprintf("SET search_path TO %s", cfg.Postgres.SearchPath)).Error; err != nil {
-			logger.Error("failed to set search_path", slog.String("search_path", cfg.Postgres.SearchPath), slog.Any("error", err))
-			return fmt.Errorf("postgres: set search_path: %w", err)
+// dsnSets reports whether the DSN has the parameter, in any case.
+func dsnSets(dsn, name string, isURL bool) bool {
+	if !isURL {
+		return regexp.MustCompile(`(?i)(^|\s)` + regexp.QuoteMeta(name) + `\s*=`).MatchString(dsn)
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return false
+	}
+	for key := range u.Query() {
+		if strings.EqualFold(key, name) {
+			return true
 		}
 	}
+	return false
+}
+
+// keywordValue quotes a value of a keyword DSN when it needs quotes.
+func keywordValue(value string) string {
+	if !strings.ContainsAny(value, " '\\") {
+		return value
+	}
+	return "'" + strings.NewReplacer(`\`, `\\`, "'", `\'`).Replace(value) + "'"
+}
+
+// AfterConnect has nothing to do: the options are in the DSN. A SET sent
+// here would reach only one connection of the pool.
+func (d *Driver) AfterConnect(db *gorm.DB, cfg *database.Config, logger *slog.Logger) error {
 	return nil
 }
 
