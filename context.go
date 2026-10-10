@@ -468,8 +468,17 @@ func (ctx *Context) Redirect(location string, status ...int) error {
 	return nil
 }
 
-// Render renders a template with the server's Views engine.
+// Render renders a template with the server's Views engine, as text/html.
 func (ctx *Context) Render(name string, data any, layouts ...string) error {
+	return ctx.RenderAs("text/html; charset=utf-8", name, data, layouts...)
+}
+
+// RenderAs renders a template like Render, and sends it with contentType.
+// A text type without a charset gets "; charset=utf-8". Use it for a Turbo
+// Stream, an XML feed, or a plain text email body:
+//
+//	return ctx.RenderAs("text/vnd.turbo-stream.html", "conversations/more", data)
+func (ctx *Context) RenderAs(contentType, name string, data any, layouts ...string) error {
 	if ctx.server == nil || ctx.server.cfg.ViewsEngine == nil {
 		return fmt.Errorf("cartridge: no views engine configured")
 	}
@@ -477,8 +486,18 @@ func (ctx *Context) Render(name string, data any, layouts ...string) error {
 	if err := ctx.server.cfg.ViewsEngine.Render(&buf, name, data, layouts...); err != nil {
 		return err
 	}
-	ctx.w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	ctx.w.Header().Set("Content-Type", withCharset(contentType))
 	return ctx.Send(buf.Bytes())
+}
+
+// withCharset adds "; charset=utf-8" to a text type without a charset.
+// Templates always write UTF-8.
+func withCharset(contentType string) string {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.HasPrefix(mediaType, "text/") || params["charset"] != "" {
+		return contentType
+	}
+	return contentType + "; charset=utf-8"
 }
 
 // writeHeader sends the status code once, 200 by default.

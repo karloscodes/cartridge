@@ -788,6 +788,67 @@ func TestHTMLViews(t *testing.T) {
 	}
 }
 
+func TestRenderAs(t *testing.T) {
+	newApp := func(t *testing.T) *Server {
+		app := newTestApp(t)
+		app.cfg.ViewsEngine = NewHTMLViews(fstest.MapFS{
+			"layouts/main.html": &fstest.MapFile{Data: []byte(`<main>{{embed}}</main>`)},
+			"notes/more.html":   &fstest.MapFile{Data: []byte(`<turbo-stream action="append">{{.}}</turbo-stream>`)},
+		}, nil, false)
+		return app
+	}
+
+	t.Run("sends the template with the content type, in UTF-8", func(t *testing.T) {
+		app := newApp(t)
+		app.Get("/more", func(c *Context) error { return c.RenderAs("text/vnd.turbo-stream.html", "notes/more", "<b>") })
+
+		resp, _ := app.Test(httptest.NewRequest("GET", "/more", nil))
+
+		if got := resp.Header.Get("Content-Type"); got != "text/vnd.turbo-stream.html; charset=utf-8" {
+			t.Errorf("Content-Type = %q", got)
+		}
+		if got := body(t, resp); got != `<turbo-stream action="append">&lt;b&gt;</turbo-stream>` {
+			t.Errorf("body = %q", got)
+		}
+	})
+
+	t.Run("keeps the charset of the content type", func(t *testing.T) {
+		app := newApp(t)
+		app.Get("/more", func(c *Context) error { return c.RenderAs("text/plain; charset=iso-8859-1", "notes/more", "x") })
+
+		resp, _ := app.Test(httptest.NewRequest("GET", "/more", nil))
+
+		if got := resp.Header.Get("Content-Type"); got != "text/plain; charset=iso-8859-1" {
+			t.Errorf("Content-Type = %q", got)
+		}
+	})
+
+	t.Run("renders in a layout", func(t *testing.T) {
+		app := newApp(t)
+		app.Get("/feed", func(c *Context) error { return c.RenderAs("application/xml", "notes/more", "x", "layouts/main") })
+
+		resp, _ := app.Test(httptest.NewRequest("GET", "/feed", nil))
+
+		if got := resp.Header.Get("Content-Type"); got != "application/xml" {
+			t.Errorf("Content-Type = %q", got)
+		}
+		if got := body(t, resp); got != `<main><turbo-stream action="append">x</turbo-stream></main>` {
+			t.Errorf("body = %q", got)
+		}
+	})
+
+	t.Run("Render sends text/html", func(t *testing.T) {
+		app := newApp(t)
+		app.Get("/more", func(c *Context) error { return c.Render("notes/more", "x") })
+
+		resp, _ := app.Test(httptest.NewRequest("GET", "/more", nil))
+
+		if got := resp.Header.Get("Content-Type"); got != "text/html; charset=utf-8" {
+			t.Errorf("Content-Type = %q", got)
+		}
+	})
+}
+
 func TestShutdownWaitsForOpenRequests(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
