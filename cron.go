@@ -104,11 +104,9 @@ func (s *CronScheduler) Start() error {
 		return nil
 	}
 
-	gormDB, err := s.state.Connect()
-	if err != nil {
-		return fmt.Errorf("cartridge: cron: %w", err)
-	}
-	db, err := gormDB.DB()
+	// The schedule state is small and every step writes it, so all of it
+	// goes through the writer.
+	db, err := s.state.Writer()
 	if err != nil {
 		return fmt.Errorf("cartridge: cron: %w", err)
 	}
@@ -204,14 +202,14 @@ func (s *CronScheduler) run(ctx context.Context, job cronJob) (err error) {
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
-	db, err := s.db.Connect()
+	db, err := s.db.Reader()
 	if err != nil {
 		return err
 	}
 	return job.fn(&JobContext{
 		Context:   ctx,
 		Logger:    s.logger,
-		DB:        db.WithContext(ctx),
+		DB:        db,
 		dbManager: s.db,
 		databases: s.Databases,
 	})

@@ -1,13 +1,11 @@
 package postgres
 
 import (
-	"log/slog"
 	"net/url"
 	"regexp"
 	"strings"
 
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" driver
 
 	"github.com/karloscodes/cartridge/database"
 )
@@ -25,9 +23,9 @@ func (d *Driver) Name() string {
 	return "postgres"
 }
 
-// Open returns a GORM PostgreSQL dialector.
-func (d *Driver) Open(dsn string) gorm.Dialector {
-	return postgres.Open(dsn)
+// SQLDriver returns "pgx", the database/sql driver of jackc/pgx.
+func (d *Driver) SQLDriver() string {
+	return "pgx"
 }
 
 // ConfigureDSN adds the SSL mode, the time zone, and the search path to the
@@ -82,33 +80,6 @@ func keywordValue(value string) string {
 		return value
 	}
 	return "'" + strings.NewReplacer(`\`, `\\`, "'", `\'`).Replace(value) + "'"
-}
-
-// AfterConnect has nothing to do: the options are in the DSN. A SET sent
-// here would reach only one connection of the pool.
-func (d *Driver) AfterConnect(db *gorm.DB, cfg *database.Config, logger *slog.Logger) error {
-	return nil
-}
-
-// Close is a no-op for PostgreSQL.
-func (d *Driver) Close(db *gorm.DB, logger *slog.Logger) error {
-	return nil
-}
-
-// ConcurrentWrites returns true: PostgreSQL takes writes from many
-// connections at once, so cartridge.Write does not queue them.
-func (d *Driver) ConcurrentWrites() bool {
-	return true
-}
-
-// SupportsCheckpoint returns false for PostgreSQL.
-func (d *Driver) SupportsCheckpoint() bool {
-	return false
-}
-
-// Checkpoint is a no-op for PostgreSQL.
-func (d *Driver) Checkpoint(db *gorm.DB, mode string) error {
-	return nil
 }
 
 // Ensure Driver implements database.Driver

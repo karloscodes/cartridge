@@ -3,6 +3,7 @@ package cartridge
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"gorm.io/gorm"
 
 	"github.com/karloscodes/cartridge/cache"
 )
@@ -60,53 +59,43 @@ type Context struct {
 	locals   map[any]any
 	body     []byte
 	bodyRead bool
-	bodyErr  *Error              // why the body read failed, if it did
-	db       *gorm.DB            // Cached database session (lazy-loaded)
-	dbs      map[string]*gorm.DB // Cached sessions of the named databases
+	bodyErr  *Error // why the body read failed, if it did
 }
 
-// DB provides a per-request database session with context attached.
-// The connection is cached after first call within the same request.
-// Panics if the database connection fails (caught by recover middleware).
-func (ctx *Context) DB() *gorm.DB {
-	if ctx.db != nil {
-		return ctx.db
-	}
-
-	db := ctx.DBManager.GetConnection()
-	if db == nil {
+// DB returns the pool of read connections of the main database. Pass
+// ctx.Context() to each query, so the query stops when the client goes
+// away:
+//
+//	notes, err := db.New(ctx.DB()).NotesOfUser(ctx.Context(), userID)
+//
+// Write through WriteTx. On SQLite a statement that writes fails on DB,
+// because its connections are read-only. DB panics when the database
+// connection fails; the recover middleware turns that into a 500.
+func (ctx *Context) DB() *sql.DB {
+	db, err := ctx.DBManager.Reader()
+	if err != nil {
 		if ctx.Logger != nil {
-			ctx.Logger.Error("failed to get database connection")
+			ctx.Logger.Error("failed to get database connection", "error", err)
 		}
 		panic("cartridge: database connection failed")
 	}
-
-	// Attach the request context for cancellation support and cache it
-	ctx.db = db.WithContext(ctx.Context())
-	return ctx.db
+	return db
 }
 
-// Database returns a session of the named database, bound to the request
-// context, like DB. Name databases with WithDatabase or
+// Database returns the read pool of the named database, like DB.
+// Name databases with WithDatabase, WithDatabaseManager, or
 // ServerConfig.Databases. It panics when no database has the name or the
 // connection fails; the recover middleware turns that into a 500.
-func (ctx *Context) Database(name string) *gorm.DB {
-	if db, ok := ctx.dbs[name]; ok {
-		return db
-	}
+func (ctx *Context) Database(name string) *sql.DB {
 	m := ctx.namedDatabase(name)
 	if m == nil {
 		panic(fmt.Sprintf("cartridge: no database named %q", name))
 	}
-	db := m.GetConnection()
-	if db == nil {
+	db, err := m.Reader()
+	if err != nil {
 		panic(fmt.Sprintf("cartridge: database %q connection failed", name))
 	}
-	if ctx.dbs == nil {
-		ctx.dbs = map[string]*gorm.DB{}
-	}
-	ctx.dbs[name] = db.WithContext(ctx.Context())
-	return ctx.dbs[name]
+	return db
 }
 
 // namedDatabase returns the named database manager, or nil.

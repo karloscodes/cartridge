@@ -2,52 +2,15 @@ package cartridge
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"slices"
 	"strings"
-
-	"gorm.io/gorm"
 )
 
-// Migrator defines how to run database migrations.
-type Migrator interface {
-	// Migrate runs database migrations.
-	Migrate(db *gorm.DB) error
-}
-
-// AutoMigrator uses GORM's AutoMigrate for simple migration needs.
-type AutoMigrator struct {
-	models []any
-}
-
-// NewAutoMigrator creates a migrator that auto-migrates the provided models.
-func NewAutoMigrator(models ...any) *AutoMigrator {
-	return &AutoMigrator{models: models}
-}
-
-// Migrate runs GORM AutoMigrate on all registered models.
-func (m *AutoMigrator) Migrate(db *gorm.DB) error {
-	if len(m.models) == 0 {
-		return nil
-	}
-	return db.AutoMigrate(m.models...)
-}
-
-// SQLMigrator runs the .sql files of a folder, in the order of their names,
-// each one once.
-type SQLMigrator struct {
-	fsys fs.FS
-}
-
-// NewSQLMigrator creates a migrator for the .sql files at the top of fsys,
-// for a schema that the app writes in SQL, without GORM:
-//
-//	//go:embed migrations/*.sql
-//	var migrations embed.FS
-//
-//	sub, _ := fs.Sub(migrations, "migrations")
-//	err := app.MigrateDatabase(cartridge.NewSQLMigrator(sub))
+// Migrate runs the .sql files at the top of fsys on db, in the order of
+// their names, each one once. NewApp calls it for WithMigrations.
 //
 // Name the files so that they sort in order, for example
 // "0001_create_notes.sql". A name holds letters, digits, ".", "_", and "-".
@@ -58,13 +21,8 @@ type SQLMigrator struct {
 // A file can hold several statements on SQLite and PostgreSQL. MySQL takes
 // one statement per file, and it cannot undo a CREATE or ALTER when a later
 // statement fails.
-func NewSQLMigrator(fsys fs.FS) *SQLMigrator {
-	return &SQLMigrator{fsys: fsys}
-}
-
-// Migrate runs the files that did not run before.
-func (m *SQLMigrator) Migrate(db *gorm.DB) error {
-	names, err := fs.Glob(m.fsys, "*.sql")
+func Migrate(db *sql.DB, fsys fs.FS) error {
+	names, err := fs.Glob(fsys, "*.sql")
 	if err != nil {
 		return fmt.Errorf("cartridge: list migrations: %w", err)
 	}
@@ -78,15 +36,11 @@ func (m *SQLMigrator) Migrate(db *gorm.DB) error {
 		}
 	}
 
-	sqlDB, err := db.DB()
-	if err != nil {
-		return err
-	}
 	ctx := context.Background()
-	if _, err := sqlDB.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (version VARCHAR(255) PRIMARY KEY)"); err != nil {
+	if _, err := db.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (version VARCHAR(255) PRIMARY KEY)"); err != nil {
 		return fmt.Errorf("cartridge: create schema_migrations: %w", err)
 	}
-	rows, err := sqlDB.QueryContext(ctx, "SELECT version FROM schema_migrations")
+	rows, err := db.QueryContext(ctx, "SELECT version FROM schema_migrations")
 	if err != nil {
 		return fmt.Errorf("cartridge: read schema_migrations: %w", err)
 	}
@@ -107,11 +61,11 @@ func (m *SQLMigrator) Migrate(db *gorm.DB) error {
 		if applied[name] {
 			continue
 		}
-		content, err := fs.ReadFile(m.fsys, name)
+		content, err := fs.ReadFile(fsys, name)
 		if err != nil {
 			return fmt.Errorf("cartridge: migration %s: %w", name, err)
 		}
-		tx, err := sqlDB.BeginTx(ctx, nil)
+		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("cartridge: migration %s: %w", name, err)
 		}
@@ -135,14 +89,4 @@ func (m *SQLMigrator) Migrate(db *gorm.DB) error {
 // "_", and "-". Such a name is safe inside an SQL string.
 func validMigrationName(name string) bool {
 	return name != "" && strings.Trim(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") == ""
-}
-
-// RunMigrations is a helper to run migrations on an application's database.
-// It connects to the database, runs the migrator, and returns any error.
-func RunMigrations(dbManager DBManager, migrator Migrator) error {
-	db, err := dbManager.Connect()
-	if err != nil {
-		return err
-	}
-	return migrator.Migrate(db)
 }
