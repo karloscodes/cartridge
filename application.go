@@ -134,6 +134,11 @@ func (a *Application) Shutdown(ctx context.Context) error {
 // managers have a Close method. A SQLite manager then saves its query
 // statistics for the next start. A closed manager opens again on its next use.
 func (a *Application) closeDatabases() {
+	// The cache stops its cleanup before its database closes.
+	if closer, ok := a.Server.cfg.Cache.(io.Closer); ok {
+		_ = closer.Close()
+		a.Server.cfg.Cache = nil
+	}
 	managers := map[string]DBManager{"main": a.DBManager}
 	for name, m := range a.Server.cfg.Databases {
 		managers[name] = m

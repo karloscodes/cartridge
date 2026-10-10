@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/karloscodes/cartridge/cache"
 )
 
 // Views renders named templates. HTMLViews implements it.
@@ -34,6 +36,10 @@ type ServerConfig struct {
 	// Databases holds more databases by name, for Context.Database and
 	// Context.DatabaseWriteTx. NewApp fills it from WithDatabase.
 	Databases map[string]DBManager
+
+	// Cache is the store behind Context.Cache. NewApp fills it from
+	// WithCache. With NewApplication, set any cache.Store.
+	Cache cache.Store
 
 	// HTTP server configuration
 	ErrorHandler ErrorHandler

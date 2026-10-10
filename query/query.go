@@ -15,9 +15,29 @@
 // without a field is an error, so a wrong name shows on the first run. A
 // column that can be NULL needs a pointer field or a sql.Null type.
 //
-// The SQL text goes to the database as it is. Always pass request values as
-// arguments, never inside the text. The placeholder is the one of the
-// database: "?" for SQLite and MySQL, "$1" for PostgreSQL.
+// # SQL injection
+//
+// The SQL text of All, One, and Exec must be a constant of the source code:
+// a string literal, or constants joined with "+". A text built at run time,
+// with fmt.Sprintf or with "+" and a variable, does not compile. So a
+// request value cannot become part of the SQL text. It can only be an
+// argument, which the database driver sends apart from the text and never
+// reads as SQL:
+//
+//	query.All[Note](ctx, db, "SELECT id FROM notes WHERE body = ?", body)        // compiles
+//	query.All[Note](ctx, db, "SELECT id FROM notes WHERE body = '"+body+"'")     // does not compile
+//
+// For a part that cannot be an argument, such as a sort column, choose
+// between constants in code:
+//
+//	if newestFirst {
+//	    notes, err = query.All[Note](ctx, db, "SELECT id FROM notes ORDER BY created_at DESC")
+//	} else {
+//	    notes, err = query.All[Note](ctx, db, "SELECT id FROM notes ORDER BY title")
+//	}
+//
+// The placeholder is the one of the database: "?" for SQLite and MySQL,
+// "$1" for PostgreSQL.
 package query
 
 import (
@@ -31,6 +51,22 @@ import (
 	"unicode"
 )
 
+// constant is a string that only a constant of the source code converts
+// to. Code outside this package cannot name the type, so it cannot convert
+// a variable to it: a call with a text built at run time does not compile.
+type constant string
+
+// Execer runs a statement. *sql.DB, *sql.Tx, and *sql.Conn implement it.
+type Execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// Exec runs a statement that returns no rows, such as INSERT, UPDATE, or
+// DELETE. Like All, it takes only a constant SQL text.
+func Exec(ctx context.Context, e Execer, query constant, args ...any) (sql.Result, error) {
+	return e.ExecContext(ctx, string(query), args...)
+}
+
 // Querier runs a query. *sql.DB, *sql.Tx, and *sql.Conn implement it.
 type Querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
@@ -38,14 +74,14 @@ type Querier interface {
 
 // All returns every row of the query as a T. T is a struct, or one value
 // such as int or string for a query with one column.
-func All[T any](ctx context.Context, q Querier, query string, args ...any) ([]T, error) {
-	return scan[T](ctx, q, 0, query, args...)
+func All[T any](ctx context.Context, q Querier, query constant, args ...any) ([]T, error) {
+	return scan[T](ctx, q, 0, string(query), args...)
 }
 
 // One returns the first row of the query as a T. It returns sql.ErrNoRows
 // when the query has no row.
-func One[T any](ctx context.Context, q Querier, query string, args ...any) (T, error) {
-	rows, err := scan[T](ctx, q, 1, query, args...)
+func One[T any](ctx context.Context, q Querier, query constant, args ...any) (T, error) {
+	rows, err := scan[T](ctx, q, 1, string(query), args...)
 	if err != nil {
 		var zero T
 		return zero, err

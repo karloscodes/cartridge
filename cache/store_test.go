@@ -2,16 +2,30 @@ package cache_test
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/karloscodes/cartridge/cache"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+
+	_ "github.com/mattn/go-sqlite3"
 )
+
+// newDB opens a SQLite database in memory. It keeps one connection, because
+// each connection to ":memory:" is another database.
+func newDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
 
 // storeTestSuite runs the same tests against both store implementations
 func runStoreTests(t *testing.T, store cache.Store, name string) {
@@ -191,10 +205,7 @@ func TestMemoryStoreMaxEntries(t *testing.T) {
 }
 
 func TestDatabaseStore(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
-	require.NoError(t, err)
+	db := newDB(t)
 
 	store, err := cache.NewDatabaseStore(db,
 		cache.WithTTL(1*time.Hour),
@@ -207,10 +218,7 @@ func TestDatabaseStore(t *testing.T) {
 }
 
 func TestDatabaseStoreExpiration(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
-	require.NoError(t, err)
+	db := newDB(t)
 
 	store, err := cache.NewDatabaseStore(db,
 		cache.WithTTL(100*time.Millisecond),
@@ -237,10 +245,7 @@ func TestDatabaseStoreExpiration(t *testing.T) {
 }
 
 func TestDatabaseStoreMaxEntries(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
-	require.NoError(t, err)
+	db := newDB(t)
 
 	store, err := cache.NewDatabaseStore(db,
 		cache.WithTTL(1*time.Hour),
@@ -274,4 +279,109 @@ func TestDefaultOptions(t *testing.T) {
 	assert.Equal(t, int64(0), opts.MaxEntries, "Default max entries should be unlimited")
 	assert.Equal(t, 1*time.Hour, opts.CleanupInterval, "Default cleanup interval should be 1 hour")
 	assert.Equal(t, 100, opts.CleanupBatchSize, "Default cleanup batch size should be 100")
+}
+
+func TestDeleteByPrefixTakesWildcardsLiterally(t *testing.T) {
+	stores := map[string]cache.Store{"memory": cache.NewMemoryStore(cache.WithCleanupInterval(0))}
+	database, err := cache.NewDatabaseStore(newDB(t), cache.WithCleanupInterval(0))
+	require.NoError(t, err)
+	stores["database"] = database
+	ctx := context.Background()
+
+	for name, store := range stores {
+		require.NoError(t, store.Write(ctx, "user_1:a", []byte("x")))
+		require.NoError(t, store.Write(ctx, "userX1:a", []byte("x")))
+		require.NoError(t, store.Write(ctx, "100%:a", []byte("x")))
+		require.NoError(t, store.Write(ctx, "100x:a", []byte("x")))
+
+		underscore, err1 := store.DeleteByPrefix(ctx, "user_1:")
+		percent, err2 := store.DeleteByPrefix(ctx, "100%")
+
+		require.NoError(t, err1)
+		require.NoError(t, err2)
+		assert.Equal(t, 1, underscore, name+": _ matched another character")
+		assert.Equal(t, 1, percent, name+": %% matched other characters")
+		assert.True(t, store.Exist(ctx, "userX1:a") && store.Exist(ctx, "100x:a"), name)
+	}
+}
+
+type stats struct {
+	Visits int
+	Pages  []string
+}
+
+func TestFetch(t *testing.T) {
+	ctx := context.Background()
+	newStore := func(t *testing.T) cache.Store {
+		store, err := cache.NewDatabaseStore(newDB(t), cache.WithCleanupInterval(0))
+		require.NoError(t, err)
+		return store
+	}
+
+	t.Run("computes the value once, then reads it from the store", func(t *testing.T) {
+		store := newStore(t)
+		calls := 0
+		load := func() (stats, error) {
+			calls++
+			return stats{Visits: 7, Pages: []string{"/", "/docs"}}, nil
+		}
+
+		first, err1 := cache.Fetch(ctx, store, "stats:1", time.Minute, load)
+		again, err2 := cache.Fetch(ctx, store, "stats:1", time.Minute, load)
+
+		require.NoError(t, err1)
+		require.NoError(t, err2)
+		assert.Equal(t, stats{Visits: 7, Pages: []string{"/", "/docs"}}, first)
+		assert.Equal(t, first, again)
+		assert.Equal(t, 1, calls)
+	})
+
+	t.Run("computes again after the TTL", func(t *testing.T) {
+		store := newStore(t)
+		calls := 0
+		load := func() (int, error) { calls++; return calls, nil }
+
+		_, _ = cache.Fetch(ctx, store, "n", 50*time.Millisecond, load)
+		time.Sleep(80 * time.Millisecond)
+		got, err := cache.Fetch(ctx, store, "n", 50*time.Millisecond, load)
+
+		require.NoError(t, err)
+		assert.Equal(t, 2, got)
+	})
+
+	t.Run("an error is returned and not stored", func(t *testing.T) {
+		store := newStore(t)
+		failed := errors.New("down")
+
+		_, err := cache.Fetch(ctx, store, "k", time.Minute, func() (int, error) { return 0, failed })
+		got, err2 := cache.Fetch(ctx, store, "k", time.Minute, func() (int, error) { return 5, nil })
+
+		assert.ErrorIs(t, err, failed)
+		require.NoError(t, err2)
+		assert.Equal(t, 5, got)
+	})
+
+	t.Run("many callers that miss the same key compute it once", func(t *testing.T) {
+		store := cache.NewMemoryStore(cache.WithCleanupInterval(0))
+		var calls atomic.Int32
+		release := make(chan struct{})
+		var wg sync.WaitGroup
+
+		for range 20 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = cache.Fetch(ctx, store, "slow", time.Minute, func() (int, error) {
+					calls.Add(1)
+					<-release
+					return 1, nil
+				})
+			}()
+		}
+		time.Sleep(50 * time.Millisecond)
+		close(release)
+		wg.Wait()
+
+		assert.Equal(t, int32(1), calls.Load())
+	})
 }

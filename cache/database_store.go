@@ -2,69 +2,66 @@ package cache
 
 import (
 	"context"
+	"database/sql"
+	"strings"
 	"time"
 
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
+	"github.com/karloscodes/cartridge/internal/dialect"
 )
 
-// DatabaseStore is a database-backed cache using GORM.
-// Works with any GORM-supported database (SQLite, PostgreSQL, MySQL, etc.).
-// Uses FIFO eviction when max entries is exceeded.
+// table holds the cache entries. cartridge creates it.
+const table = "cartridge_cache"
+
+// DatabaseStore keeps the cache in a table of a SQLite, PostgreSQL, or
+// MySQL database, like Solid Cache in Rails. Every process that uses the
+// database shares it, and it survives a restart. When MaxEntries is
+// exceeded, the oldest entries go first.
 type DatabaseStore struct {
-	db     *gorm.DB
-	opts   Options
-	stopCh chan struct{}
+	db      *sql.DB
+	dialect dialect.Dialect
+	opts    Options
+	stopCh  chan struct{}
 }
 
-// CacheEntry is the database model for cache entries.
-type CacheEntry struct {
-	Key       string `gorm:"primaryKey;size:255"`
-	Value     []byte
-	ExpiresAt int64 `gorm:"index"` // Unix milliseconds
-	CreatedAt int64 `gorm:"index"` // Unix milliseconds for FIFO ordering
-}
+// NewDatabaseStore creates a cache store in db. It creates the table
+// cartridge_cache when it does not exist. The database can be the app's
+// main database or another one.
+func NewDatabaseStore(db *sql.DB, opts ...Option) (*DatabaseStore, error) {
+	s := &DatabaseStore{
+		db:      db,
+		dialect: dialect.Of(db),
+		opts:    applyOptions(opts...),
+		stopCh:  make(chan struct{}),
+	}
 
-// TableName specifies the table name.
-func (CacheEntry) TableName() string {
-	return "cache_entries"
-}
-
-// NewDatabaseStore creates a new database-backed cache store.
-// The cache_entries table is auto-migrated if it doesn't exist.
-func NewDatabaseStore(db *gorm.DB, opts ...Option) (*DatabaseStore, error) {
-	options := applyOptions(opts...)
-
-	// Auto-migrate the table
-	if err := db.AutoMigrate(&CacheEntry{}); err != nil {
+	create := "CREATE TABLE IF NOT EXISTS " + table + " (" +
+		"cache_key VARCHAR(255) PRIMARY KEY, " +
+		"value " + s.dialect.Blob() + " NOT NULL, " +
+		"expires_at BIGINT NOT NULL, " + // Unix milliseconds
+		"created_at BIGINT NOT NULL)" // Unix milliseconds, for the oldest-first limit
+	if _, err := db.Exec(create); err != nil {
 		return nil, err
 	}
 
-	s := &DatabaseStore{
-		db:     db,
-		opts:   options,
-		stopCh: make(chan struct{}),
-	}
-
-	// Start background cleanup if interval is set
-	if options.CleanupInterval > 0 {
+	if s.opts.CleanupInterval > 0 {
 		go s.startCleanup()
 	}
-
 	return s, nil
+}
+
+func (s *DatabaseStore) exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return s.db.ExecContext(ctx, s.dialect.Rebind(query), args...)
 }
 
 // Read retrieves a value from the cache.
 func (s *DatabaseStore) Read(ctx context.Context, key string) ([]byte, bool) {
-	var entry CacheEntry
-	now := time.Now().UnixMilli()
-
-	result := s.db.WithContext(ctx).Where(keyIs(key)).Where("expires_at > ?", now).First(&entry)
-	if result.Error != nil {
+	var value []byte
+	query := "SELECT value FROM " + table + " WHERE cache_key = ? AND expires_at > ?"
+	err := s.db.QueryRowContext(ctx, s.dialect.Rebind(query), key, time.Now().UnixMilli()).Scan(&value)
+	if err != nil {
 		return nil, false
 	}
-
-	return entry.Value, true
+	return value, true
 }
 
 // Write stores a value with the default TTL.
@@ -74,122 +71,104 @@ func (s *DatabaseStore) Write(ctx context.Context, key string, value []byte) err
 
 // WriteWithTTL stores a value with a custom TTL.
 func (s *DatabaseStore) WriteWithTTL(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if value == nil {
+		value = []byte{}
+	}
 	now := time.Now().UnixMilli()
-	entry := CacheEntry{
-		Key:       key,
-		Value:     value,
-		ExpiresAt: now + ttl.Milliseconds(),
-		CreatedAt: now,
+	query := "INSERT INTO " + table + " (cache_key, value, expires_at, created_at) VALUES (?, ?, ?, ?) " +
+		s.dialect.Upsert("cache_key", "value", "expires_at", "created_at")
+	if _, err := s.exec(ctx, query, key, value, now+ttl.Milliseconds(), now); err != nil {
+		return err
 	}
-
-	// Use Save to upsert
-	result := s.db.WithContext(ctx).Save(&entry)
-	if result.Error != nil {
-		return result.Error
-	}
-
-	// Enforce max entries limit
 	s.enforceLimit(ctx)
-
 	return nil
 }
 
 // Delete removes a key from the cache.
 func (s *DatabaseStore) Delete(ctx context.Context, key string) error {
-	return s.db.WithContext(ctx).Where(keyIs(key)).Delete(&CacheEntry{}).Error
+	_, err := s.exec(ctx, "DELETE FROM "+table+" WHERE cache_key = ?", key)
+	return err
 }
 
-// DeleteByPrefix removes all keys matching the prefix.
+// DeleteByPrefix removes all keys that start with prefix. A "%" or "_" in
+// the prefix counts as that character, not as a wildcard.
 func (s *DatabaseStore) DeleteByPrefix(ctx context.Context, prefix string) (int, error) {
-	result := s.db.WithContext(ctx).Where(keyHasPrefix(prefix)).Delete(&CacheEntry{})
-	return int(result.RowsAffected), result.Error
+	pattern := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(prefix) + "%"
+	result, err := s.exec(ctx, "DELETE FROM "+table+" WHERE cache_key LIKE ? ESCAPE '!'", pattern)
+	if err != nil {
+		return 0, err
+	}
+	n, err := result.RowsAffected()
+	return int(n), err
 }
 
 // Clear removes all entries from the cache.
 func (s *DatabaseStore) Clear(ctx context.Context) error {
-	return s.db.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&CacheEntry{}).Error
+	_, err := s.exec(ctx, "DELETE FROM "+table)
+	return err
 }
 
 // Exist checks if a key exists and is not expired.
 func (s *DatabaseStore) Exist(ctx context.Context, key string) bool {
-	now := time.Now().UnixMilli()
-	var count int64
-	s.db.WithContext(ctx).Model(&CacheEntry{}).Where(keyIs(key)).Where("expires_at > ?", now).Count(&count)
-	return count > 0
+	return s.count(ctx, "WHERE cache_key = ? AND expires_at > ?", key, time.Now().UnixMilli()) > 0
 }
 
 // Stats returns cache statistics.
 func (s *DatabaseStore) Stats(ctx context.Context) Stats {
-	var total, expired int64
-	now := time.Now().UnixMilli()
-
-	s.db.WithContext(ctx).Model(&CacheEntry{}).Count(&total)
-	s.db.WithContext(ctx).Model(&CacheEntry{}).Where("expires_at <= ?", now).Count(&expired)
-
 	return Stats{
-		Entries:        total,
-		ExpiredEntries: expired,
+		Entries:        s.count(ctx, ""),
+		ExpiredEntries: s.count(ctx, "WHERE expires_at <= ?", time.Now().UnixMilli()),
 		MaxEntries:     s.opts.MaxEntries,
 		TTL:            s.opts.TTL,
 		Backend:        "database",
 	}
 }
 
-// Close stops the background cleanup goroutine.
+func (s *DatabaseStore) count(ctx context.Context, where string, args ...any) int64 {
+	var n int64
+	query := "SELECT COUNT(*) FROM " + table + " " + where
+	_ = s.db.QueryRowContext(ctx, s.dialect.Rebind(query), args...).Scan(&n)
+	return n
+}
+
+// Close stops the background cleanup. It does not close the database.
 func (s *DatabaseStore) Close() error {
 	close(s.stopCh)
 	return nil
 }
 
-// enforceLimit evicts oldest entries if max is exceeded.
+// enforceLimit deletes the oldest entries over MaxEntries.
 func (s *DatabaseStore) enforceLimit(ctx context.Context) {
 	if s.opts.MaxEntries <= 0 {
 		return
 	}
-
-	var count int64
-	s.db.WithContext(ctx).Model(&CacheEntry{}).Count(&count)
-
-	if count <= s.opts.MaxEntries {
+	excess := s.count(ctx, "") - s.opts.MaxEntries
+	if excess <= 0 {
 		return
 	}
 
-	// Delete oldest entries (FIFO) to get back to max. Two queries, because
-	// MySQL does not take a LIMIT in an IN subquery.
-	excess := count - s.opts.MaxEntries
-	var oldest []string
-	s.db.WithContext(ctx).Model(&CacheEntry{}).
-		Order("created_at ASC").
-		Limit(int(excess)).
-		Pluck("key", &oldest)
+	// Two queries, because MySQL does not take a LIMIT in an IN subquery.
+	query := "SELECT cache_key FROM " + table + " ORDER BY created_at ASC, cache_key ASC LIMIT ?"
+	rows, err := s.db.QueryContext(ctx, s.dialect.Rebind(query), excess)
+	if err != nil {
+		return
+	}
+	var oldest []any
+	for rows.Next() {
+		var key string
+		if rows.Scan(&key) == nil {
+			oldest = append(oldest, key)
+		}
+	}
+	_ = rows.Close()
 	if len(oldest) == 0 {
 		return
 	}
-	s.db.WithContext(ctx).
-		Where(clause.IN{Column: clause.Column{Name: "key"}, Values: toAny(oldest)}).
-		Delete(&CacheEntry{})
+	marks := strings.TrimSuffix(strings.Repeat("?, ", len(oldest)), ", ")
+	_, _ = s.exec(ctx, "DELETE FROM "+table+" WHERE cache_key IN ("+marks+")", oldest...)
 }
 
-// "key" is a reserved word in MySQL. These conditions let GORM quote the
-// column name for the database in use.
-
-func keyIs(key string) clause.Expression {
-	return clause.Eq{Column: clause.Column{Name: "key"}, Value: key}
-}
-
-func keyHasPrefix(prefix string) clause.Expression {
-	return clause.Like{Column: clause.Column{Name: "key"}, Value: prefix + "%"}
-}
-
-func toAny(values []string) []any {
-	out := make([]any, len(values))
-	for i, v := range values {
-		out[i] = v
-	}
-	return out
-}
-
-// startCleanup runs periodic cleanup of expired entries.
+// startCleanup deletes the expired entries at each CleanupInterval.
 func (s *DatabaseStore) startCleanup() {
 	ticker := time.NewTicker(s.opts.CleanupInterval)
 	defer ticker.Stop()
@@ -197,19 +176,12 @@ func (s *DatabaseStore) startCleanup() {
 	for {
 		select {
 		case <-ticker.C:
-			s.cleanup()
+			_, _ = s.exec(context.Background(), "DELETE FROM "+table+" WHERE expires_at <= ?", time.Now().UnixMilli())
 		case <-s.stopCh:
 			return
 		}
 	}
 }
 
-// cleanup removes expired entries.
-func (s *DatabaseStore) cleanup() {
-	now := time.Now().UnixMilli()
-
-	// Delete expired entries in batches
-	s.db.Where("expires_at <= ?", now).
-		Limit(s.opts.CleanupBatchSize).
-		Delete(&CacheEntry{})
-}
+// Ensure DatabaseStore implements Store
+var _ Store = (*DatabaseStore)(nil)
