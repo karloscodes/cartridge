@@ -73,6 +73,17 @@ func (ctx *Context) WriteTx(fn func(tx *gorm.DB) error) error {
 	return Write(ctx.Context(), ctx.DBManager, fn)
 }
 
+// DatabaseWriteTx runs fn in one write transaction on the named database.
+// See Write and Database. On a database opened with sqlite.Config.ReadOnly,
+// it returns sqlite.ErrReadOnly.
+func (ctx *Context) DatabaseWriteTx(name string, fn func(tx *gorm.DB) error) error {
+	m := ctx.namedDatabase(name)
+	if m == nil {
+		return fmt.Errorf("cartridge: no database named %q", name)
+	}
+	return Write(ctx.Context(), m, fn)
+}
+
 // WriteTx runs fn in one write transaction for this job. See Write.
 func (ctx *JobContext) WriteTx(fn func(tx *gorm.DB) error) error {
 	c := ctx.Context

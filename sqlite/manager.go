@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -55,7 +56,16 @@ type Config struct {
 	// pragma that fails stops the connection from opening. SQLite ignores
 	// an unknown pragma name without an error, so check the spelling.
 	Pragmas []string
+
+	// ReadOnly opens an existing file read-only (mode=ro). The manager then
+	// keeps the journal mode of the file, does not run PRAGMA optimize, and
+	// Write returns ErrReadOnly. SQLite still needs to create the -shm file
+	// of a WAL database, so the directory must be writable.
+	ReadOnly bool
 }
+
+// ErrReadOnly means a write went to a database opened with ReadOnly.
+var ErrReadOnly = errors.New("sqlite: database is read-only")
 
 // Manager manages SQLite database connections with optimized settings.
 type Manager struct {
@@ -143,7 +153,9 @@ func (m *Manager) Close() error {
 	}
 
 	// Record what this run learned about the queries for the next start.
-	m.optimize(m.db, "PRAGMA optimize")
+	if !m.cfg.ReadOnly {
+		m.optimize(m.db, "PRAGMA optimize")
+	}
 
 	if err := sqlDB.Close(); err != nil {
 		return fmt.Errorf("sqlite: close: %w", err)
@@ -173,6 +185,11 @@ func (m *Manager) open() error {
 	}
 
 	dsn := buildDSN(m.cfg.Path, m.cfg.BusyTimeout, m.cfg.EnableWAL, m.cfg.TxImmediate)
+	if m.cfg.ReadOnly {
+		// A read-only connection cannot set the journal mode, and a reader
+		// needs no write lock at BEGIN.
+		dsn = buildDSN(readOnlyURI(m.cfg.Path), m.cfg.BusyTimeout, false, false)
+	}
 
 	// Create GORM logger
 	gormLogger := database.NewGormLogger(m.logger.With(slog.String("component", "gorm")), nil)
@@ -214,8 +231,11 @@ func (m *Manager) open() error {
 
 	// Without statistics the query planner guesses. The SQLite docs ask a
 	// long-lived connection to run this at open; it analyzes only the tables
-	// that need it, so it is fast after the first run.
-	m.optimize(db, "PRAGMA optimize=0x10002")
+	// that need it, so it is fast after the first run. It writes the
+	// statistics, so a read-only file keeps the ones it has.
+	if !m.cfg.ReadOnly {
+		m.optimize(db, "PRAGMA optimize=0x10002")
+	}
 
 	m.db = db
 	return nil
@@ -252,6 +272,20 @@ func registerDriver(pragmas []string) string {
 		return nil
 	}})
 	return name
+}
+
+// readOnlyURI turns a path into a SQLite URI that opens the file read-only.
+// A path that is already a "file:" URI keeps its parameters.
+func readOnlyURI(path string) string {
+	if !strings.HasPrefix(path, "file:") {
+		// In a URI, "?" starts the parameters, "#" a fragment, and "%" an escape.
+		path = "file:" + strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23").Replace(path)
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "mode=ro"
 }
 
 // buildDSN adds the connection settings to the path as driver parameters. A

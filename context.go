@@ -58,8 +58,9 @@ type Context struct {
 	locals   map[any]any
 	body     []byte
 	bodyRead bool
-	bodyErr  *Error   // why the body read failed, if it did
-	db       *gorm.DB // Cached database session (lazy-loaded)
+	bodyErr  *Error              // why the body read failed, if it did
+	db       *gorm.DB            // Cached database session (lazy-loaded)
+	dbs      map[string]*gorm.DB // Cached sessions of the named databases
 }
 
 // DB provides a per-request database session with context attached.
@@ -81,6 +82,37 @@ func (ctx *Context) DB() *gorm.DB {
 	// Attach the request context for cancellation support and cache it
 	ctx.db = db.WithContext(ctx.Context())
 	return ctx.db
+}
+
+// Database returns a session of the named database, bound to the request
+// context, like DB. Name databases with WithDatabase or
+// ServerConfig.Databases. It panics when no database has the name or the
+// connection fails; the recover middleware turns that into a 500.
+func (ctx *Context) Database(name string) *gorm.DB {
+	if db, ok := ctx.dbs[name]; ok {
+		return db
+	}
+	m := ctx.namedDatabase(name)
+	if m == nil {
+		panic(fmt.Sprintf("cartridge: no database named %q", name))
+	}
+	db := m.GetConnection()
+	if db == nil {
+		panic(fmt.Sprintf("cartridge: database %q connection failed", name))
+	}
+	if ctx.dbs == nil {
+		ctx.dbs = map[string]*gorm.DB{}
+	}
+	ctx.dbs[name] = db.WithContext(ctx.Context())
+	return ctx.dbs[name]
+}
+
+// namedDatabase returns the named database manager, or nil.
+func (ctx *Context) namedDatabase(name string) DBManager {
+	if ctx.server == nil {
+		return nil
+	}
+	return ctx.server.cfg.Databases[name]
 }
 
 // Next runs the next handler in the chain.

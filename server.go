@@ -31,6 +31,10 @@ type ServerConfig struct {
 	Logger    Logger
 	DBManager DBManager
 
+	// Databases holds more databases by name, for Context.Database and
+	// Context.DatabaseWriteTx. NewApp fills it from WithDatabase.
+	Databases map[string]DBManager
+
 	// HTTP server configuration
 	ErrorHandler ErrorHandler
 	// ReadTimeout limits the time to read a request. Default: 30s.

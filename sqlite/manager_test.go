@@ -1,12 +1,18 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestNewManager(t *testing.T) {
@@ -353,4 +359,146 @@ func TestManager_CheckpointWithReplicaReading(t *testing.T) {
 	if took > 500*time.Millisecond {
 		t.Errorf("PASSIVE took %v, want no wait for the reader", took)
 	}
+}
+
+func TestManager_ReadOnly(t *testing.T) {
+	seed := func(t *testing.T, path string, wal bool) {
+		t.Helper()
+		db, err := sql.Open("sqlite3", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		statements := []string{"CREATE TABLE notes(body TEXT)", "INSERT INTO notes VALUES ('hello')"}
+		if wal {
+			statements = append([]string{"PRAGMA journal_mode=WAL"}, statements...)
+		}
+		for _, stmt := range statements {
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("%s: %v", stmt, err)
+			}
+		}
+	}
+	readOnly := func(t *testing.T, path string) (*Manager, *bytes.Buffer) {
+		t.Helper()
+		var logs bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		m := NewManager(Config{Path: path, ReadOnly: true, Logger: logger})
+		t.Cleanup(func() { _ = m.Close() })
+		return m, &logs
+	}
+	readBody := func(t *testing.T, m *Manager) string {
+		t.Helper()
+		db, err := m.Connect()
+		if err != nil {
+			t.Fatalf("Connect: %v", err)
+		}
+		var body string
+		if err := db.Raw("SELECT body FROM notes").Scan(&body).Error; err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		return body
+	}
+
+	t.Run("reads a WAL file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "wal.db")
+		seed(t, path, true)
+		m, _ := readOnly(t, path)
+
+		got := readBody(t, m)
+
+		if got != "hello" {
+			t.Errorf("body = %q, want hello", got)
+		}
+	})
+
+	t.Run("reads a file in rollback journal mode, which a read-only connection cannot switch to WAL", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "journal.db")
+		seed(t, path, false)
+		m, _ := readOnly(t, path)
+
+		got := readBody(t, m)
+
+		if got != "hello" {
+			t.Errorf("body = %q, want hello", got)
+		}
+	})
+
+	t.Run("reads a file whose path has a space, a hash, and a percent sign", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "my data #1 100%")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "app.db")
+		seed(t, path, true)
+		m, _ := readOnly(t, path)
+
+		got := readBody(t, m)
+
+		if got != "hello" {
+			t.Errorf("body = %q, want hello", got)
+		}
+	})
+
+	t.Run("opens and closes without a warning or an error in the log", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "quiet.db")
+		seed(t, path, true)
+		m, logs := readOnly(t, path)
+
+		readBody(t, m)
+		err := m.Close()
+
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if strings.Contains(logs.String(), "level=WARN") || strings.Contains(logs.String(), "level=ERROR") {
+			t.Errorf("log:\n%s", logs)
+		}
+	})
+
+	t.Run("Write returns ErrReadOnly and does not run fn", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "write.db")
+		seed(t, path, true)
+		m, _ := readOnly(t, path)
+		ran := false
+
+		err := m.Write(context.Background(), func(tx *gorm.DB) error {
+			ran = true
+			return nil
+		})
+
+		if !errors.Is(err, ErrReadOnly) || ran {
+			t.Errorf("err = %v, ran = %v; want ErrReadOnly and no run", err, ran)
+		}
+	})
+
+	t.Run("SQLite refuses a write through the connection", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "raw.db")
+		seed(t, path, true)
+		m, _ := readOnly(t, path)
+		db, _ := m.Connect()
+
+		err := db.Exec("INSERT INTO notes VALUES ('nope')").Error
+
+		if err == nil {
+			t.Error("the insert went through")
+		}
+		if got := readBody(t, m); got != "hello" {
+			t.Errorf("body = %q, want hello", got)
+		}
+	})
+
+	t.Run("a missing file is an error, not a new file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "missing.db")
+		m, _ := readOnly(t, path)
+
+		_, err := m.Connect()
+
+		if err == nil {
+			t.Error("Connect returned no error")
+		}
+		if _, statErr := os.Stat(path); statErr == nil {
+			t.Error("Connect created the file")
+		}
+	})
 }

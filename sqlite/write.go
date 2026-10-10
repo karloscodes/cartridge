@@ -27,7 +27,12 @@ var ErrBusy = errors.New("sqlite: database busy")
 //
 // Write does not retry. Run nothing slow in fn, such as an HTTP call or an
 // email, because every other writer waits for it.
+//
+// On a ReadOnly manager, Write returns ErrReadOnly and does not run fn.
 func (m *Manager) Write(ctx context.Context, fn func(tx *gorm.DB) error) error {
+	if m.cfg.ReadOnly {
+		return fmt.Errorf("%w: %s", ErrReadOnly, m.cfg.Path)
+	}
 	db, err := m.Connect()
 	if err != nil {
 		return err

@@ -43,7 +43,8 @@ type AppConfig interface {
 type App struct {
 	*Application
 	DBManager *sqlite.Manager
-	Session   *SessionManager // nil without WithSession
+	Session   *SessionManager            // nil without WithSession
+	Databases map[string]*sqlite.Manager // from WithDatabase, by name
 }
 
 // MigrateDatabase runs the migrator, then checkpoints the WAL.
@@ -82,6 +83,7 @@ type appOptions struct {
 	sessionPath   string
 	sessionValid  func(userID uint, issuedAt time.Time) bool
 	inertia       bool
+	databases     map[string]sqlite.Config
 }
 
 type jobGroup struct {
@@ -170,6 +172,24 @@ func WithSessionCheck(valid func(userID uint, issuedAt time.Time) bool) AppOptio
 	}
 }
 
+// WithDatabase opens another SQLite database under name, next to the main
+// one. A handler reads it with ctx.Database(name) and writes it with
+// ctx.DatabaseWriteTx(name, fn). The config's Logger, MaxOpenConns, and
+// MaxIdleConns default to those of the main database. Set ReadOnly to open
+// an existing file read-only:
+//
+//	cartridge.WithDatabase("shared", sqlite.Config{Path: "data/shared.sqlite3", ReadOnly: true})
+//
+// The databases are in App.Databases. Close them when the app stops.
+func WithDatabase(name string, cfg sqlite.Config) AppOption {
+	return func(o *appOptions) {
+		if o.databases == nil {
+			o.databases = map[string]sqlite.Config{}
+		}
+		o.databases[name] = cfg
+	}
+}
+
 // WithInertia prepares the inertia package: in development it re-reads the
 // Vite manifest on every request. Set the page title and other settings
 // with the inertia package functions.
@@ -219,10 +239,28 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 	}
 	maps.Copy(funcs, o.templateFuncs)
 
+	databases := map[string]*sqlite.Manager{}
 	serverCfg := DefaultServerConfig()
 	serverCfg.Config = cfg
 	serverCfg.Logger = logger
 	serverCfg.DBManager = dbManager
+	serverCfg.Databases = map[string]DBManager{}
+	for name, dbCfg := range o.databases {
+		if name == "" {
+			return nil, fmt.Errorf("cartridge: WithDatabase needs a name")
+		}
+		if dbCfg.Logger == nil {
+			dbCfg.Logger = logger
+		}
+		if dbCfg.MaxOpenConns == 0 {
+			dbCfg.MaxOpenConns = cfg.GetMaxOpenConns()
+		}
+		if dbCfg.MaxIdleConns == 0 {
+			dbCfg.MaxIdleConns = cfg.GetMaxIdleConns()
+		}
+		databases[name] = sqlite.NewManager(dbCfg)
+		serverCfg.Databases[name] = databases[name]
+	}
 	serverCfg.ErrorHandler = o.errorHandler
 	serverCfg.ViewsEngine = newViews(cfg, o.templatesFS, funcs)
 	if !cfg.IsDevelopment() {
@@ -273,7 +311,7 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 		return nil, fmt.Errorf("cartridge: create application: %w", err)
 	}
 
-	return &App{Application: application, DBManager: dbManager, Session: session}, nil
+	return &App{Application: application, DBManager: dbManager, Session: session, Databases: databases}, nil
 }
 
 // newViews returns nil without templates. Development reads web/templates
