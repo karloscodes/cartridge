@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -98,6 +99,27 @@ func TestNewApp(t *testing.T) {
 
 		if got != "Hello Ada" {
 			t.Errorf("got %q, want Hello Ada", got)
+		}
+	})
+
+	t.Run("templates link the static files by digested URL", func(t *testing.T) {
+		templates := fstest.MapFS{"home.html": {Data: []byte(`<script src="{{asset "app.js"}}"></script>{{importmap "app.js"}}`)}}
+		static := fstest.MapFS{"app.js": {Data: []byte("console.log(1)")}}
+		app, err := NewApp(newAppTestConfig(t),
+			WithAssets(templates, static),
+			WithRoutes(func(s *Server) {
+				s.Get("/", func(c *Context) error { return c.Render("home", nil) })
+			}),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		got := get(t, app, "/")
+
+		url, _ := app.Server.Asset("app.js")
+		if !strings.Contains(got, `<script src="`+url+`"></script>`) || !strings.Contains(got, `"app": "`+url+`"`) {
+			t.Errorf("page = %s", got)
 		}
 	})
 

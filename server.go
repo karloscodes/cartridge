@@ -179,6 +179,10 @@ type Server struct {
 	routes         []route
 	trustedProxies []netip.Prefix
 
+	digestsOnce sync.Once
+	digests     *assetDigests
+	digestsErr  error
+
 	buildOnce  sync.Once
 	mux        *http.ServeMux
 	notFound   http.Handler
@@ -524,26 +528,14 @@ func (s *Server) handleError(ctx *Context, err error) {
 
 // mountStaticAssets serves static files under StaticPrefix.
 func (s *Server) mountStaticAssets(mux *http.ServeMux) {
-	if !s.cfg.EnableStaticAssets {
+	fsys, prefix, embedded := s.staticFiles()
+	if fsys == nil {
 		return
 	}
-
-	prefix := strings.TrimSuffix(s.cfg.StaticPrefix, "/")
-	if prefix == "" {
-		prefix = "/assets"
-	}
-
-	fsys := s.cfg.StaticFS
-	embedded := fsys != nil
-	if fsys == nil {
-		dir := s.cfg.StaticDirectory
-		if dir == "" {
-			dir = s.cfg.Config.GetPublicDirectory()
-		}
-		if dir == "" {
-			return
-		}
-		fsys = os.DirFS(dir)
+	// Hash the embedded files now, at startup, not on the first request.
+	digests, err := s.assetDigests()
+	if err != nil {
+		s.cfg.Logger.Error("cannot digest the static files", slog.Any("error", err))
 	}
 
 	files := http.StripPrefix(prefix, http.FileServerFS(fsys))
@@ -552,16 +544,33 @@ func (s *Server) mountStaticAssets(mux *http.ServeMux) {
 		if hasDotSegment(name) {
 			return NewError(http.StatusNotFound)
 		}
-		info, err := fs.Stat(fsys, name)
-		if err != nil || info.IsDir() {
+		if info, err := fs.Stat(fsys, name); err == nil && !info.IsDir() {
+			// Vite puts a content hash in built file names, so embedded
+			// assets can be cached for a year. Files on disk can change at
+			// any time, so the browser must check them on each use.
+			if embedded {
+				c.Set("Cache-Control", "public, max-age=31536000")
+			} else {
+				c.Set("Cache-Control", "no-cache")
+			}
+			files.ServeHTTP(c.Response(), c.Request())
+			return nil
+		}
+
+		// A digested name from Server.Asset.
+		if digests == nil {
 			return NewError(http.StatusNotFound)
 		}
-		// Vite puts a content hash in built file names, so embedded assets
-		// can be cached for a year. Development serves from disk, uncached.
-		if embedded {
-			c.Set("Cache-Control", "public, max-age=31536000")
+		original, ok := digests.original(name)
+		if !ok {
+			return NewError(http.StatusNotFound)
 		}
-		files.ServeHTTP(c.Response(), c.Request())
+		if embedded {
+			c.Set("Cache-Control", immutableCacheControl)
+		} else {
+			c.Set("Cache-Control", "no-cache")
+		}
+		http.ServeFileFS(c.Response(), c.Request(), fsys, original)
 		return nil
 	}))
 }

@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"time"
 
@@ -92,6 +93,10 @@ type jobGroup struct {
 // nil. Development reads web/templates and the public directory from disk
 // instead, and reloads templates on every render. Without templates,
 // Context.Render returns an error.
+//
+// Templates can call {{asset "app.js"}} for the digested URL of a static
+// file and {{importmap "controllers/*.js"}} for an import map. See
+// Server.Asset and Server.Importmap.
 func WithAssets(templates, static fs.FS) AppOption {
 	return func(o *appOptions) {
 		o.templatesFS = templates
@@ -206,12 +211,20 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 		Logger:       logger,
 	})
 
+	// The template functions call the server, which exists before the first render.
+	var server *Server
+	funcs := template.FuncMap{
+		"asset":     func(name string) (string, error) { return server.Asset(name) },
+		"importmap": func(entries ...string) (template.HTML, error) { return server.Importmap(entries...) },
+	}
+	maps.Copy(funcs, o.templateFuncs)
+
 	serverCfg := DefaultServerConfig()
 	serverCfg.Config = cfg
 	serverCfg.Logger = logger
 	serverCfg.DBManager = dbManager
 	serverCfg.ErrorHandler = o.errorHandler
-	serverCfg.ViewsEngine = newViews(cfg, o.templatesFS, o.templateFuncs)
+	serverCfg.ViewsEngine = newViews(cfg, o.templatesFS, funcs)
 	if !cfg.IsDevelopment() {
 		serverCfg.StaticFS = o.staticFS
 	}
