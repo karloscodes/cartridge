@@ -470,7 +470,40 @@ func createNote(ctx *cartridge.Context) error {
 
 A column fills the field with its name: the `db` tag, or the field name in snake case (`CreatedAt` reads `created_at`). A column without a field is an error. A column that can be `NULL` needs a pointer field or a `sql.Null` type. The placeholder is the one of the database: `?` for SQLite and MySQL, `$1` for PostgreSQL.
 
-For queries that the compiler checks, run [sqlc](https://sqlc.dev) on the same migration files: its generated code takes `ctx.SQL()` and the `*sql.Tx` of `WriteSQL`.
+### Typed queries with sqlc
+
+For an app's own queries, use [sqlc](https://sqlc.dev). You write each query once in a `.sql` file. sqlc checks it against the migrations and writes a Go function with typed arguments and a typed result. A wrong column, a wrong type, or a missing argument fails `sqlc generate`, before the app runs. sqlc is a tool, not a dependency: the code it writes uses only `database/sql`.
+
+```sql
+-- db/queries.sql
+
+-- name: NotesOfUser :many
+SELECT id, user_id, body, created_at FROM notes WHERE user_id = ? ORDER BY created_at DESC;
+
+-- name: CreateNote :exec
+INSERT INTO notes (user_id, body) VALUES (?, ?);
+```
+
+```go
+notes, err := db.New(ctx.SQL()).NotesOfUser(ctx.Context(), userID)
+
+err := ctx.WriteSQL(func(tx *sql.Tx) error {
+	return db.New(tx).CreateNote(ctx.Context(), db.CreateNoteParams{UserID: userID, Body: body})
+})
+```
+
+[examples/notes](examples/notes) is a complete app built this way:
+
+| File | What it holds |
+|---|---|
+| `db/migrations/*.sql` | The schema. `cartridge.NewSQLMigrator(db.Migrations())` runs it, and sqlc reads it |
+| `db/queries.sql` | Every query of the app |
+| `sqlc.yaml` | Tells sqlc where the two are |
+| `db/models.go`, `db/queries.sql.go`, `db/db.go` | Written by sqlc. Do not edit them. `models.go` shows the current schema as Go structs |
+
+After a change to a migration or a query, run `sqlc generate` and commit the result. Pin the sqlc version (`mise.toml`), and let CI run `sqlc diff`, which fails when the generated code is old.
+
+The `query` package below is for a query outside sqlc, such as a one-off in a test or a script.
 
 ### Writes under load
 

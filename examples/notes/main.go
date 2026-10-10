@@ -9,6 +9,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/karloscodes/cartridge/config"
 	"github.com/karloscodes/cartridge/middleware"
 
+	"github.com/karloscodes/cartridge/examples/notes/db"
 	"github.com/karloscodes/cartridge/examples/notes/web"
 )
 
@@ -50,16 +52,23 @@ func newApp(cfg *config.Config) (*cartridge.App, error) {
 		// A session ends when its user is gone. The check runs on requests,
 		// after NewApp has set app.
 		cartridge.WithSessionCheck(func(userID uint, issuedAt time.Time) bool {
-			var count int64
-			app.DBManager.GetConnection().Model(&User{}).Where("id = ?", userID).Count(&count)
-			return count == 1
+			conn, err := app.DBManager.Connect()
+			if err != nil {
+				return false
+			}
+			sqlDB, err := conn.DB()
+			if err != nil {
+				return false
+			}
+			count, err := db.New(sqlDB).CountUsersByID(context.Background(), int64(userID))
+			return err == nil && count == 1
 		}),
 		cartridge.WithRoutes(routes),
 	)
 	if err != nil {
 		return nil, err
 	}
-	return app, app.MigrateDatabase(cartridge.NewAutoMigrator(&User{}, &Note{}))
+	return app, app.MigrateDatabase(cartridge.NewSQLMigrator(db.Migrations()))
 }
 
 func routes(s *cartridge.Server) {

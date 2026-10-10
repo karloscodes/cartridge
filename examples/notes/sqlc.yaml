@@ -1,0 +1,11 @@
+# sqlc checks db/queries.sql against the migrations and writes typed Go
+# functions into db/. Run it with `mise run generate` from the repository root.
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema: "db/migrations"
+    queries: "db/queries.sql"
+    gen:
+      go:
+        package: "db"
+        out: "db"

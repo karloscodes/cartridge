@@ -61,6 +61,7 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 ## Development and tests
 
 - Development and test bind `127.0.0.1` only. Set `{APP}_HOST=0.0.0.0` to open a dev server to the network or to Docker.
+- Set up and check rows in a test with the app's own queries: `db.New(ta.SQL()).CreateUser(...)`.
 - Test the real app with `testsupport.NewTestApp(t, "myapp", newApp)`. It runs the app's own migrations and views on a new SQLite file per test. Do not mock the database.
 - Use `ta.Client()` for a flow over several requests, such as sign-in. It keeps the cookies like a browser. The `ta.Get` and `ta.PostForm` methods send no cookies.
 - To start from a copy of a database, copy it into `cfg.DataDirectory` in the build function, before `NewApp`.
@@ -70,10 +71,27 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - `WriteTx` returns `sqlite.ErrBusy` when a write waits too long. Answer it with 503 and a `Retry-After` header, so the client slows down. Do not retry on the server.
 - Add app-specific pragmas with `sqlite.Config.Pragmas`. They run on every connection.
 
+## What cartridge is
+
+Cartridge is a Go version of a subset of Rails, made so that an AI agent can build and change an app with few mistakes. So it prefers: one way to do each thing, a mistake that fails the build or a test over one that shows in production, safe defaults over options, and plain files that an agent can read (SQL migrations, SQL queries, HTML templates). When two ways exist, use the one this file names.
+
+## SQL with sqlc
+
+A new app keeps its schema and its queries in SQL files, and sqlc writes the Go code. [examples/notes](examples/notes) shows the layout.
+
+- **Read the schema in `db/models.go`.** sqlc writes one struct per table there. Do not read the migrations one by one to learn the current schema.
+- **Change the schema with a new file** in `db/migrations/`, with the next number. Never change a file that ran.
+- **Write every query in `db/queries.sql`**, with a name line: `-- name: NotesOfUser :many` (`:one`, `:many`, or `:exec`). Name every column in a `SELECT`.
+- **Run `sqlc generate` after each change** to a migration or a query, and commit `db/*.go` with it. When sqlc reports an error, fix the SQL. Never edit `db/models.go`, `db/queries.sql.go`, or `db/db.go` by hand.
+- **Call the generated functions:** `db.New(ctx.SQL()).NotesOfUser(ctx.Context(), userID)` to read, and `db.New(tx)` inside `ctx.WriteSQL(func(tx *sql.Tx) error { ... })` to write.
+- **When sqlc is not installed, stop and say so.** Do not write the generated code by hand, and do not move the query into a Go string.
+- A query that needs a choice, such as a sort order, is two named queries. Choose between them in Go.
+
 ## SQL without GORM
 
 - An app chooses one way for its schema: GORM models with `NewAutoMigrator`, or SQL files with `cartridge.NewSQLMigrator`. Do not use both for the same table. Look at what the app has before you add a table.
 - In an app with SQL files, add a new numbered file for each schema change. Never change a file that ran.
+- In an app with sqlc, the rules above replace this section. The `query` package is for an app without sqlc, and for a one-off query in a test.
 - Read with `query.All[T](ctx.Context(), ctx.SQL(), "SELECT ... WHERE id = ?", id)` and `query.One[T]`. Write inside `ctx.WriteSQL(func(tx *sql.Tx) error { ... })` with `query.Exec(ctx.Context(), tx, "INSERT ...", args...)`. Do not open a `*sql.DB` by hand.
 - The SQL text of `query.All`, `query.One`, and `query.Exec` must be a constant. When the compiler refuses a query, do not go around it with `tx.ExecContext` or `db.QueryContext`: pass the value as an argument, or choose between constant queries in code.
 - **Always pass a request value as an argument, never inside the SQL text.** Do not build SQL with `fmt.Sprintf` or `+`. For a sort order, choose the column from a fixed map.

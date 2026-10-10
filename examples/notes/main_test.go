@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/karloscodes/cartridge/examples/notes/db"
 	"github.com/karloscodes/cartridge/testsupport"
 )
 
@@ -26,7 +28,8 @@ func newTestApp(t *testing.T) *testsupport.TestApp {
 	t.Helper()
 	ta := testsupport.NewTestApp(t, "notes", newApp)
 	for _, email := range []string{"ada@example.com", "grace@example.com"} {
-		if err := ta.DB().Create(&User{Email: email, PasswordHash: string(passwordHash)}).Error; err != nil {
+		err := db.New(ta.SQL()).CreateUser(context.Background(), db.CreateUserParams{Email: email, PasswordHash: string(passwordHash)})
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -127,8 +130,7 @@ func TestNotes(t *testing.T) {
 
 		resp := browser.PostForm("/notes", url.Values{"body": {"   "}})
 
-		var count int64
-		ta.DB().Model(&Note{}).Count(&count)
+		count, _ := db.New(ta.SQL()).CountNotes(context.Background())
 		if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(read(t, resp), "Write something first.") {
 			t.Errorf("POST /notes = %d without the problem", resp.StatusCode)
 		}
