@@ -466,10 +466,17 @@ To support another database, implement `database.Driver`.
 
 `SSLMode`, `Timezone`, and `SearchPath` go into the DSN, so every connection of the pool has them. A URL and a keyword DSN (`host=... dbname=...`) both work, and an option that the DSN sets itself wins.
 
-The PostgreSQL tests need a database. They skip themselves without `CARTRIDGE_POSTGRES_DSN`:
+### MySQL
+
+The `mysql` package is the driver for MySQL, used like the PostgreSQL one: `database.NewManager(mysql.NewDriver(), database.DefaultConfig(dsn), logger)`. It turns `parseTime` on in the DSN, so `time.Time` fields read `DATETIME` columns.
+
+### Database tests
+
+The PostgreSQL and MySQL tests need a server. They skip themselves without their DSN, and CI runs each in its own job:
 
 ```bash
 CARTRIDGE_POSTGRES_DSN=postgres://postgres:test@127.0.0.1:5432/cartridge_test go test ./postgres
+CARTRIDGE_MYSQL_DSN='root:test@tcp(127.0.0.1:3306)/cartridge_test' go test ./mysql
 ```
 
 ## Inertia.js
@@ -508,7 +515,7 @@ To redirect unknown paths, call `s.SetCatchAllRedirect("/")` in your routes func
 | `crypto` | AES-GCM `Encrypt`/`Decrypt`, bcrypt password helpers |
 | `flash` | Low-level flash cookie helpers behind `ctx.Flash*` |
 | `inertia` | Inertia rendering, deferred props, Vite manifest |
-| `sqlite`, `postgres`, `database` | Connection managers and drivers |
+| `sqlite`, `postgres`, `mysql`, `database` | Connection managers and drivers |
 | `testsupport` | `NewTestApp` for the app's own App on a temporary database file, `NewTestServer` for handlers alone |
 
 ## Testing your app

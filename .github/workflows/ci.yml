@@ -10,6 +10,36 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Build without cgo
+        # Apps build standalone binaries with CGO_ENABLED=0 (GoReleaser).
+        run: CGO_ENABLED=0 go build ./... && CGO_ENABLED=0 go vet ./...
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
+
+  # The database tests skip themselves without their DSN, so each database
+  # has its own job. The jobs run at the same time as the main tests.
+  postgres:
+    name: PostgreSQL
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:17-alpine
@@ -32,24 +62,40 @@ jobs:
           go-version: "1.26"
           cache: true
 
-      - name: Install dependencies
-        run: go mod download
-
-      - name: Build without cgo
-        # Apps build standalone binaries with CGO_ENABLED=0 (GoReleaser).
-        run: CGO_ENABLED=0 go build ./... && CGO_ENABLED=0 go vet ./...
-
-      - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
+      - name: Run PostgreSQL tests
+        run: go test -v -race ./postgres
         env:
-          # The PostgreSQL tests skip themselves without this.
           CARTRIDGE_POSTGRES_DSN: postgres://postgres:test@localhost:5432/cartridge_test
 
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
+  mysql:
+    name: MySQL
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: cartridge_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -ptest"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          files: coverage.out
-          fail_ci_if_error: false
+          go-version: "1.26"
+          cache: true
+
+      - name: Run MySQL tests
+        run: go test -v -race ./mysql
+        env:
+          CARTRIDGE_MYSQL_DSN: root:test@tcp(localhost:3306)/cartridge_test
 
   lint:
     name: Lint
