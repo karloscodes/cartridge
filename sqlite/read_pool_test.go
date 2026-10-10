@@ -161,21 +161,22 @@ func TestReadPool(t *testing.T) {
 		}
 	})
 
-	t.Run("a read-only database reads, and a write returns ErrReadOnly", func(t *testing.T) {
+	t.Run("a read-only database reads, and refuses a write", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "shared.db")
 		writer, db := newPoolManager(t, sqlite.Config{Path: path})
 		if err := db.Create(&poolNote{Body: "seed"}).Error; err != nil {
 			t.Fatal(err)
 		}
 		_ = writer.Close()
-		_, readOnly := newPoolManager(t, sqlite.Config{Path: path, ReadOnly: true})
+		readOnlyManager, readOnly := newPoolManager(t, sqlite.Config{Path: path, ReadOnly: true})
 
 		var count int64
 		readErr := readOnly.Model(&poolNote{}).Count(&count).Error
 		writeErr := readOnly.Create(&poolNote{Body: "x"}).Error
 
-		if readErr != nil || count != 1 || !errors.Is(writeErr, sqlite.ErrReadOnly) {
-			t.Errorf("count = %d (%v), write error = %v, want 1 and ErrReadOnly", count, readErr, writeErr)
+		managerErr := readOnlyManager.Write(context.Background(), func(tx *gorm.DB) error { return nil })
+		if readErr != nil || count != 1 || writeErr == nil || !errors.Is(managerErr, sqlite.ErrReadOnly) {
+			t.Errorf("count = %d (%v), write error = %v, Write error = %v, want 1, an error, and ErrReadOnly", count, readErr, writeErr, managerErr)
 		}
 	})
 
@@ -360,34 +361,33 @@ func TestWriteWithReadPool(t *testing.T) {
 }
 
 func TestReadsAfterSchemaChange(t *testing.T) {
-	t.Run("a read sees a new column, at the latest on its second run", func(t *testing.T) {
-		_, db := newPoolManager(t, sqlite.Config{})
-		rows := func() ([]map[string]any, error) {
-			var out []map[string]any
-			err := db.Raw("SELECT * FROM pool_notes ORDER BY id").Scan(&out).Error
-			return out, err
-		}
-		if err := db.Create(&poolNote{Body: "one"}).Error; err != nil {
-			t.Fatal(err)
-		}
-		if before, err := rows(); err != nil || len(before) != 1 {
-			t.Fatalf("before: %d rows, %v", len(before), err)
-		}
+	{
+		t.Run("after SchemaChanged, the next read has the new column", func(t *testing.T) {
+			m, db := newPoolManager(t, sqlite.Config{MaxOpenConns: 1})
+			rows := func() ([]map[string]any, error) {
+				var out []map[string]any
+				err := db.Raw("SELECT * FROM pool_notes ORDER BY id").Scan(&out).Error
+				return out, err
+			}
+			if err := db.Create(&poolNote{Body: "one"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if before, err := rows(); err != nil || len(before) != 1 {
+				t.Fatalf("before: %d rows, %v", len(before), err)
+			}
 
-		alterErr := db.Exec("ALTER TABLE pool_notes ADD COLUMN title TEXT DEFAULT 'none'").Error
-		createErr := db.Create(&poolNote{Body: "two"}).Error
-		// A read connection learns of the change when its next statement
-		// runs, so the first read can still have the old columns.
-		_, firstErr := rows()
-		after, err := rows()
+			alterErr := db.Exec("ALTER TABLE pool_notes ADD COLUMN title TEXT DEFAULT 'none'").Error
+			m.SchemaChanged()
+			after, err := rows()
 
-		if alterErr != nil || createErr != nil || firstErr != nil || err != nil {
-			t.Fatalf("alter: %v, create: %v, reads: %v, %v", alterErr, createErr, firstErr, err)
-		}
-		if len(after) != 2 || after[1]["title"] != "none" {
-			t.Errorf("after = %v, want two rows with the new column", after)
-		}
-	})
+			if alterErr != nil || err != nil {
+				t.Fatalf("alter: %v, read: %v", alterErr, err)
+			}
+			if len(after) != 1 || after[0]["title"] != "none" {
+				t.Errorf("after = %v, want the new column", after)
+			}
+		})
+	}
 
 	t.Run("many different read statements all work", func(t *testing.T) {
 		_, db := newPoolManager(t, sqlite.Config{})
@@ -580,6 +580,126 @@ func TestReadPoolOf(t *testing.T) {
 
 		if withoutPool || insideTx {
 			t.Errorf("without pool = %v, inside a transaction = %v, want false and false", withoutPool, insideTx)
+		}
+	})
+}
+
+// The method that the app calls decides the pool, not the SQL text.
+func TestReadRouting(t *testing.T) {
+	// holdWrite keeps the write connection busy until release is closed.
+	holdWrite := func(t *testing.T, m *sqlite.Manager) (release chan struct{}, done chan error) {
+		t.Helper()
+		inWrite := make(chan struct{})
+		release, done = make(chan struct{}), make(chan error, 1)
+		go func() {
+			done <- m.Write(context.Background(), func(tx *gorm.DB) error {
+				close(inWrite)
+				<-release
+				return nil
+			})
+		}()
+		<-inWrite
+		return release, done
+	}
+
+	t.Run("every kind of read runs while the write connection is busy", func(t *testing.T) {
+		m, db := newPoolManager(t, sqlite.Config{})
+		if err := db.Create(&poolNote{Body: "one"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		release, done := holdWrite(t, m)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		db = db.WithContext(ctx)
+
+		var note poolNote
+		var notes []poolNote
+		var count, viaCTE, viaRow int64
+		var bodies []string
+		errs := map[string]error{
+			"First":       db.First(&note).Error,
+			"Find":        db.Where("body = ?", "one").Find(&notes).Error,
+			"Count":       db.Model(&poolNote{}).Count(&count).Error,
+			"Pluck":       db.Model(&poolNote{}).Pluck("body", &bodies).Error,
+			"Raw CTE":     db.Raw("WITH n AS (SELECT id FROM pool_notes) SELECT COUNT(*) FROM n").Scan(&viaCTE).Error,
+			"Raw comment": db.Raw("-- a comment first\nSELECT COUNT(*) FROM pool_notes").Scan(&viaCTE).Error,
+			"Row":         db.Raw("SELECT COUNT(*) FROM pool_notes").Row().Scan(&viaRow),
+		}
+		close(release)
+		<-done
+
+		for name, err := range errs {
+			if err != nil {
+				t.Errorf("%s waited for the write connection: %v", name, err)
+			}
+		}
+		if note.Body != "one" || len(notes) != 1 || count != 1 || len(bodies) != 1 || viaCTE != 1 || viaRow != 1 {
+			t.Errorf("results: %+v, %d notes, count %d, %v, cte %d, row %d", note, len(notes), count, bodies, viaCTE, viaRow)
+		}
+	})
+
+	t.Run("a write through a read method is refused", func(t *testing.T) {
+		_, db := newPoolManager(t, sqlite.Config{})
+		if err := db.Create(&poolNote{Body: "one"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		var id int64
+
+		err := db.Raw("UPDATE pool_notes SET body = 'changed' RETURNING id").Scan(&id).Error
+
+		var body string
+		db.Raw("SELECT body FROM pool_notes").Scan(&body)
+		if err == nil || body != "one" {
+			t.Errorf("err = %v, body = %q, want an error and no change", err, body)
+		}
+	})
+
+	t.Run("the same write in a transaction works", func(t *testing.T) {
+		m, db := newPoolManager(t, sqlite.Config{})
+		if err := db.Create(&poolNote{Body: "one"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		var id int64
+
+		err := m.Write(context.Background(), func(tx *gorm.DB) error {
+			return tx.Raw("UPDATE pool_notes SET body = 'changed' RETURNING id").Scan(&id).Error
+		})
+
+		if err != nil || id == 0 {
+			t.Errorf("id = %d, err = %v", id, err)
+		}
+	})
+
+	t.Run("a handle that read can write next", func(t *testing.T) {
+		_, db := newPoolManager(t, sqlite.Config{})
+		if err := db.Create(&poolNote{Body: "one"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		var count, left int64
+		handle := db.Table("pool_notes")
+
+		readErr := handle.Count(&count).Error
+		writeErr := handle.Exec("DELETE FROM pool_notes").Error
+
+		db.Model(&poolNote{}).Count(&left)
+		if readErr != nil || writeErr != nil || count != 1 || left != 0 {
+			t.Errorf("read: %v (count %d), write: %v, rows left: %d", readErr, count, writeErr, left)
+		}
+	})
+
+	t.Run("a read in a transaction sees the writes of the transaction", func(t *testing.T) {
+		m, _ := newPoolManager(t, sqlite.Config{})
+		var inside int64
+
+		err := m.Write(context.Background(), func(tx *gorm.DB) error {
+			if err := tx.Create(&poolNote{Body: "draft"}).Error; err != nil {
+				return err
+			}
+			return tx.Raw("SELECT COUNT(*) FROM pool_notes").Scan(&inside).Error
+		})
+
+		if err != nil || inside != 1 {
+			t.Errorf("inside = %d, err = %v, want 1", inside, err)
 		}
 	})
 }

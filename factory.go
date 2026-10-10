@@ -57,6 +57,9 @@ func (a *App) MigrateDatabase(migrator Migrator) error {
 	if err := migrator.Migrate(db); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
+	// Read connections that were open during the migration would still
+	// plan with the old schema once.
+	a.DBManager.SchemaChanged()
 
 	// PASSIVE never waits. A FULL checkpoint waits for every reader, and the
 	// live replica keeps a read open on purpose, so FULL always ran into

@@ -39,10 +39,10 @@ func (m *Manager) Write(ctx context.Context, fn func(tx *gorm.DB) error) error {
 		return err
 	}
 	m.dbMutex.Lock()
-	split := m.split
+	writer := m.writer
 	m.dbMutex.Unlock()
-	if split != nil {
-		return m.writeOnConnection(ctx, db, split.writer, fn)
+	if writer != nil {
+		return m.writeOnConnection(ctx, db, writer, fn)
 	}
 
 	wait := time.NewTimer(m.cfg.WriteWait)

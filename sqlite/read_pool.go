@@ -1,106 +1,70 @@
 package sqlite
 
 import (
-	"context"
 	"database/sql"
-	"fmt"
-	"strings"
+	"sync"
 
 	"gorm.io/gorm"
 )
 
-// splitPool sends each statement to one of two pools of the same SQLite
-// file: a SELECT to the read-only pool, and everything else, including
-// every transaction, to the one write connection. GORM uses it as its
-// connection pool, so app code does not change.
+// With ReadPool, GORM runs on the one write connection, and its read
+// operations move to the pool of read-only connections.
+//
+// GORM itself says which operations read: Find, First, Take, Scan, Count,
+// Pluck, Rows, and Row run its query and row callbacks. Create, Update,
+// Delete, and Exec run the others. So the method that the app calls decides
+// the pool, not the SQL text. A statement in a transaction stays on the
+// transaction, and every transaction is on the write connection.
+//
+// A write through a read method, such as Raw("UPDATE ... RETURNING
+// id").Scan(&id), runs on a read-only connection, and SQLite refuses it.
+// Run such a statement in a transaction.
 //
 // SQLite allows one writer. With one write connection, writes wait for each
 // other in Go and never fail with "database is locked" against each other,
 // and readers keep their own connections.
 //
-// It keeps no prepared statements. After a schema change by another
-// connection, the first "SELECT *" on a connection can still return the old
-// column list: SQLite notices the change only when the statement runs. A
-// prepared statement would repeat that once for each statement it holds.
-// So change the schema at startup, before the app serves requests.
-type splitPool struct {
-	reader *sql.DB
-	writer *sql.DB // nil for a read-only database
-	path   string
-}
+// The read pool keeps no prepared statements. Measured on two apps, a
+// statement cache gave nothing on simple queries and made analytics
+// queries 2.5 times slower: SQLite plans a fresh statement with the values
+// of its arguments, and a reused one keeps its first plan.
 
-// isRead reports whether the statement only reads. Only a plain SELECT
-// counts: a WITH can hold an INSERT, and a PRAGMA can write.
-func isRead(query string) bool {
-	query = strings.TrimLeft(query, " \t\r\n(")
-	return len(query) >= 6 && strings.EqualFold(query[:6], "SELECT")
-}
+// readPools maps the pools of a manager with ReadPool to its read pool, for
+// ReadPoolOf.
+var readPools sync.Map // *sql.DB -> *sql.DB
 
-func (p *splitPool) write() (*sql.DB, error) {
-	if p.writer == nil {
-		return nil, fmt.Errorf("%w: %s", ErrReadOnly, p.path)
+// routeReads registers the callbacks that move a read operation of db from
+// writer to reader, and a later write on the same statement back.
+func routeReads(db *gorm.DB, writer *sql.DB, reader gorm.ConnPool) error {
+	toReader := func(tx *gorm.DB) {
+		// Only a statement on the write pool itself moves. One in a
+		// transaction, or on a connection of its own, stays where it is.
+		if pool, ok := tx.Statement.ConnPool.(*sql.DB); ok && pool == writer {
+			tx.Statement.ConnPool = reader
+		}
 	}
-	return p.writer, nil
-}
-
-func (p *splitPool) pool(query string) (*sql.DB, error) {
-	if isRead(query) {
-		return p.reader, nil
+	toWriter := func(tx *gorm.DB) {
+		// A statement that read before is reused for a write.
+		if tx.Statement.ConnPool == reader {
+			tx.Statement.ConnPool = writer
+		}
 	}
-	return p.write()
-}
 
-func (p *splitPool) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
-	db, err := p.pool(query)
-	if err != nil {
-		return nil, err
+	callbacks := db.Callback()
+	const name = "cartridge:read_pool"
+	for _, register := range []func() error{
+		func() error { return callbacks.Query().Before("*").Register(name, toReader) },
+		func() error { return callbacks.Row().Before("*").Register(name, toReader) },
+		func() error { return callbacks.Create().Before("*").Register(name, toWriter) },
+		func() error { return callbacks.Update().Before("*").Register(name, toWriter) },
+		func() error { return callbacks.Delete().Before("*").Register(name, toWriter) },
+		func() error { return callbacks.Raw().Before("*").Register(name, toWriter) },
+	} {
+		if err := register(); err != nil {
+			return err
+		}
 	}
-	return db.PrepareContext(ctx, query)
-}
-
-func (p *splitPool) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	db, err := p.write()
-	if err != nil {
-		return nil, err
-	}
-	return db.ExecContext(ctx, query, args...)
-}
-
-func (p *splitPool) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	db, err := p.pool(query)
-	if err != nil {
-		return nil, err
-	}
-	return db.QueryContext(ctx, query, args...)
-}
-
-func (p *splitPool) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	db, err := p.pool(query)
-	if err != nil {
-		// A *sql.Row cannot carry an error from here. The read pool
-		// refuses the write, and Scan returns that error.
-		db = p.reader
-	}
-	return db.QueryRowContext(ctx, query, args...)
-}
-
-// BeginTx starts every transaction on the write connection. GORM cannot
-// say in advance that a transaction only reads.
-func (p *splitPool) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
-	db, err := p.write()
-	if err != nil {
-		return nil, err
-	}
-	return db.BeginTx(ctx, opts)
-}
-
-// GetDBConn gives GORM's db.DB() the pool for general use: the writer, or
-// the reader of a read-only database.
-func (p *splitPool) GetDBConn() (*sql.DB, error) {
-	if p.writer != nil {
-		return p.writer, nil
-	}
-	return p.reader, nil
+	return nil
 }
 
 // ReadPoolOf returns the pool of read-only connections behind a GORM handle
@@ -119,10 +83,13 @@ func ReadPoolOf(db *gorm.DB) (*sql.DB, bool) {
 	if db == nil || db.Statement == nil {
 		return nil, false
 	}
-	// In a transaction, the statement runs on the *sql.Tx, not on the pool.
-	split, ok := db.Statement.ConnPool.(*splitPool)
+	pool, ok := db.Statement.ConnPool.(*sql.DB)
+	if !ok {
+		return nil, false // a transaction, or a connection of its own
+	}
+	reader, ok := readPools.Load(pool)
 	if !ok {
 		return nil, false
 	}
-	return split.reader, true
+	return reader.(*sql.DB), true
 }

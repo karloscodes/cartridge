@@ -429,8 +429,9 @@ app, err := cartridge.NewApp(cfg,
 
 With `NewApplication`, set `sqlite.Config{ReadPool: true}`. App code does not change:
 
-- A `SELECT` outside a transaction runs on a read connection. Reads never wait for a write.
-- Every other statement, and every transaction, runs on the one write connection, one at a time. Writes wait for each other in Go, so two of them cannot fail with `database is locked` against each other.
+- GORM's read methods (`Find`, `First`, `Take`, `Scan`, `Count`, `Pluck`, `Rows`, `Row`) run on a read connection. Reads never wait for a write.
+- `Create`, `Update`, `Delete`, `Exec`, and every transaction run on the one write connection, one at a time. Writes wait for each other in Go, so two of them cannot fail with `database is locked` against each other.
+- The method decides the pool, not the SQL text. A statement that writes through a read method, such as `Raw("UPDATE ... RETURNING id").Scan(&id)`, is refused outside a transaction.
 - `MaxOpenConns` is the number of read connections.
 - `ctx.SQL()` returns the read-only pool. A statement that writes fails on it: write through `ctx.WriteSQL`.
 - `ctx.WriteTx` has no queue of its own: the one write connection is the queue. It waits for that connection at most `WriteWait` (5 seconds), and then returns `sqlite.ErrBusy`, as before.
@@ -441,7 +442,7 @@ Three things to check before you turn it on:
 - Inside a transaction, use the transaction handle (`tx`) for every query. A write on `ctx.DB()` inside `WriteTx` waits for the connection that the transaction holds.
 - Code that takes `db.DB()` gets the write connection, and holding it stops every write. Code that needs its own connection for a read takes it from `sqlite.ReadPoolOf(db)` or `Manager.Reader()`.
 - A database in memory keeps one pool.
-- Change the schema at startup, before the app serves requests. After a schema change by another connection, the first `SELECT *` on a connection can still return the old columns.
+- Change the schema at startup, before the app serves requests, and call `Manager.SchemaChanged()` after it. A read connection that was open during the change can still return the old columns for its next `SELECT *`. `app.MigrateDatabase` makes the call for you.
 
 `ctx.DataVersion()` returns a token that changes after every commit to the database file, by this process or another one. Put it in a cache key or an `ETag` to keep a value until the data changes, with no code that invalidates it:
 
