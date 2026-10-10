@@ -169,6 +169,7 @@ Every handler and middleware has one signature: `func(*cartridge.Context) error`
 | `ctx.RedirectBack("/fallback")` | 302 to the `Referer` path on this host, or to the fallback |
 | `ctx.Render("page", data, "layouts/app")` | Renders a template as `text/html`. See [Templates](#templates) |
 | `ctx.RenderAs("text/vnd.turbo-stream.html", "page", data)` | Renders a template with another content type. A text type gets `; charset=utf-8` |
+| `ctx.GetCookie("name")` | Reads a request cookie, or `""`. The pair of `SetCookie` |
 | `ctx.SetCookie("name", "value")` | Sets a cookie with `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` in production, until the browser closes. Use `ctx.Cookie(&cartridge.Cookie{...})` for other settings |
 | `ctx.IsPrefetch()` | True when the browser asks for the page before the user opens it, as Turbo does on hover (`Sec-Purpose`, `Purpose`, or `X-Sec-Purpose` contains `prefetch`). Skip side effects that only a real visit must cause |
 | `ctx.Inertia("Page", props)` | Renders an Inertia page and injects the flash message |

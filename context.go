@@ -193,7 +193,8 @@ func (ctx *Context) Cookies(key string, defaultValue ...string) string {
 	return orDefault(value, defaultValue)
 }
 
-// Cookie sets a cookie on the response.
+// Cookie sets a cookie on the response with exactly the settings given. Use
+// SetCookie unless the cookie needs other settings, such as an expiry.
 func (ctx *Context) Cookie(c *Cookie) {
 	hc := &http.Cookie{
 		Name:     c.Name,
@@ -217,6 +218,12 @@ func (ctx *Context) Cookie(c *Cookie) {
 		hc.SameSite = http.SameSiteNoneMode
 	}
 	http.SetCookie(ctx.w, hc)
+}
+
+// GetCookie returns the value of a request cookie, or "" when the request
+// has none. It is the pair of SetCookie.
+func (ctx *Context) GetCookie(name string) string {
+	return ctx.Cookies(name)
 }
 
 // SetCookie sets a cookie with safe defaults: HttpOnly, SameSite=Lax,

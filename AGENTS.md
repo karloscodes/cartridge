@@ -23,7 +23,7 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - After a form post: `return ctx.FlashError("...").RedirectBack("/fallback")`.
 - For a form with errors, render the form again with status 422: `ctx.Status(http.StatusUnprocessableEntity).Render("notes/new", data, "layouts/app")`.
 - Render a response that is not HTML, such as a Turbo Stream, with `ctx.RenderAs("text/vnd.turbo-stream.html", "notes/more", data)`. Do not build a second views engine.
-- Set a cookie with `ctx.SetCookie(name, value)`. It is HttpOnly, SameSite=Lax, and Secure in production.
+- Set a cookie with `ctx.SetCookie(name, value)` and read it with `ctx.GetCookie(name)`. `SetCookie` is HttpOnly, SameSite=Lax, and Secure in production. Use `ctx.Cookie(&cartridge.Cookie{...})` only for a cookie that needs other settings, such as an expiry.
 - `ctx.IsPrefetch()` is true when the browser asks for the page before the user opens it. Do not let a prefetch remember anything, such as the last folder.
 
 ## Templates and static files

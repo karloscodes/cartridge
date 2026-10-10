@@ -632,6 +632,19 @@ func TestIsPrefetch(t *testing.T) {
 	})
 }
 
+func TestGetCookie(t *testing.T) {
+	app := newTestApp(t)
+	app.Get("/folder", func(c *Context) error { return c.SendString(c.GetCookie("inbox_filter") + "|" + c.GetCookie("other")) })
+	req := httptest.NewRequest("GET", "/folder", nil)
+	req.AddCookie(&http.Cookie{Name: "inbox_filter", Value: "waiting"})
+
+	resp, _ := app.Test(req)
+
+	if got := body(t, resp); got != "waiting|" {
+		t.Errorf("got %q, want the cookie value and an empty value for a missing cookie", got)
+	}
+}
+
 func TestSetCookie(t *testing.T) {
 	send := func(t *testing.T, cfg Config) *http.Cookie {
 		t.Helper()
