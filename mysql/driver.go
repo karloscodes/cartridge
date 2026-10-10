@@ -52,6 +52,12 @@ func (d *Driver) Close(db *gorm.DB, logger *slog.Logger) error {
 	return nil
 }
 
+// ConcurrentWrites returns true: MySQL takes writes from many
+// connections at once, so cartridge.Write does not queue them.
+func (d *Driver) ConcurrentWrites() bool {
+	return true
+}
+
 // SupportsCheckpoint returns false for MySQL.
 func (d *Driver) SupportsCheckpoint() bool {
 	return false

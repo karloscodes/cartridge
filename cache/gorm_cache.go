@@ -15,7 +15,7 @@ import (
 // CacheRecord defines the GORM model for storing cache entries.
 // Works with any GORM-supported database (SQLite, PostgreSQL, MySQL, etc.).
 type CacheRecord struct {
-	Key         string `gorm:"primaryKey"`
+	Key         string `gorm:"primaryKey;size:255"` // MySQL needs a length for a key column
 	Value       []byte // Store marshalled GOB data
 	LastUpdated int64  `gorm:"index"` // Unix timestamp
 	TTLSeconds  int64

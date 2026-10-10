@@ -22,7 +22,9 @@ type WriteQueue interface {
 // Writes wait for their turn in order and fail with sqlite.ErrBusy when the
 // wait is too long. Answer that with 503 and Retry-After. A WriteQueue
 // (sqlite.Manager) keeps its own turn and WriteWait. Other managers, such as
-// a test manager, get a turn here, so writes behave the same in tests.
+// a test manager, get a turn here, so writes behave the same in tests. A
+// manager of a database that takes concurrent writes (PostgreSQL, MySQL)
+// gets no turn: its writes run at the same time, each in its transaction.
 func Write(ctx context.Context, m DBManager, fn func(tx *gorm.DB) error) error {
 	if q, ok := m.(WriteQueue); ok {
 		return q.Write(ctx, fn)
@@ -30,6 +32,10 @@ func Write(ctx context.Context, m DBManager, fn func(tx *gorm.DB) error) error {
 	db := m.GetConnection()
 	if db == nil {
 		return fmt.Errorf("cartridge: database connection failed")
+	}
+	// PostgreSQL and MySQL take writes from many connections at once.
+	if c, ok := m.(interface{ ConcurrentWrites() bool }); ok && c.ConcurrentWrites() {
+		return transaction(context.WithoutCancel(ctx), db, fn)
 	}
 
 	turn := writeTurnFor(m)

@@ -100,6 +100,14 @@ func (m *Manager) CheckpointWAL(mode string) error {
 	return m.driver.Checkpoint(conn, mode)
 }
 
+// ConcurrentWrites reports whether the database takes writes from many
+// connections at once, as PostgreSQL and MySQL do. SQLite takes one writer.
+// cartridge.Write then runs writes at the same time.
+func (m *Manager) ConcurrentWrites() bool {
+	c, ok := m.driver.(interface{ ConcurrentWrites() bool })
+	return ok && c.ConcurrentWrites()
+}
+
 // Driver returns the underlying driver.
 func (m *Manager) Driver() Driver {
 	return m.driver

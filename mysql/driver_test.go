@@ -185,4 +185,67 @@ func TestMySQL(t *testing.T) {
 			t.Errorf("deleted %d, err %v", deleted, err)
 		}
 	})
+
+	t.Run("writes run at the same time", func(t *testing.T) {
+		m := newManagerFor(t)
+		db := connect(t, m)
+		if err := db.AutoMigrate(&note{}); err != nil {
+			t.Fatal(err)
+		}
+		firstStarted, secondDone := make(chan struct{}), make(chan error, 1)
+		go func() {
+			<-firstStarted
+			secondDone <- cartridge.Write(context.Background(), m, func(tx *gorm.DB) error {
+				return tx.Create(&note{Body: "second"}).Error
+			})
+		}()
+
+		// The first write stays open until the second one is done.
+		var second error
+		err := cartridge.Write(context.Background(), m, func(tx *gorm.DB) error {
+			close(firstStarted)
+			select {
+			case second = <-secondDone:
+				return nil
+			case <-time.After(3 * time.Second):
+				return errors.New("the second write waited for the first")
+			}
+		})
+
+		if err != nil || second != nil {
+			t.Errorf("first: %v, second: %v", err, second)
+		}
+	})
+
+	t.Run("the GORM cache fetches once, then reads the stored value", func(t *testing.T) {
+		m := newManagerFor(t)
+		db := connect(t, m)
+		if err := db.AutoMigrate(&cache.CacheRecord{}); err != nil {
+			t.Fatal(err)
+		}
+		fetches := 0
+		c, err := cache.NewGormCache(db, slog.New(slog.NewTextHandler(io.Discard, nil)), time.Hour, func(key string) (string, error) {
+			fetches++
+			return "value of " + key, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		first, err1 := c.Get("user:1")
+		again, err2 := c.Get("user:1")
+		removed := c.InvalidateByPrefix("user:")
+
+		if err1 != nil || err2 != nil || first != "value of user:1" || again != first || fetches != 1 {
+			t.Errorf("got %q then %q, %d fetches, errors %v %v", first, again, fetches, err1, err2)
+		}
+		if removed != 1 {
+			t.Errorf("removed %d entries, want 1", removed)
+		}
+	})
+}
+
+func newManagerFor(t *testing.T) *database.Manager {
+	t.Helper()
+	return newManager(t)
 }
