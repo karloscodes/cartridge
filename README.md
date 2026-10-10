@@ -367,6 +367,55 @@ type Migrator interface {
 
 `app.MigrateDatabase` runs the migrator, then checkpoints the SQLite WAL.
 
+### SQL without GORM
+
+An app can use `database/sql` in place of GORM, for all of its queries or for some. This path adds no dependency.
+
+```go
+//go:embed migrations/*.sql
+var migrations embed.FS
+
+sub, _ := fs.Sub(migrations, "migrations")
+err := app.MigrateDatabase(cartridge.NewSQLMigrator(sub))
+```
+
+`NewSQLMigrator` runs the `.sql` files in the order of their names (`0001_create_notes.sql`, `0002_add_pinned.sql`), each one once and in one transaction. The table `schema_migrations` records them. Never change a file that ran: add a new one. There are no down migrations. A file can hold several statements on SQLite and PostgreSQL; MySQL takes one statement per file.
+
+```go
+type Note struct {
+	ID        int64
+	Body      string
+	CreatedAt time.Time
+}
+
+func listNotes(ctx *cartridge.Context) error {
+	notes, err := query.All[Note](ctx.Context(), ctx.SQL(),
+		"SELECT id, body, created_at FROM notes WHERE user_id = ? ORDER BY id", userID)
+	if err != nil {
+		return err
+	}
+	return ctx.JSON(notes)
+}
+
+func createNote(ctx *cartridge.Context) error {
+	return ctx.WriteSQL(func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx.Context(), "INSERT INTO notes (user_id, body) VALUES (?, ?)", userID, body)
+		return err
+	})
+}
+```
+
+| Member | What it does |
+|---|---|
+| `ctx.SQL()` | The `*sql.DB` of the main database: the same pool that `ctx.DB()` uses |
+| `ctx.WriteSQL(fn)` | One write transaction with a `*sql.Tx`, through the same write queue as `WriteTx` |
+| `jobCtx.SQL()`, `jobCtx.WriteSQL(fn)` | The same in a job |
+| `query.All[T]`, `query.One[T]` | Read rows into structs, or one column into values. `One` returns `sql.ErrNoRows` without a row |
+
+A column fills the field with its name: the `db` tag, or the field name in snake case (`CreatedAt` reads `created_at`). A column without a field is an error. A column that can be `NULL` needs a pointer field or a `sql.Null` type. The placeholder is the one of the database: `?` for SQLite and MySQL, `$1` for PostgreSQL.
+
+For queries that the compiler checks, run [sqlc](https://sqlc.dev) on the same migration files: its generated code takes `ctx.SQL()` and the `*sql.Tx` of `WriteSQL`.
+
 ### Writes under load
 
 SQLite allows one writer. `WriteTx` runs a write transaction when its turn comes. Writers wait in arrival order and hold no pool connection while they wait, so reads go on:
@@ -521,6 +570,7 @@ To redirect unknown paths, call `s.SetCatchAllRedirect("/")` in your routes func
 | `flash` | Low-level flash cookie helpers behind `ctx.Flash*` |
 | `inertia` | Inertia rendering, deferred props, Vite manifest |
 | `sqlite`, `postgres`, `mysql`, `database` | Connection managers and drivers |
+| `query` | Reads `database/sql` rows into structs, without GORM |
 | `testsupport` | `NewTestApp` for the app's own App on a temporary database file, `NewTestServer` for handlers alone |
 
 ## Testing your app

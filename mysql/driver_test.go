@@ -2,12 +2,14 @@ package mysql_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
@@ -17,6 +19,7 @@ import (
 	"github.com/karloscodes/cartridge/cache"
 	"github.com/karloscodes/cartridge/database"
 	"github.com/karloscodes/cartridge/mysql"
+	"github.com/karloscodes/cartridge/query"
 )
 
 func TestConfigureDSN(t *testing.T) {
@@ -241,6 +244,35 @@ func TestMySQL(t *testing.T) {
 		}
 		if removed != 1 {
 			t.Errorf("removed %d entries, want 1", removed)
+		}
+	})
+
+	t.Run("SQL files migrate the schema, and WriteSQL and query use it without GORM", func(t *testing.T) {
+		m := newManagerFor(t)
+		db := connect(t, m)
+		ctx := context.Background()
+		files := fstest.MapFS{
+			// MySQL takes one statement per file.
+			"0001_create_items.sql": {Data: []byte("CREATE TABLE items (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255) NOT NULL)")},
+			"0002_seed_items.sql":   {Data: []byte("INSERT INTO items (name) VALUES ('seed')")},
+			"0003_add_done.sql":     {Data: []byte("ALTER TABLE items ADD COLUMN done BOOLEAN NOT NULL DEFAULT FALSE")},
+		}
+		if err := cartridge.NewSQLMigrator(files).Migrate(db); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		if err := cartridge.NewSQLMigrator(files).Migrate(db); err != nil {
+			t.Fatalf("migrate again: %v", err)
+		}
+
+		err := cartridge.WriteSQL(ctx, m, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, "INSERT INTO items (name) VALUES (?)", "written")
+			return err
+		})
+
+		sqlDB, _ := db.DB()
+		names, queryErr := query.All[string](ctx, sqlDB, "SELECT name FROM items WHERE done = FALSE ORDER BY id")
+		if err != nil || queryErr != nil || len(names) != 2 || names[0] != "seed" || names[1] != "written" {
+			t.Errorf("names = %v, write: %v, query: %v", names, err, queryErr)
 		}
 	})
 }

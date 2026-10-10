@@ -70,6 +70,14 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - `WriteTx` returns `sqlite.ErrBusy` when a write waits too long. Answer it with 503 and a `Retry-After` header, so the client slows down. Do not retry on the server.
 - Add app-specific pragmas with `sqlite.Config.Pragmas`. They run on every connection.
 
+## SQL without GORM
+
+- An app chooses one way for its schema: GORM models with `NewAutoMigrator`, or SQL files with `cartridge.NewSQLMigrator`. Do not use both for the same table. Look at what the app has before you add a table.
+- In an app with SQL files, add a new numbered file for each schema change. Never change a file that ran.
+- Read with `query.All[T](ctx.Context(), ctx.SQL(), "SELECT ... WHERE id = ?", id)` and `query.One[T]`. Write with `ctx.WriteSQL(func(tx *sql.Tx) error { ... })`. Do not open a `*sql.DB` by hand.
+- **Always pass a request value as an argument, never inside the SQL text.** Do not build SQL with `fmt.Sprintf` or `+`. For a sort order, choose the column from a fixed map.
+- Name every column in a `SELECT`. `SELECT *` breaks when a migration adds a column that the struct does not have.
+
 ## More databases
 
 - Do not close the databases in `main`. `Run` and `Shutdown` close them.
