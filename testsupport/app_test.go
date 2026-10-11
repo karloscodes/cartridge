@@ -1,6 +1,8 @@
 package testsupport
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,11 +16,16 @@ import (
 	"github.com/karloscodes/cartridge"
 	"github.com/karloscodes/cartridge/config"
 	"github.com/karloscodes/cartridge/flash"
+	"github.com/karloscodes/cartridge/query"
 )
 
 type note struct {
-	ID   uint
+	ID   int64
 	Body string
+}
+
+var notesMigrations = fstest.MapFS{
+	"0001_create_notes.sql": {Data: []byte("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL);")},
 }
 
 // newNotesApp is an app's own build function: its views, its routes, and
@@ -29,28 +36,29 @@ func newNotesApp(cfg *config.Config) (*cartridge.App, error) {
 		"notes/index.html":  {Data: []byte(`{{range .}}<p>{{.Body}}</p>{{else}}<p>No notes</p>{{end}}`)},
 		"notes/create.html": {Data: []byte(`saved`)},
 	}
-	app, err := cartridge.NewApp(cfg,
+	return cartridge.NewApp(cfg,
+		cartridge.WithMigrations(notesMigrations),
 		cartridge.WithAssets(templates, nil),
 		cartridge.WithRoutes(func(s *cartridge.Server) {
 			s.Get("/notes", func(c *cartridge.Context) error {
-				var notes []note
-				if err := c.DB().Find(&notes).Error; err != nil {
+				notes, err := query.All[note](c.Context(), c.DB(), "SELECT id, body FROM notes ORDER BY id")
+				if err != nil {
 					return err
 				}
 				return c.Render("notes/index", notes, "layouts/app")
 			})
 			s.Post("/notes", func(c *cartridge.Context) error {
-				if err := c.DB().Create(&note{Body: c.Input("body")}).Error; err != nil {
+				err := c.WriteTx(func(tx *sql.Tx) error {
+					_, err := query.Exec(c.Context(), tx, "INSERT INTO notes (body) VALUES (?)", c.Input("body"))
+					return err
+				})
+				if err != nil {
 					return err
 				}
 				return c.Render("notes/create", nil)
 			})
 		}),
 	)
-	if err != nil {
-		return nil, err
-	}
-	return app, app.MigrateDatabase(cartridge.NewAutoMigrator(&note{}))
 }
 
 func readBody(t *testing.T, resp *http.Response) string {
@@ -106,11 +114,10 @@ func TestNewTestApp(t *testing.T) {
 		ta := NewTestApp(t, "notes", newNotesApp)
 		ta.PostForm("/notes", url.Values{"body": {"Hello"}})
 
-		var count int64
-		ta.DB().Model(&note{}).Count(&count)
+		count, err := query.One[int](context.Background(), ta.DB(), "SELECT COUNT(*) FROM notes")
 
-		if count != 1 {
-			t.Errorf("%d notes, want 1", count)
+		if err != nil || count != 1 {
+			t.Errorf("%d notes (%v), want 1", count, err)
 		}
 	})
 }

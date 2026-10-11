@@ -10,7 +10,8 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - Do not add a router, a session library, a CSRF library, or a dotenv library. Cartridge has them.
 - A new app loads the newest defaults: `cartridge.WithDefaults("1.7")`. They turn on the stricter behaviour that cartridge added since 1.6. Do not remove the option, and do not lower its version.
 - End `main` with `if err := app.Run(); err != nil { log.Fatal(err) }`. `Run` returns nil after a clean shutdown, so `log.Fatal(app.Run())` exits 1.
-- Put the app's wiring in one `newApp(cfg *config.Config) (*cartridge.App, error)` that also runs the migrations. `main` and the tests call it.
+- Put the app's wiring in one `newApp(cfg *config.Config) (*cartridge.App, error)`. `main` and the tests call it.
+- Give the migrations to `NewApp` with `cartridge.WithMigrations(db.Migrations())`. They run before the server starts. Do not run them by hand.
 - [examples/notes](examples/notes) is a complete app that follows these rules: sign-in, a list, a form with validation errors, flash messages, and HTTP tests.
 
 ## Handlers
@@ -20,7 +21,7 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - Do not write an error page or log the error in the handler. The error handler does both.
 - Read a body with `ctx.Bind(&dst)`. Form fields need a `form:"name"` tag. A field without a tag is never set.
 - Read one value with `ctx.Input("key")`. It also reads route params and the query.
-- Use `ctx.DB()` for the database. It is a GORM session bound to the request.
+- Read the database with `ctx.DB()`. It is a `*sql.DB` whose connections are read-only: a statement that writes fails on it. Write with `ctx.WriteTx`. Pass `ctx.Context()` to each query.
 - After a form post: `return ctx.FlashError("...").RedirectBack("/fallback")`.
 - For a form with errors, render the form again with status 422: `ctx.Status(http.StatusUnprocessableEntity).Render("notes/new", data, "layouts/app")`.
 - Render a response that is not HTML, such as a Turbo Stream, with `ctx.RenderAs("text/vnd.turbo-stream.html", "notes/more", data)`. Do not build a second views engine.
@@ -44,10 +45,10 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 - **Authorize the record, not only the user.** Scope each query by the user from `ctx.Session.GetUserID(ctx)`. Do not trust an ID from the request.
 - **Never pass a request value to `ctx.Redirect`.** Use `ctx.RedirectLocal(ctx.Query("next"), "/")` or `ctx.RedirectBack("/")`. With `WithDefaults("1.7")`, `ctx.Redirect` returns an error for another host. Use `ctx.RedirectExternal(url)` only for a fixed URL that must leave the site, such as a payment page.
 - **Never pass a request value to `ctx.Render` as the template name.** Choose the template in code.
-- **Bind into a request struct, never into a GORM model.** `ctx.Bind` sets every exported field that a JSON body names, so a model would let the client set `IsAdmin` or `UserID`. Copy the allowed fields to the model by hand.
-- **Never pass a request value to GORM as a condition or a name.** `db.First(&user, ctx.Params("id"))` is SQL injection when the value is not a number. Convert an ID with `ctx.ParamsInt("id")`, or write `db.First(&user, "id = ?", id)`. The same holds for `Order`, `Select`, `Group`, `Table`, `Joins`, and `Pluck`: choose their text in code, for example from a fixed map of sort names.
+- **Bind into a request struct, never into a struct of `db/models.go`.** `ctx.Bind` sets every exported field that a JSON body names, so a table struct would let the client set `IsAdmin` or `UserID`. Copy the allowed fields to the query parameters by hand.
+- **A request value is an argument of a query, never a part of its text.** Convert an ID with `ctx.ParamsInt("id")`. A column or table name, such as a sort order, comes from a choice between constant queries in code.
 - **Never pass a request value to `ctx.SendFile`** or to a file path.
-- **Never build SQL with string concatenation or `fmt.Sprintf`.** Use GORM placeholders: `Where("email = ?", email)`.
+- **Never build SQL with string concatenation or `fmt.Sprintf`.** Use placeholders: `WHERE email = ?`.
 - **Hash passwords** with `crypto.GeneratePasswordHash` and check them with `crypto.VerifyPassword`.
 - **End old sessions** with `cartridge.WithSessionCheck`: return false when the user is gone or `issuedAt` is before the last password change.
 - **Rate-limit login, signup, and password reset** with `middleware.RateLimiter(middleware.WithMax(n), middleware.WithDuration(d))`. For a browser form, add `middleware.WithLimitReached(fn)` to render the page with a message instead of JSON.
@@ -61,15 +62,17 @@ Rules for an agent that builds or changes an app on `github.com/karloscodes/cart
 ## Development and tests
 
 - Development and test bind `127.0.0.1` only. Set `{APP}_HOST=0.0.0.0` to open a dev server to the network or to Docker.
-- Set up and check rows in a test with the app's own queries: `db.New(ta.SQL()).CreateUser(...)`.
+- Set up and check rows in a test with the app's own queries: `db.New(ta.DB()).CreateUser(...)`. `ta.DB()` is the write connection.
 - Test the real app with `testsupport.NewTestApp(t, "myapp", newApp)`. It runs the app's own migrations and views on a new SQLite file per test. Do not mock the database.
 - Use `ta.Client()` for a flow over several requests, such as sign-in. It keeps the cookies like a browser. The `ta.Get` and `ta.PostForm` methods send no cookies.
 - To start from a copy of a database, copy it into `cfg.DataDirectory` in the build function, before `NewApp`.
-- `testsupport.NewTestServer` tests handlers alone, on an in-memory database without views.
+- `testsupport.NewTestServer` tests handlers alone, on a new SQLite file without views. `testsupport.NewTestDB(t, migrations)` gives a database alone.
+- A database in memory (`:memory:`) does not open. Use a file in `t.TempDir()`.
 - `server.Test(req)` serves one request in memory.
-- Write in one transaction with `ctx.WriteTx(func(tx *gorm.DB) error { ... })` (in a job: `jobCtx.WriteTx`). Writes wait for their turn, one at a time. Use `tx` for every query inside, run nothing slow inside, and do not nest `WriteTx`.
+- Write in one transaction with `ctx.WriteTx(func(tx *sql.Tx) error { ... })` (in a job: `jobCtx.WriteTx`). Writes wait for their turn, one at a time. Use `tx` for every query inside, run nothing slow inside, and do not nest `WriteTx`.
+- A write is all or nothing. When the client goes away, a statement that runs with `ctx.Context()` fails, and the whole write rolls back.
 - `WriteTx` returns `sqlite.ErrBusy` when a write waits too long. Answer it with 503 and a `Retry-After` header, so the client slows down. Do not retry on the server.
-- Add app-specific pragmas with `sqlite.Config.Pragmas`. They run on every connection.
+- Add app-specific pragmas with `cartridge.WithPragmas("PRAGMA foreign_keys = ON")`. They run on every connection.
 
 ## What cartridge is
 
@@ -83,16 +86,15 @@ A new app keeps its schema and its queries in SQL files, and sqlc writes the Go 
 - **Change the schema with a new file** in `db/migrations/`, with the next number. Never change a file that ran.
 - **Write every query in `db/queries.sql`**, with a name line: `-- name: NotesOfUser :many` (`:one`, `:many`, or `:exec`). Name every column in a `SELECT`.
 - **Run `sqlc generate` after each change** to a migration or a query, and commit `db/*.go` with it. When sqlc reports an error, fix the SQL. Never edit `db/models.go`, `db/queries.sql.go`, or `db/db.go` by hand.
-- **Call the generated functions:** `db.New(ctx.SQL()).NotesOfUser(ctx.Context(), userID)` to read, and `db.New(tx)` inside `ctx.WriteSQL(func(tx *sql.Tx) error { ... })` to write.
+- **Call the generated functions:** `db.New(ctx.DB()).NotesOfUser(ctx.Context(), userID)` to read, and `db.New(tx)` inside `ctx.WriteTx(func(tx *sql.Tx) error { ... })` to write.
 - **When sqlc is not installed, stop and say so.** Do not write the generated code by hand, and do not move the query into a Go string.
 - A query that needs a choice, such as a sort order, is two named queries. Choose between them in Go.
 
-## SQL without GORM
+## SQL without sqlc
 
-- An app chooses one way for its schema: GORM models with `NewAutoMigrator`, or SQL files with `cartridge.NewSQLMigrator`. Do not use both for the same table. Look at what the app has before you add a table.
-- In an app with SQL files, add a new numbered file for each schema change. Never change a file that ran.
+- The schema is always SQL files: add a new numbered file for each schema change. Never change a file that ran. Cartridge has no ORM and no models that migrate themselves.
 - In an app with sqlc, the rules above replace this section. The `query` package is for an app without sqlc, and for a one-off query in a test.
-- Read with `query.All[T](ctx.Context(), ctx.SQL(), "SELECT ... WHERE id = ?", id)` and `query.One[T]`. Write inside `ctx.WriteSQL(func(tx *sql.Tx) error { ... })` with `query.Exec(ctx.Context(), tx, "INSERT ...", args...)`. Do not open a `*sql.DB` by hand.
+- Read with `query.All[T](ctx.Context(), ctx.DB(), "SELECT ... WHERE id = ?", id)` and `query.One[T]`. Write inside `ctx.WriteTx(func(tx *sql.Tx) error { ... })` with `query.Exec(ctx.Context(), tx, "INSERT ...", args...)`. Do not open a `*sql.DB` by hand.
 - The SQL text of `query.All`, `query.One`, and `query.Exec` must be a constant. When the compiler refuses a query, do not go around it with `tx.ExecContext` or `db.QueryContext`: pass the value as an argument, or choose between constant queries in code.
 - **Always pass a request value as an argument, never inside the SQL text.** Do not build SQL with `fmt.Sprintf` or `+`. For a sort order, choose the column from a fixed map.
 - Name every column in a `SELECT`. `SELECT *` breaks when a migration adds a column that the struct does not have.
@@ -104,10 +106,12 @@ A new app keeps its schema and its queries in SQL files, and sqlc writes the Go 
 - A cron job can run again after a failure and after a restart. Write it so that a second run does no harm.
 - Cache with `cache.Fetch(ctx.Context(), ctx.Cache(), key, ttl, fn)`. Put what the value depends on in the key, such as the user ID. Never cache one user's data under a key that another user reads.
 - Do not build a cache with a map and a mutex.
+- To keep a value until the data changes, put `ctx.DataVersion()` in the cache key. The token changes after every commit. It is good for the life of the process, so use it with a cache in memory.
 
 ## More databases
 
-- With `cartridge.WithReadPool()`, reads and writes use separate connections. Inside `ctx.WriteTx`, use `tx` for every query, also for reads: `ctx.DB()` there does not see the transaction's own writes, and a write on it waits for the transaction.
+- Reads and writes use separate connections: one write connection, and a pool of read-only ones. Inside `ctx.WriteTx`, use `tx` for every query, also for reads: `ctx.DB()` there does not see the transaction's own writes.
+- Do not hold the write connection for a read. `app.DBManager.Writer()` is for a test and for startup code, not for a handler.
 - Do not close the databases in `main`. `Run` and `Shutdown` close them.
 - Open a second SQLite file with `cartridge.WithDatabase("name", sqlite.Config{Path: ...})`. Read it with `ctx.Database("name")` and write it with `ctx.DatabaseWriteTx("name", fn)`. In a job: `jobCtx.Database("name")` (it returns an error, not a panic) and `jobCtx.DatabaseWriteTx`. Do not open a `sqlite.Manager` by hand, and do not override `DatabaseDSN` to point at another file.
 - Open a file that the app must not change with `sqlite.Config{Path: ..., ReadOnly: true}`. Writes then return `sqlite.ErrReadOnly`. Do not put `mode=ro` in the path.

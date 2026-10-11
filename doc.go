@@ -17,7 +17,7 @@
 // ## NewApp
 //
 // NewApp wires a logger, a SQLite database, sessions, embedded assets, and
-// background jobs. Use it for Go HTML templates and, with WithInertia, for
+// cron jobs. Use it for Go HTML templates and, with WithInertia, for
 // Inertia.js apps.
 //
 //	cfg, err := config.Load("myapp")
@@ -25,7 +25,8 @@
 //	    cartridge.WithAssets(templates, static),
 //	    cartridge.WithRoutes(mountRoutes),
 //	    cartridge.WithSession("/login"),
-//	    cartridge.WithJobs(5*time.Minute, cleanupJob),
+//	    cartridge.WithMigrations(migrations),
+//	    cartridge.WithCron("cleanup", "@every 5m", cleanup),
 //	)
 //
 // ## NewApplication

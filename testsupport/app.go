@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"gorm.io/gorm"
-
 	"github.com/karloscodes/cartridge"
 	"github.com/karloscodes/cartridge/config"
 )
@@ -34,11 +32,9 @@ type TestApp struct {
 // databases.
 //
 //	func newApp(cfg *config.Config) (*cartridge.App, error) {
-//	    app, err := cartridge.NewApp(cfg, cartridge.WithAssets(web.Templates(), web.Static()), ...)
-//	    if err != nil {
-//	        return nil, err
-//	    }
-//	    return app, app.MigrateDatabase(cartridge.NewAutoMigrator(&Note{}))
+//	    return cartridge.NewApp(cfg,
+//	        cartridge.WithMigrations(db.Migrations()),
+//	        cartridge.WithAssets(web.Templates(), web.Static()), ...)
 //	}
 //
 //	ta := testsupport.NewTestApp(t, "myapp", newApp)
@@ -77,21 +73,12 @@ func NewTestApp(t *testing.T, appName string, build func(cfg *config.Config) (*c
 	return &TestApp{App: app, Config: cfg, t: t}
 }
 
-// DB returns the main database, to set up or check rows.
-func (ta *TestApp) DB() *gorm.DB {
+// DB returns the write connection of the main database, to set up or check
+// rows, for example with the app's sqlc queries. A handler reads through
+// ctx.DB(), which is the pool of read-only connections.
+func (ta *TestApp) DB() *sql.DB {
 	ta.t.Helper()
-	db, err := ta.DBManager.Connect()
-	if err != nil {
-		ta.t.Fatalf("testsupport: connect the database: %v", err)
-	}
-	return db
-}
-
-// SQL returns the *sql.DB of the main database, to set up or check rows
-// without GORM, for example with the app's sqlc queries.
-func (ta *TestApp) SQL() *sql.DB {
-	ta.t.Helper()
-	db, err := ta.DB().DB()
+	db, err := ta.DBManager.Writer()
 	if err != nil {
 		ta.t.Fatalf("testsupport: connect the database: %v", err)
 	}

@@ -1,14 +1,14 @@
 package cartridge
 
 import (
+	"database/sql"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"testing"
 	"testing/fstest"
-
-	"gorm.io/gorm"
 )
 
 func TestPublicFS(t *testing.T) {
@@ -151,7 +151,15 @@ func (c *testConfig) IsTest() bool               { return true }
 func (c *testConfig) GetPort() string            { return "3000" }
 func (c *testConfig) GetPublicDirectory() string { return "" }
 
+// testLogger returns a logger that discards its output.
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// testDBManager is the database of a test that uses none.
 type testDBManager struct{}
 
-func (d *testDBManager) GetConnection() *gorm.DB    { return nil }
-func (d *testDBManager) Connect() (*gorm.DB, error) { return nil, nil }
+func (d *testDBManager) Reader() (*sql.DB, error) { return nil, errNoTestDatabase }
+func (d *testDBManager) Writer() (*sql.DB, error) { return nil, errNoTestDatabase }
+
+var errNoTestDatabase = errors.New("this test has no database")

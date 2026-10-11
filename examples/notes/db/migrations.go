@@ -13,7 +13,7 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// Migrations are the .sql files that cartridge.NewSQLMigrator runs.
+// Migrations are the .sql files that cartridge.WithMigrations runs.
 func Migrations() fs.FS {
 	sub, err := fs.Sub(migrations, "migrations")
 	if err != nil {

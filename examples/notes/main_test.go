@@ -28,7 +28,7 @@ func newTestApp(t *testing.T) *testsupport.TestApp {
 	t.Helper()
 	ta := testsupport.NewTestApp(t, "notes", newApp)
 	for _, email := range []string{"ada@example.com", "grace@example.com"} {
-		err := db.New(ta.SQL()).CreateUser(context.Background(), db.CreateUserParams{Email: email, PasswordHash: string(passwordHash)})
+		err := db.New(ta.DB()).CreateUser(context.Background(), db.CreateUserParams{Email: email, PasswordHash: string(passwordHash)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -130,7 +130,7 @@ func TestNotes(t *testing.T) {
 
 		resp := browser.PostForm("/notes", url.Values{"body": {"   "}})
 
-		count, _ := db.New(ta.SQL()).CountNotes(context.Background())
+		count, _ := db.New(ta.DB()).CountNotes(context.Background())
 		if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(read(t, resp), "Write something first.") {
 			t.Errorf("POST /notes = %d without the problem", resp.StatusCode)
 		}

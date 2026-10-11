@@ -143,7 +143,7 @@ func TestNewApp(t *testing.T) {
 		cfg := &portAppConfig{appTestConfig: newAppTestConfig(t), port: freePort(t)}
 		app, err := NewApp(cfg,
 			WithWorker(worker),
-			WithJobs(time.Hour),
+			WithCron("hourly", "@every 1h", func(*JobContext) error { return nil }),
 		)
 		if err != nil {
 			t.Fatal(err)

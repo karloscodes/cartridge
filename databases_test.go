@@ -8,37 +8,43 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"gorm.io/gorm"
-
+	"github.com/karloscodes/cartridge/query"
 	"github.com/karloscodes/cartridge/sqlite"
 )
-
-type sharedUser struct {
-	ID   uint
-	Name string
-}
 
 // seedShared writes a database file with one user and closes it.
 func seedShared(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "shared.db")
-	m := sqlite.NewManager(sqlite.Config{Path: path})
-	db, err := m.Connect()
+	m := sqlite.NewManager(sqlite.Config{Path: path, Logger: testLogger()})
+	writer, err := m.Writer()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&sharedUser{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&sharedUser{Name: "Ada"}).Error; err != nil {
+	if _, err := writer.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL); INSERT INTO users (name) VALUES ('Ada');"); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// countSharedUsers opens the file again and counts its users.
+func countSharedUsers(t *testing.T, path string) int {
+	t.Helper()
+	m := sqlite.NewManager(sqlite.Config{Path: path, ReadOnly: true, Logger: testLogger()})
+	defer func() { _ = m.Close() }()
+	reader, err := m.Reader()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := query.One[int](context.Background(), reader, "SELECT COUNT(*) FROM users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func newDatabaseApp(t *testing.T, shared sqlite.Config, routes func(s *Server)) *App {
@@ -58,11 +64,11 @@ func TestNamedDatabases(t *testing.T) {
 	t.Run("a handler reads a named database", func(t *testing.T) {
 		app := newDatabaseApp(t, sqlite.Config{Path: seedShared(t)}, func(s *Server) {
 			s.Get("/user", func(c *Context) error {
-				var user sharedUser
-				if err := c.Database("shared").First(&user).Error; err != nil {
+				name, err := query.One[string](c.Context(), c.Database("shared"), "SELECT name FROM users")
+				if err != nil {
 					return err
 				}
-				return c.SendString(user.Name)
+				return c.SendString(name)
 			})
 		})
 
@@ -76,7 +82,7 @@ func TestNamedDatabases(t *testing.T) {
 	t.Run("DB stays the main database", func(t *testing.T) {
 		app := newDatabaseApp(t, sqlite.Config{Path: seedShared(t)}, func(s *Server) {
 			s.Get("/tables", func(c *Context) error {
-				if c.DB().Migrator().HasTable(&sharedUser{}) {
+				if _, err := query.One[int](c.Context(), c.DB(), "SELECT COUNT(*) FROM users"); err == nil {
 					return c.SendString("main has the shared table")
 				}
 				return c.SendString("separate")
@@ -91,10 +97,12 @@ func TestNamedDatabases(t *testing.T) {
 	})
 
 	t.Run("DatabaseWriteTx writes the named database", func(t *testing.T) {
-		app := newDatabaseApp(t, sqlite.Config{Path: seedShared(t)}, func(s *Server) {
+		path := seedShared(t)
+		app := newDatabaseApp(t, sqlite.Config{Path: path}, func(s *Server) {
 			s.Post("/users", func(c *Context) error {
-				return c.DatabaseWriteTx("shared", func(tx *gorm.DB) error {
-					return tx.Create(&sharedUser{Name: "Grace"}).Error
+				return c.DatabaseWriteTx("shared", func(tx *sql.Tx) error {
+					_, err := query.Exec(c.Context(), tx, "INSERT INTO users (name) VALUES (?)", "Grace")
+					return err
 				})
 			})
 		})
@@ -103,9 +111,7 @@ func TestNamedDatabases(t *testing.T) {
 
 		resp, _ := app.Server.Test(req)
 
-		var count int64
-		app.Databases["shared"].GetConnection().Model(&sharedUser{}).Count(&count)
-		if resp.StatusCode != http.StatusOK || count != 2 {
+		if count := countSharedUsers(t, path); resp.StatusCode != http.StatusOK || count != 2 {
 			t.Errorf("status %d, %d users; want 200 and 2", resp.StatusCode, count)
 		}
 	})
@@ -114,8 +120,9 @@ func TestNamedDatabases(t *testing.T) {
 		var writeErr error
 		app := newDatabaseApp(t, sqlite.Config{Path: seedShared(t), ReadOnly: true}, func(s *Server) {
 			s.Get("/try-write", func(c *Context) error {
-				writeErr = c.DatabaseWriteTx("shared", func(tx *gorm.DB) error {
-					return tx.Create(&sharedUser{Name: "Grace"}).Error
+				writeErr = c.DatabaseWriteTx("shared", func(tx *sql.Tx) error {
+					_, err := query.Exec(c.Context(), tx, "INSERT INTO users (name) VALUES (?)", "Grace")
+					return err
 				})
 				return c.SendString("done")
 			})
@@ -131,9 +138,9 @@ func TestNamedDatabases(t *testing.T) {
 	t.Run("an unknown name is a 500 for Database and an error for DatabaseWriteTx", func(t *testing.T) {
 		var writeErr error
 		app := newDatabaseApp(t, sqlite.Config{Path: seedShared(t)}, func(s *Server) {
-			s.Get("/read", func(c *Context) error { return c.Database("other").Error })
+			s.Get("/read", func(c *Context) error { return c.Database("other").Ping() })
 			s.Get("/write", func(c *Context) error {
-				writeErr = c.DatabaseWriteTx("other", func(tx *gorm.DB) error { return nil })
+				writeErr = c.DatabaseWriteTx("other", func(tx *sql.Tx) error { return nil })
 				return nil
 			})
 		})
@@ -165,15 +172,11 @@ func TestShutdownClosesDatabases(t *testing.T) {
 		t.Fatal(err)
 	}
 	open := func(m *sqlite.Manager) *sql.DB {
-		db, err := m.Connect()
+		db, err := m.Reader()
 		if err != nil {
 			t.Fatal(err)
 		}
-		sqlDB, err := db.DB()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sqlDB
+		return db
 	}
 	main, shared := open(app.DBManager), open(app.Databases["shared"])
 
@@ -187,23 +190,19 @@ func TestShutdownClosesDatabases(t *testing.T) {
 	}
 }
 
-type processorFunc func(ctx *JobContext) error
-
-func (f processorFunc) ProcessBatch(ctx *JobContext) error { return f(ctx) }
-
 func TestJobNamedDatabases(t *testing.T) {
 	// runJob runs fn once in a job of an app with the database "shared".
 	runJob := func(t *testing.T, shared sqlite.Config, fn func(ctx *JobContext) error) error {
 		t.Helper()
 		result := make(chan error, 1)
-		job := processorFunc(func(ctx *JobContext) error {
+		job := func(ctx *JobContext) error {
 			select {
 			case result <- fn(ctx):
 			default:
 			}
 			return nil
-		})
-		app, err := NewApp(newAppTestConfig(t), WithDatabase("shared", shared), WithJobs(time.Hour, job))
+		}
+		app, err := NewApp(newAppTestConfig(t), WithDatabase("shared", shared), WithCron("job", "@every 20ms", job))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -215,18 +214,19 @@ func TestJobNamedDatabases(t *testing.T) {
 	}
 
 	t.Run("a job reads a named database", func(t *testing.T) {
-		var user sharedUser
+		var name string
 
 		err := runJob(t, sqlite.Config{Path: seedShared(t)}, func(ctx *JobContext) error {
 			db, err := ctx.Database("shared")
 			if err != nil {
 				return err
 			}
-			return db.First(&user).Error
+			name, err = query.One[string](ctx, db, "SELECT name FROM users")
+			return err
 		})
 
-		if err != nil || user.Name != "Ada" {
-			t.Errorf("got %q, %v, want Ada", user.Name, err)
+		if err != nil || name != "Ada" {
+			t.Errorf("got %q, %v, want Ada", name, err)
 		}
 	})
 
@@ -234,21 +234,14 @@ func TestJobNamedDatabases(t *testing.T) {
 		path := seedShared(t)
 
 		err := runJob(t, sqlite.Config{Path: path}, func(ctx *JobContext) error {
-			return ctx.DatabaseWriteTx("shared", func(tx *gorm.DB) error {
-				return tx.Create(&sharedUser{Name: "Grace"}).Error
+			return ctx.DatabaseWriteTx("shared", func(tx *sql.Tx) error {
+				_, err := query.Exec(ctx, tx, "INSERT INTO users (name) VALUES (?)", "Grace")
+				return err
 			})
 		})
 
-		if err != nil {
-			t.Fatalf("write: %v", err)
-		}
-		m := sqlite.NewManager(sqlite.Config{Path: path})
-		t.Cleanup(func() { _ = m.Close() })
-		db, _ := m.Connect()
-		var count int64
-		db.Model(&sharedUser{}).Count(&count)
-		if count != 2 {
-			t.Errorf("users = %d, want 2", count)
+		if count := countSharedUsers(t, path); err != nil || count != 2 {
+			t.Errorf("write: %v, users = %d, want 2", err, count)
 		}
 	})
 

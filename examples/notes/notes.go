@@ -40,7 +40,7 @@ func createUser(m cartridge.DBManager, email, password string) error {
 	if err != nil {
 		return err
 	}
-	return cartridge.WriteSQL(context.Background(), m, func(tx *sql.Tx) error {
+	return cartridge.Write(context.Background(), m, func(tx *sql.Tx) error {
 		return db.New(tx).CreateUser(context.Background(), db.CreateUserParams{Email: email, PasswordHash: string(hash)})
 	})
 }
@@ -57,7 +57,7 @@ func showLogin(c *cartridge.Context) error {
 
 func login(c *cartridge.Context) error {
 	email := strings.ToLower(strings.TrimSpace(c.Input("email")))
-	user, err := db.New(c.SQL()).UserByEmail(c.Context(), email)
+	user, err := db.New(c.DB()).UserByEmail(c.Context(), email)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -79,7 +79,7 @@ func logout(c *cartridge.Context) error {
 func listNotes(c *cartridge.Context) error {
 	userID, _ := c.Session.GetUserID(c)
 	// Every query on notes takes the signed-in user.
-	notes, err := db.New(c.SQL()).NotesOfUser(c.Context(), int64(userID))
+	notes, err := db.New(c.DB()).NotesOfUser(c.Context(), int64(userID))
 	if err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func createNote(c *cartridge.Context) error {
 			cartridge.Map{"Body": body, "Problems": problems}, "layouts/app")
 	}
 
-	err := c.WriteSQL(func(tx *sql.Tx) error {
+	err := c.WriteTx(func(tx *sql.Tx) error {
 		return db.New(tx).CreateNote(c.Context(), db.CreateNoteParams{UserID: int64(userID), Body: body})
 	})
 	if errors.Is(err, sqlite.ErrBusy) {

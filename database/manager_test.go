@@ -3,98 +3,100 @@ package database
 import (
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// mockDriver implements Driver for testing without import cycles.
-type mockDriver struct{}
+// fileDriver opens a SQLite file through database/sql, so the test needs
+// no database server. The PostgreSQL and MySQL drivers have their own tests.
+type fileDriver struct{}
 
-func (d *mockDriver) Name() string { return "mock-sqlite" }
-func (d *mockDriver) Open(dsn string) gorm.Dialector {
-	return sqlite.Open(dsn)
+func (fileDriver) Name() string                                { return "test" }
+func (fileDriver) SQLDriver() string                           { return "sqlite3" }
+func (fileDriver) ConfigureDSN(dsn string, cfg *Config) string { return dsn }
+
+func TestManager(t *testing.T) {
+	newManager := func(t *testing.T) *Manager {
+		t.Helper()
+		m := NewManager(fileDriver{}, DefaultConfig(filepath.Join(t.TempDir(), "test.db")), testLogger())
+		t.Cleanup(func() { _ = m.Close() })
+		return m
+	}
+
+	t.Run("Reader and Writer return the same pool", func(t *testing.T) {
+		m := newManager(t)
+
+		reader, readerErr := m.Reader()
+		writer, writerErr := m.Writer()
+
+		if readerErr != nil || writerErr != nil || reader == nil || reader != writer {
+			t.Errorf("reader %p (%v), writer %p (%v), want one pool", reader, readerErr, writer, writerErr)
+		}
+	})
+
+	t.Run("the pool runs a query", func(t *testing.T) {
+		m := newManager(t)
+		reader, err := m.Reader()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var got int
+		err = reader.QueryRow("SELECT 1").Scan(&got)
+
+		if err != nil || got != 1 {
+			t.Errorf("got %d (%v), want 1", got, err)
+		}
+	})
+
+	t.Run("a wrong DSN fails at the first use, not at the first query", func(t *testing.T) {
+		m := NewManager(fileDriver{}, DefaultConfig(filepath.Join(t.TempDir(), "no-such-dir", "test.db")), testLogger())
+
+		_, err := m.Reader()
+
+		if err == nil {
+			t.Error("Reader returned nil, want an error")
+		}
+	})
+
+	t.Run("after Close, the next use opens the pool again", func(t *testing.T) {
+		m := newManager(t)
+		first, _ := m.Reader()
+		if err := m.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		second, err := m.Reader()
+
+		if err != nil || second == nil || second == first {
+			t.Errorf("got %p after %p (%v), want a new pool", second, first, err)
+		}
+	})
+
+	t.Run("Driver returns the driver of the manager", func(t *testing.T) {
+		m := NewManager(fileDriver{}, nil, nil)
+
+		got := m.Driver().Name()
+
+		if got != "test" {
+			t.Errorf("got %q, want test", got)
+		}
+	})
 }
-func (d *mockDriver) ConfigureDSN(dsn string, cfg *Config) string {
-	return dsn
-}
-func (d *mockDriver) AfterConnect(db *gorm.DB, cfg *Config, logger *slog.Logger) error {
-	return nil
-}
-func (d *mockDriver) Close(db *gorm.DB, logger *slog.Logger) error {
-	return nil
-}
-func (d *mockDriver) SupportsCheckpoint() bool { return false }
-func (d *mockDriver) Checkpoint(db *gorm.DB, mode string) error {
-	return nil
-}
 
-func TestManager_Connect(t *testing.T) {
-	driver := &mockDriver{}
-	cfg := &Config{
-		DSN:          ":memory:",
-		MaxOpenConns: 1,
-		MaxIdleConns: 1,
-	}
+func TestDefaultConfig(t *testing.T) {
+	cfg := DefaultConfig("postgres://localhost/app")
 
-	manager := NewManager(driver, cfg, testLogger())
-
-	// Test Connect
-	db, err := manager.Connect()
-	if err != nil {
-		t.Fatalf("Connect failed: %v", err)
+	if cfg.DSN != "postgres://localhost/app" || cfg.MaxOpenConns != 10 || cfg.MaxIdleConns != 5 {
+		t.Errorf("got %+v", cfg)
 	}
-	if db == nil {
-		t.Fatal("expected non-nil db")
-	}
-
-	// Test GetConnection
-	db2 := manager.GetConnection()
-	if db2 == nil {
-		t.Fatal("expected non-nil db from GetConnection")
-	}
-
-	// Test query
-	var result int
-	if err := db.Raw("SELECT 1").Scan(&result).Error; err != nil {
-		t.Fatalf("query failed: %v", err)
-	}
-	if result != 1 {
-		t.Errorf("expected 1, got %d", result)
-	}
-
-	// Test Close
-	if err := manager.Close(); err != nil {
-		t.Fatalf("Close failed: %v", err)
-	}
-}
-
-func TestManager_Driver(t *testing.T) {
-	driver := &mockDriver{}
-	manager := NewManager(driver, nil, nil)
-
-	if manager.Driver() != driver {
-		t.Error("expected same driver instance")
-	}
-	if manager.Driver().Name() != "mock-sqlite" {
-		t.Errorf("expected mock-sqlite, got %s", manager.Driver().Name())
-	}
-}
-
-func TestManager_DefaultConfig(t *testing.T) {
-	cfg := DefaultConfig("/tmp/test.db")
-	if cfg.DSN != "/tmp/test.db" {
-		t.Errorf("expected /tmp/test.db, got %s", cfg.DSN)
-	}
-	if cfg.MaxOpenConns != 1 {
-		t.Errorf("expected 1, got %d", cfg.MaxOpenConns)
-	}
-	if !cfg.SQLite.EnableWAL {
-		t.Error("expected EnableWAL to be true by default")
+	if cfg.Postgres.SSLMode != "prefer" || cfg.Postgres.Timezone != "UTC" {
+		t.Errorf("got %+v", cfg.Postgres)
 	}
 }

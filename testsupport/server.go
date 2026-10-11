@@ -2,6 +2,7 @@ package testsupport
 
 import (
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,12 +11,14 @@ import (
 	"testing"
 
 	"github.com/karloscodes/cartridge"
+	"github.com/karloscodes/cartridge/sqlite"
 )
 
 // TestServerOptions configures test server creation.
 type TestServerOptions struct {
-	// Models to auto-migrate in the test database
-	Models []any
+	// Migrations are the .sql files to run on the test database, as
+	// cartridge.WithMigrations does. Nil gives an empty database.
+	Migrations fs.FS
 
 	// Route mounting function
 	RouteMountFunc func(*cartridge.Server)
@@ -31,13 +34,12 @@ type TestServerOptions struct {
 type TestServer struct {
 	t         *testing.T
 	Server    *cartridge.Server
-	DB        *TestDBManager
 	Logger    *slog.Logger
 	Config    *TestConfig
-	DBManager *TestDBManager
+	DBManager *sqlite.Manager
 }
 
-// NewTestServer creates a test server with in-memory database.
+// NewTestServer creates a test server on a new SQLite file, without views.
 func NewTestServer(t *testing.T, opts ...TestServerOptions) *TestServer {
 	t.Helper()
 
@@ -46,9 +48,7 @@ func NewTestServer(t *testing.T, opts ...TestServerOptions) *TestServer {
 		options = opts[0]
 	}
 
-	// Create test database
-	db := SetupTestDB(t, TestDBOptions{Models: options.Models})
-	dbManager := NewTestDBManager(db)
+	dbManager := NewTestDB(t, options.Migrations)
 
 	// Create test logger and config
 	logger := NewTestLogger()
@@ -85,7 +85,6 @@ func NewTestServer(t *testing.T, opts ...TestServerOptions) *TestServer {
 	ts := &TestServer{
 		t:         t,
 		Server:    server,
-		DB:        dbManager,
 		Logger:    logger,
 		Config:    config,
 		DBManager: dbManager,

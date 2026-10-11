@@ -1,89 +1,38 @@
 package testsupport
 
 import (
+	"io/fs"
+	"path/filepath"
 	"testing"
 
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	"github.com/karloscodes/cartridge"
+	"github.com/karloscodes/cartridge/sqlite"
 )
 
-// TestDBOptions configures test database creation.
-type TestDBOptions struct {
-	// Models to auto-migrate
-	Models []any
-
-	// Enable SQL logging (default: silent)
-	Verbose bool
-}
-
-// SetupTestDB creates an in-memory SQLite database for testing.
-// It applies WAL mode pragmas and optionally migrates provided models.
-func SetupTestDB(t *testing.T, opts ...TestDBOptions) *gorm.DB {
+// NewTestDB opens a new SQLite file in t.TempDir() and runs the .sql files
+// of migrations on it, as cartridge.WithMigrations does. Pass nil for an
+// empty database. The test cleanup closes it.
+//
+//	m := testsupport.NewTestDB(t, db.Migrations())
+//	writer, _ := m.Writer()
+func NewTestDB(t *testing.T, migrations fs.FS) *sqlite.Manager {
 	t.Helper()
 
-	var options TestDBOptions
-	if len(opts) > 0 {
-		options = opts[0]
-	}
-
-	logMode := logger.Silent
-	if options.Verbose {
-		logMode = logger.Info
-	}
-
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-		Logger: logger.Default.LogMode(logMode),
+	m := sqlite.NewManager(sqlite.Config{
+		Path:   filepath.Join(t.TempDir(), "test.db"),
+		Logger: NewTestLogger(),
 	})
+	t.Cleanup(func() { _ = m.Close() })
+
+	writer, err := m.Writer()
 	if err != nil {
-		t.Fatalf("testsupport: failed to open test database: %v", err)
+		t.Fatalf("testsupport: open the test database: %v", err)
 	}
-
-	// Apply SQLite pragmas for test consistency
-	pragmas := []string{
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA journal_mode = WAL",
-	}
-	for _, pragma := range pragmas {
-		if err := db.Exec(pragma).Error; err != nil {
-			t.Fatalf("testsupport: failed to apply pragma %s: %v", pragma, err)
+	if migrations != nil {
+		if err := cartridge.Migrate(writer, migrations); err != nil {
+			t.Fatalf("testsupport: migrate the test database: %v", err)
 		}
+		m.SchemaChanged()
 	}
-
-	// Auto-migrate models if provided
-	if len(options.Models) > 0 {
-		if err := db.AutoMigrate(options.Models...); err != nil {
-			t.Fatalf("testsupport: failed to migrate models: %v", err)
-		}
-	}
-
-	// Register cleanup
-	t.Cleanup(func() {
-		sqlDB, err := db.DB()
-		if err == nil {
-			_ = sqlDB.Close()
-		}
-	})
-
-	return db
-}
-
-// TestDBManager implements cartridge.DBManager for testing.
-type TestDBManager struct {
-	db *gorm.DB
-}
-
-// NewTestDBManager creates a DBManager that wraps a test database.
-func NewTestDBManager(db *gorm.DB) *TestDBManager {
-	return &TestDBManager{db: db}
-}
-
-// GetConnection returns the test database connection.
-func (m *TestDBManager) GetConnection() *gorm.DB {
-	return m.db
-}
-
-// Connect returns the test database connection.
-func (m *TestDBManager) Connect() (*gorm.DB, error) {
-	return m.db, nil
+	return m
 }

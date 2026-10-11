@@ -1,9 +1,8 @@
 package cartridge
 
 import (
+	"database/sql"
 	"log/slog"
-
-	"gorm.io/gorm"
 )
 
 // Logger is an alias for *slog.Logger.
@@ -29,14 +28,22 @@ type Config interface {
 	GetPublicDirectory() string
 }
 
-// DBManager abstracts database connection management.
-// Applications implement this interface to provide database access.
+// DBManager owns the connections of one database. It gives two handles,
+// one for reads and one for writes, so an app reads and writes the same way
+// on every database:
+//
+//   - SQLite (sqlite.Manager): the reader is a pool of read-only
+//     connections, and the writer is the one write connection. SQLite
+//     allows one writer, and a write on a read connection is an error.
+//   - PostgreSQL and MySQL (database.Manager): both handles are the same
+//     pool, because these databases take many writers at once.
+//
+// Both methods open the database on the first call.
 type DBManager interface {
-	// GetConnection returns a GORM database connection.
-	// Returns nil if the connection is unavailable.
-	GetConnection() *gorm.DB
+	// Reader returns the pool for queries that only read.
+	Reader() (*sql.DB, error)
 
-	// Connect opens a database connection and returns it.
-	// Returns an error if the connection cannot be established.
-	Connect() (*gorm.DB, error)
+	// Writer returns the pool for statements that write. For a
+	// transaction, use Write or Context.WriteTx.
+	Writer() (*sql.DB, error)
 }

@@ -13,8 +13,6 @@ import (
 	"testing/fstest"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/karloscodes/cartridge"
 	"github.com/karloscodes/cartridge/cache"
 	"github.com/karloscodes/cartridge/database"
@@ -79,9 +77,11 @@ func TestConfigureDSN(t *testing.T) {
 }
 
 type note struct {
-	ID   uint
+	ID   int64
 	Body string
 }
+
+const createNotes = "CREATE TABLE notes (id SERIAL PRIMARY KEY, body TEXT NOT NULL)"
 
 // newManager connects to the database in CARTRIDGE_POSTGRES_DSN, in a new
 // schema that the test owns. Without the env var, the test is skipped.
@@ -95,15 +95,15 @@ func newManager(t *testing.T, maxOpenConns int) (*database.Manager, string) {
 	schema := fmt.Sprintf("t_%d", time.Now().UnixNano())
 
 	admin := database.NewManager(postgres.NewDriver(), database.DefaultConfig(dsn), logger)
-	adminDB, err := admin.Connect()
+	adminDB, err := admin.Writer()
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if err := adminDB.Exec("CREATE SCHEMA " + schema).Error; err != nil {
+	if _, err := adminDB.Exec("CREATE SCHEMA " + schema); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = adminDB.Exec("DROP SCHEMA " + schema + " CASCADE").Error
+		_, _ = adminDB.Exec("DROP SCHEMA " + schema + " CASCADE")
 		_ = admin.Close()
 	})
 
@@ -116,41 +116,53 @@ func newManager(t *testing.T, maxOpenConns int) (*database.Manager, string) {
 	return m, schema
 }
 
-func connect(t *testing.T, m *database.Manager) *gorm.DB {
+func newManagerFor(t *testing.T) *database.Manager {
 	t.Helper()
-	db, err := m.Connect()
+	m, _ := newManager(t, 2)
+	return m
+}
+
+// pool returns the connection pool of m. PostgreSQL and MySQL have one pool
+// for reads and writes.
+func pool(t *testing.T, m *database.Manager) *sql.DB {
+	t.Helper()
+	db, err := m.Writer()
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	return db
 }
 
+// notesTable returns the pool of m, with an empty notes table.
+func notesTable(t *testing.T, m *database.Manager) *sql.DB {
+	t.Helper()
+	db := pool(t, m)
+	if _, err := db.Exec(createNotes); err != nil {
+		t.Fatalf("create notes: %v", err)
+	}
+	return db
+}
+
 func TestPostgres(t *testing.T) {
 	t.Run("stores and reads a row", func(t *testing.T) {
-		m, _ := newManager(t, 2)
-		db := connect(t, m)
-		if err := db.AutoMigrate(&note{}); err != nil {
-			t.Fatal(err)
-		}
+		db := notesTable(t, newManagerFor(t))
+		ctx := context.Background()
 
-		err := db.Create(&note{Body: "Hello"}).Error
+		_, err := db.ExecContext(ctx, "INSERT INTO notes (body) VALUES ($1)", "Hello")
 
-		var got note
-		if err != nil || db.First(&got).Error != nil || got.Body != "Hello" {
-			t.Errorf("got %+v, %v", got, err)
+		got, readErr := query.One[note](ctx, db, "SELECT id, body FROM notes")
+		if err != nil || readErr != nil || got.Body != "Hello" {
+			t.Errorf("got %+v, write: %v, read: %v", got, err, readErr)
 		}
 	})
 
 	t.Run("every pooled connection uses the search path", func(t *testing.T) {
 		m, schema := newManager(t, 4)
-		sqlDB, err := connect(t, m).DB()
-		if err != nil {
-			t.Fatal(err)
-		}
+		db := pool(t, m)
 		// Hold four connections at once, so each one is another connection.
 		var conns []*sql.Conn
 		for range 4 {
-			conn, err := sqlDB.Conn(context.Background())
+			conn, err := db.Conn(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -170,52 +182,43 @@ func TestPostgres(t *testing.T) {
 	})
 
 	t.Run("Write commits its transaction", func(t *testing.T) {
-		m, _ := newManager(t, 2)
-		db := connect(t, m)
-		if err := db.AutoMigrate(&note{}); err != nil {
-			t.Fatal(err)
-		}
+		m := newManagerFor(t)
+		db := notesTable(t, m)
+		ctx := context.Background()
 
-		err := cartridge.Write(context.Background(), m, func(tx *gorm.DB) error {
-			return tx.Create(&note{Body: "kept"}).Error
+		err := cartridge.Write(ctx, m, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, "INSERT INTO notes (body) VALUES ($1)", "kept")
+			return err
 		})
 
-		var count int64
-		db.Model(&note{}).Count(&count)
-		if err != nil || count != 1 {
-			t.Errorf("count = %d, err = %v, want 1 row", count, err)
+		count, countErr := query.One[int](ctx, db, "SELECT COUNT(*) FROM notes")
+		if err != nil || countErr != nil || count != 1 {
+			t.Errorf("count = %d (%v), err = %v, want 1 row", count, countErr, err)
 		}
 	})
 
 	t.Run("Write rolls back when fn fails", func(t *testing.T) {
-		m, _ := newManager(t, 2)
-		db := connect(t, m)
-		if err := db.AutoMigrate(&note{}); err != nil {
-			t.Fatal(err)
-		}
+		m := newManagerFor(t)
+		db := notesTable(t, m)
+		ctx := context.Background()
 		failed := errors.New("stop")
 
-		err := cartridge.Write(context.Background(), m, func(tx *gorm.DB) error {
-			if err := tx.Create(&note{Body: "lost"}).Error; err != nil {
+		err := cartridge.Write(ctx, m, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO notes (body) VALUES ($1)", "lost"); err != nil {
 				return err
 			}
 			return failed
 		})
 
-		var count int64
-		db.Model(&note{}).Count(&count)
-		if !errors.Is(err, failed) || count != 0 {
-			t.Errorf("count = %d, err = %v, want no row and the error", count, err)
+		count, countErr := query.One[int](ctx, db, "SELECT COUNT(*) FROM notes")
+		if !errors.Is(err, failed) || countErr != nil || count != 0 {
+			t.Errorf("count = %d (%v), err = %v, want no row and the error", count, countErr, err)
 		}
 	})
 
 	t.Run("the database cache store keeps, expires, and deletes entries", func(t *testing.T) {
-		m, _ := newManager(t, 2)
-		sqlDB, err := connect(t, m).DB()
-		if err != nil {
-			t.Fatal(err)
-		}
-		store, err := cache.NewDatabaseStore(sqlDB)
+		db := pool(t, newManagerFor(t))
+		store, err := cache.NewDatabaseStore(db, db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -247,21 +250,20 @@ func TestPostgres(t *testing.T) {
 
 	t.Run("writes run at the same time", func(t *testing.T) {
 		m := newManagerFor(t)
-		db := connect(t, m)
-		if err := db.AutoMigrate(&note{}); err != nil {
-			t.Fatal(err)
-		}
+		notesTable(t, m)
+		ctx := context.Background()
 		firstStarted, secondDone := make(chan struct{}), make(chan error, 1)
 		go func() {
 			<-firstStarted
-			secondDone <- cartridge.Write(context.Background(), m, func(tx *gorm.DB) error {
-				return tx.Create(&note{Body: "second"}).Error
+			secondDone <- cartridge.Write(ctx, m, func(tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, "INSERT INTO notes (body) VALUES ($1)", "second")
+				return err
 			})
 		}()
 
 		// The first write stays open until the second one is done.
 		var second error
-		err := cartridge.Write(context.Background(), m, func(tx *gorm.DB) error {
+		err := cartridge.Write(ctx, m, func(tx *sql.Tx) error {
 			close(firstStarted)
 			select {
 			case second = <-secondDone:
@@ -276,28 +278,27 @@ func TestPostgres(t *testing.T) {
 		}
 	})
 
-	t.Run("SQL files migrate the schema, and WriteSQL and query use it without GORM", func(t *testing.T) {
+	t.Run("SQL files migrate the schema, and Write and query use it", func(t *testing.T) {
 		m := newManagerFor(t)
-		db := connect(t, m)
+		db := pool(t, m)
 		ctx := context.Background()
 		files := fstest.MapFS{
 			"0001_create_items.sql": {Data: []byte("CREATE TABLE items (id SERIAL PRIMARY KEY, name TEXT NOT NULL); INSERT INTO items (name) VALUES ('seed');")},
 			"0002_add_done.sql":     {Data: []byte("ALTER TABLE items ADD COLUMN done BOOLEAN NOT NULL DEFAULT FALSE;")},
 		}
-		if err := cartridge.NewSQLMigrator(files).Migrate(db); err != nil {
+		if err := cartridge.Migrate(db, files); err != nil {
 			t.Fatalf("migrate: %v", err)
 		}
-		if err := cartridge.NewSQLMigrator(files).Migrate(db); err != nil {
+		if err := cartridge.Migrate(db, files); err != nil {
 			t.Fatalf("migrate again: %v", err)
 		}
 
-		err := cartridge.WriteSQL(ctx, m, func(tx *sql.Tx) error {
+		err := cartridge.Write(ctx, m, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, "INSERT INTO items (name) VALUES ($1)", "written")
 			return err
 		})
 
-		sqlDB, _ := db.DB()
-		names, queryErr := query.All[string](ctx, sqlDB, "SELECT name FROM items WHERE done = FALSE ORDER BY id")
+		names, queryErr := query.All[string](ctx, db, "SELECT name FROM items WHERE done = FALSE ORDER BY id")
 		if err != nil || queryErr != nil || len(names) != 2 || names[0] != "seed" || names[1] != "written" {
 			t.Errorf("names = %v, write: %v, query: %v", names, err, queryErr)
 		}
@@ -330,10 +331,4 @@ func TestPostgres(t *testing.T) {
 			t.Errorf("runs = %d, want 2 to %d: one run per tick", got, ticks)
 		}
 	})
-}
-
-func newManagerFor(t *testing.T) *database.Manager {
-	t.Helper()
-	m, _ := newManager(t, 2)
-	return m
 }

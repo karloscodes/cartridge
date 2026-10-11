@@ -1,21 +1,21 @@
+// Package database opens PostgreSQL and MySQL databases for cartridge.
 package database
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"sync"
-	"time"
-
-	"gorm.io/gorm"
 )
 
-// Manager manages database connections using a pluggable driver.
+// Manager owns the connection pool of one PostgreSQL or MySQL database.
+// These databases take many writers at once, so Reader and Writer return
+// the same pool. It implements cartridge.DBManager.
 type Manager struct {
 	driver  Driver
 	cfg     *Config
 	logger  *slog.Logger
-	db      *gorm.DB
-	dbOnce  sync.Once
+	db      *sql.DB
 	dbMutex sync.Mutex
 }
 
@@ -27,139 +27,62 @@ func NewManager(driver Driver, cfg *Config, logger *slog.Logger) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
-
-	return &Manager{
-		driver: driver,
-		cfg:    cfg,
-		logger: logger,
-	}
+	return &Manager{driver: driver, cfg: cfg, logger: logger}
 }
 
-// Connect returns a GORM database instance, initializing on first call.
-func (m *Manager) Connect() (*gorm.DB, error) {
-	var err error
-	m.dbOnce.Do(func() {
-		err = m.open()
-	})
-	if err != nil {
-		return nil, err
-	}
-	return m.db.Session(&gorm.Session{}), nil
-}
+// Reader returns the connection pool, for queries that only read.
+func (m *Manager) Reader() (*sql.DB, error) { return m.connect() }
 
-// GetConnection implements DBManager interface.
-// Returns nil if connection fails.
-func (m *Manager) GetConnection() *gorm.DB {
-	db, err := m.Connect()
-	if err != nil {
-		m.logger.Error("failed to get database connection", slog.Any("error", err))
-		return nil
-	}
-	return db
-}
+// Writer returns the same connection pool, for statements that write.
+func (m *Manager) Writer() (*sql.DB, error) { return m.connect() }
 
-// Close closes the database connection.
-func (m *Manager) Close() error {
+// connect returns the connection pool. It opens the pool on the first
+// call, and again after Close.
+func (m *Manager) connect() (*sql.DB, error) {
 	m.dbMutex.Lock()
 	defer m.dbMutex.Unlock()
-
-	if m.db == nil {
-		return nil
-	}
-
-	// Run driver-specific cleanup
-	if err := m.driver.Close(m.db, m.logger); err != nil {
-		m.logger.Warn("driver cleanup error", slog.Any("error", err))
-	}
-
-	sqlDB, err := m.db.DB()
-	if err != nil {
-		return fmt.Errorf("database: access sql.DB: %w", err)
-	}
-
-	if err := sqlDB.Close(); err != nil {
-		return fmt.Errorf("database: close: %w", err)
-	}
-
-	m.db = nil
-	m.dbOnce = sync.Once{}
-	m.logger.Info("database connection closed", slog.String("driver", m.driver.Name()))
-	return nil
-}
-
-// CheckpointWAL forces a WAL checkpoint (SQLite only).
-func (m *Manager) CheckpointWAL(mode string) error {
-	if !m.driver.SupportsCheckpoint() {
-		return nil // No-op for non-SQLite drivers
-	}
-
-	conn, err := m.Connect()
-	if err != nil {
-		return err
-	}
-	return m.driver.Checkpoint(conn, mode)
-}
-
-// ConcurrentWrites reports whether the database takes writes from many
-// connections at once, as PostgreSQL and MySQL do. SQLite takes one writer.
-// cartridge.Write then runs writes at the same time.
-func (m *Manager) ConcurrentWrites() bool {
-	c, ok := m.driver.(interface{ ConcurrentWrites() bool })
-	return ok && c.ConcurrentWrites()
-}
-
-// Driver returns the underlying driver.
-func (m *Manager) Driver() Driver {
-	return m.driver
-}
-
-func (m *Manager) open() error {
-	m.dbMutex.Lock()
-	defer m.dbMutex.Unlock()
-
 	if m.db != nil {
-		return nil
+		return m.db, nil
 	}
 
-	// Configure DSN with driver-specific options
-	dsn := m.driver.ConfigureDSN(m.cfg.DSN, m.cfg)
-
-	// Create GORM logger
-	gormLogger := NewGormLogger(m.logger.With(slog.String("component", "gorm")), nil)
-
-	// Open connection using driver's dialector
-	db, err := gorm.Open(m.driver.Open(dsn), &gorm.Config{
-		Logger:                 gormLogger,
-		SkipDefaultTransaction: true,
-		NowFunc: func() time.Time {
-			return time.Now().UTC()
-		},
-	})
+	db, err := sql.Open(m.driver.SQLDriver(), m.driver.ConfigureDSN(m.cfg.DSN, m.cfg))
 	if err != nil {
-		return fmt.Errorf("database: open: %w", err)
+		return nil, fmt.Errorf("database: open: %w", err)
 	}
-
-	// Run driver-specific post-connection setup
-	if err := m.driver.AfterConnect(db, m.cfg, m.logger); err != nil {
-		return err
+	// sql.Open opens no connection. Ping does, so a wrong DSN shows now.
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("database: open: %w", err)
 	}
-
-	// Configure connection pool
-	sqlDB, err := db.DB()
-	if err != nil {
-		return fmt.Errorf("database: access sql.DB: %w", err)
-	}
-
-	sqlDB.SetMaxOpenConns(m.cfg.MaxOpenConns)
-	sqlDB.SetMaxIdleConns(m.cfg.MaxIdleConns)
-	sqlDB.SetConnMaxLifetime(m.cfg.ConnMaxLifetime)
+	db.SetMaxOpenConns(m.cfg.MaxOpenConns)
+	db.SetMaxIdleConns(m.cfg.MaxIdleConns)
+	db.SetConnMaxLifetime(m.cfg.ConnMaxLifetime)
 
 	m.logger.Info("database connection established",
 		slog.String("driver", m.driver.Name()),
 		slog.Int("max_open", m.cfg.MaxOpenConns),
 		slog.Int("max_idle", m.cfg.MaxIdleConns),
 	)
-
 	m.db = db
+	return db, nil
+}
+
+// Close closes the connection pool.
+func (m *Manager) Close() error {
+	m.dbMutex.Lock()
+	defer m.dbMutex.Unlock()
+	if m.db == nil {
+		return nil
+	}
+	if err := m.db.Close(); err != nil {
+		return fmt.Errorf("database: close: %w", err)
+	}
+	m.db = nil
+	m.logger.Info("database connection closed", slog.String("driver", m.driver.Name()))
 	return nil
+}
+
+// Driver returns the underlying driver.
+func (m *Manager) Driver() Driver {
+	return m.driver
 }

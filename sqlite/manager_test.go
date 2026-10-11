@@ -1,367 +1,352 @@
-package sqlite
+package sqlite_test
 
 import (
 	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"gorm.io/gorm"
+	"github.com/karloscodes/cartridge/sqlite"
 )
 
-func TestNewManager(t *testing.T) {
-	t.Run("applies defaults for empty config", func(t *testing.T) {
-		m := NewManager(Config{Path: ":memory:"})
-
-		if m.cfg.MaxOpenConns != 1 {
-			t.Errorf("expected MaxOpenConns 1, got %d", m.cfg.MaxOpenConns)
-		}
-		if m.cfg.MaxIdleConns != 1 {
-			t.Errorf("expected MaxIdleConns 1, got %d", m.cfg.MaxIdleConns)
-		}
-		if m.cfg.ConnMaxLifetime != 10*time.Minute {
-			t.Errorf("expected ConnMaxLifetime 10m, got %v", m.cfg.ConnMaxLifetime)
-		}
-		if m.cfg.BusyTimeout != 5000 {
-			t.Errorf("expected BusyTimeout 5000, got %d", m.cfg.BusyTimeout)
-		}
-	})
-
-	t.Run("uses provided config values", func(t *testing.T) {
-		m := NewManager(Config{
-			Path:            ":memory:",
-			MaxOpenConns:    5,
-			MaxIdleConns:    2,
-			ConnMaxLifetime: 5 * time.Minute,
-			BusyTimeout:     10000,
-		})
-
-		if m.cfg.MaxOpenConns != 5 {
-			t.Errorf("expected MaxOpenConns 5, got %d", m.cfg.MaxOpenConns)
-		}
-		if m.cfg.MaxIdleConns != 2 {
-			t.Errorf("expected MaxIdleConns 2, got %d", m.cfg.MaxIdleConns)
-		}
-		if m.cfg.ConnMaxLifetime != 5*time.Minute {
-			t.Errorf("expected ConnMaxLifetime 5m, got %v", m.cfg.ConnMaxLifetime)
-		}
-		if m.cfg.BusyTimeout != 10000 {
-			t.Errorf("expected BusyTimeout 10000, got %d", m.cfg.BusyTimeout)
-		}
-	})
-}
-
-func TestManager_Connect(t *testing.T) {
-	t.Run("connects to in-memory database", func(t *testing.T) {
-		m := NewManager(Config{Path: ":memory:"})
-
-		db, err := m.Connect()
-		if err != nil {
-			t.Fatalf("Connect failed: %v", err)
-		}
-
-		if db == nil {
-			t.Error("expected non-nil database")
-		}
-
-		// Clean up
-		_ = m.Close()
-	})
-
-	t.Run("connects to file database", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		dbPath := filepath.Join(tmpDir, "test.db")
-
-		m := NewManager(Config{Path: dbPath})
-
-		db, err := m.Connect()
-		if err != nil {
-			t.Fatalf("Connect failed: %v", err)
-		}
-
-		if db == nil {
-			t.Error("expected non-nil database")
-		}
-
-		// Verify file was created
-		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-			t.Error("expected database file to be created")
-		}
-
-		// Clean up
-		_ = m.Close()
-	})
-
-	t.Run("returns same connection on multiple calls", func(t *testing.T) {
-		m := NewManager(Config{Path: ":memory:"})
-
-		db1, _ := m.Connect()
-		db2, _ := m.Connect()
-
-		// Both should be sessions of the same underlying connection
-		if db1 == nil || db2 == nil {
-			t.Error("expected non-nil databases")
-		}
-
-		_ = m.Close()
-	})
-}
-
-func TestManager_GetConnection(t *testing.T) {
-	t.Run("returns connection after Connect", func(t *testing.T) {
-		m := NewManager(Config{Path: ":memory:"})
-
-		_, _ = m.Connect()
-		db := m.GetConnection()
-
-		if db == nil {
-			t.Error("expected non-nil database from GetConnection")
-		}
-
-		_ = m.Close()
-	})
-}
-
-func TestManager_Close(t *testing.T) {
-	t.Run("closes connection successfully", func(t *testing.T) {
-		m := NewManager(Config{Path: ":memory:"})
-
-		_, _ = m.Connect()
-		err := m.Close()
-
-		if err != nil {
-			t.Errorf("Close failed: %v", err)
-		}
-	})
-
-	t.Run("returns nil when not connected", func(t *testing.T) {
-		m := NewManager(Config{Path: ":memory:"})
-
-		err := m.Close()
-		if err != nil {
-			t.Errorf("Close on unconnected manager should not fail: %v", err)
-		}
-	})
-}
-
-func TestManager_CheckpointWAL(t *testing.T) {
-	t.Run("checkpoints successfully", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		dbPath := filepath.Join(tmpDir, "wal_test.db")
-
-		m := NewManager(Config{Path: dbPath, EnableWAL: true})
-		_, _ = m.Connect()
-
-		err := m.CheckpointWAL("PASSIVE")
-		if err != nil {
-			t.Errorf("CheckpointWAL failed: %v", err)
-		}
-
-		_ = m.Close()
-	})
-}
-
-func TestManager_PragmasOnEveryConnection(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "pool.db")
-	m := NewManager(Config{Path: dbPath, MaxOpenConns: 3, MaxIdleConns: 3, BusyTimeout: 4321})
-	db, err := m.Connect()
-	if err != nil {
-		t.Fatalf("Connect failed: %v", err)
+// open returns a manager on a new file. The test cleanup closes it.
+func open(t *testing.T, cfg sqlite.Config) *sqlite.Manager {
+	t.Helper()
+	if cfg.Path == "" {
+		cfg.Path = filepath.Join(t.TempDir(), "test.db")
 	}
-	defer func() { _ = m.Close() }()
-	sqlDB, _ := db.DB()
+	if cfg.Logger == nil {
+		cfg.Logger = slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	}
+	m := sqlite.NewManager(cfg)
+	t.Cleanup(func() { _ = m.Close() })
+	return m
+}
 
-	// Hold three connections at once, so the pool must open three.
-	ctx := context.Background()
+// pools returns the read pool and the write pool of m.
+func pools(t *testing.T, m *sqlite.Manager) (reader, writer *sql.DB) {
+	t.Helper()
+	writer, err := m.Writer()
+	if err != nil {
+		t.Fatalf("Writer: %v", err)
+	}
+	reader, err = m.Reader()
+	if err != nil {
+		t.Fatalf("Reader: %v", err)
+	}
+	return reader, writer
+}
+
+// openNotes returns a manager with an empty notes table, and its pools.
+func openNotes(t *testing.T, cfg sqlite.Config) (m *sqlite.Manager, reader, writer *sql.DB) {
+	t.Helper()
+	m = open(t, cfg)
+	reader, writer = pools(t, m)
+	if _, err := writer.Exec("CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL)"); err != nil {
+		t.Fatalf("create notes: %v", err)
+	}
+	return m, reader, writer
+}
+
+func countNotes(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM notes").Scan(&n); err != nil {
+		t.Fatalf("count notes: %v", err)
+	}
+	return n
+}
+
+func TestManager(t *testing.T) {
+	t.Run("the reader sees what the writer committed", func(t *testing.T) {
+		_, reader, writer := openNotes(t, sqlite.Config{})
+
+		_, err := writer.Exec("INSERT INTO notes (body) VALUES ('hello')")
+
+		if err != nil || countNotes(t, reader) != 1 {
+			t.Errorf("write: %v, the reader counts %d, want 1", err, countNotes(t, reader))
+		}
+	})
+
+	t.Run("the reader refuses a statement that writes", func(t *testing.T) {
+		_, reader, _ := openNotes(t, sqlite.Config{})
+
+		_, err := reader.Exec("INSERT INTO notes (body) VALUES ('x')")
+
+		if err == nil || countNotes(t, reader) != 0 {
+			t.Errorf("err = %v with %d rows, want an error and no row", err, countNotes(t, reader))
+		}
+	})
+
+	t.Run("writes at the same time do not fail with a locked database", func(t *testing.T) {
+		_, reader, writer := openNotes(t, sqlite.Config{BusyTimeout: 1})
+		var wg sync.WaitGroup
+		failures := make(chan error, 200)
+
+		for range 20 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range 10 {
+					if _, err := writer.Exec("INSERT INTO notes (body) VALUES ('x')"); err != nil {
+						failures <- err
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		close(failures)
+
+		for err := range failures {
+			t.Errorf("write: %v", err)
+		}
+		if got := countNotes(t, reader); got != 200 {
+			t.Errorf("count = %d, want 200", got)
+		}
+	})
+
+	t.Run("a read does not wait for an open write transaction", func(t *testing.T) {
+		_, reader, writer := openNotes(t, sqlite.Config{MaxOpenConns: 1})
+		if _, err := writer.Exec("INSERT INTO notes (body) VALUES ('first')"); err != nil {
+			t.Fatal(err)
+		}
+		tx, err := writer.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.Exec("INSERT INTO notes (body) VALUES ('second')"); err != nil {
+			t.Fatal(err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		var count int
+		err = reader.QueryRowContext(ctx, "SELECT COUNT(*) FROM notes").Scan(&count)
+
+		if err != nil || count != 1 {
+			t.Errorf("count = %d, err = %v, want the committed row with no wait", count, err)
+		}
+	})
+
+	t.Run("after Close, the next use opens both pools again", func(t *testing.T) {
+		m, _, writer := openNotes(t, sqlite.Config{})
+		if _, err := writer.Exec("INSERT INTO notes (body) VALUES ('kept')"); err != nil {
+			t.Fatal(err)
+		}
+
+		closeErr := m.Close()
+		reader, writer := pools(t, m)
+
+		_, writeErr := writer.Exec("INSERT INTO notes (body) VALUES ('more')")
+		if closeErr != nil || writeErr != nil || countNotes(t, reader) != 2 {
+			t.Errorf("close: %v, write: %v, count = %d, want 2", closeErr, writeErr, countNotes(t, reader))
+		}
+	})
+
+	t.Run("Close on a manager that never opened returns nil", func(t *testing.T) {
+		m := open(t, sqlite.Config{})
+
+		if err := m.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	t.Run("a database in memory is refused", func(t *testing.T) {
+		for _, path := range []string{":memory:", "file::memory:?cache=shared", "file:x?mode=memory"} {
+			m := open(t, sqlite.Config{Path: path})
+
+			_, readerErr := m.Reader()
+			_, writerErr := m.Writer()
+
+			if readerErr == nil || writerErr == nil {
+				t.Errorf("%s: reader error %v, writer error %v, want two errors", path, readerErr, writerErr)
+			}
+		}
+	})
+
+	t.Run("a path in a missing folder fails at open, not at the first query", func(t *testing.T) {
+		m := open(t, sqlite.Config{Path: filepath.Join(t.TempDir(), "missing", "test.db")})
+
+		_, err := m.Writer()
+
+		if err == nil {
+			t.Error("Writer returned nil, want an error")
+		}
+	})
+}
+
+// hold takes n connections of db at once, so each one is another connection.
+func hold(t *testing.T, db *sql.DB, n int) []*sql.Conn {
+	t.Helper()
 	var conns []*sql.Conn
-	for i := 0; i < 3; i++ {
-		conn, err := sqlDB.Conn(ctx)
+	for i := range n {
+		conn, err := db.Conn(context.Background())
 		if err != nil {
 			t.Fatalf("conn %d: %v", i, err)
 		}
+		t.Cleanup(func() { _ = conn.Close() })
 		conns = append(conns, conn)
 	}
-
-	for i, conn := range conns {
-		var timeout int
-		var journal string
-		var synchronous int
-		if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&timeout); err != nil {
-			t.Fatal(err)
-		}
-		if err := conn.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil {
-			t.Fatal(err)
-		}
-		if err := conn.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
-			t.Fatal(err)
-		}
-		if timeout != 4321 {
-			t.Errorf("conn %d: busy_timeout = %d, want 4321", i, timeout)
-		}
-		if journal != "wal" {
-			t.Errorf("conn %d: journal_mode = %q, want wal", i, journal)
-		}
-		if synchronous != 1 { // NORMAL
-			t.Errorf("conn %d: synchronous = %d, want 1 (NORMAL)", i, synchronous)
-		}
-		_ = conn.Close()
-	}
+	return conns
 }
 
-func TestManager_PlannerStatistics(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "stats.db")
-	m := NewManager(Config{Path: dbPath})
-	db, err := m.Connect()
-	if err != nil {
-		t.Fatalf("Connect failed: %v", err)
+func pragma(t *testing.T, conn *sql.Conn, name string) string {
+	t.Helper()
+	var value string
+	if err := conn.QueryRowContext(context.Background(), "PRAGMA "+name).Scan(&value); err != nil {
+		t.Fatalf("PRAGMA %s: %v", name, err)
 	}
-	db.Exec("CREATE TABLE items(id INTEGER PRIMARY KEY, kind TEXT)")
-	db.Exec("CREATE INDEX idx_items_kind ON items(kind)")
-	db.Exec("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 500) INSERT INTO items(kind) SELECT 'k' || (i % 5) FROM n")
-
-	if err := m.Close(); err != nil {
-		t.Fatalf("Close failed: %v", err)
-	}
-	db, err = m.Connect()
-	if err != nil {
-		t.Fatalf("Connect failed: %v", err)
-	}
-	defer func() { _ = m.Close() }()
-	var rows int64
-	err = db.Raw("SELECT count(*) FROM sqlite_stat1 WHERE idx = 'idx_items_kind'").Scan(&rows).Error
-
-	if err != nil {
-		t.Fatalf("read sqlite_stat1: %v", err)
-	}
-	if rows != 1 {
-		t.Errorf("sqlite_stat1 rows for idx_items_kind = %d, want 1", rows)
-	}
+	return value
 }
 
-func TestManager_AppPragmas(t *testing.T) {
-	t.Run("runs on every pooled connection", func(t *testing.T) {
-		m := NewManager(Config{
-			Path:         filepath.Join(t.TempDir(), "pragmas.db"),
-			MaxOpenConns: 3,
-			MaxIdleConns: 3,
-			Pragmas:      []string{"PRAGMA mmap_size = 1048576", "PRAGMA temp_store = MEMORY"},
-		})
-		db, err := m.Connect()
-		if err != nil {
-			t.Fatalf("Connect failed: %v", err)
-		}
-		defer func() { _ = m.Close() }()
-		sqlDB, _ := db.DB()
+func TestConnectionSettings(t *testing.T) {
+	t.Run("every connection has the busy timeout, WAL, and synchronous NORMAL", func(t *testing.T) {
+		m := open(t, sqlite.Config{MaxOpenConns: 3, BusyTimeout: 4321})
+		reader, writer := pools(t, m)
 
-		ctx := context.Background()
-		var conns []*sql.Conn
-		for i := 0; i < 3; i++ {
-			conn, err := sqlDB.Conn(ctx)
-			if err != nil {
-				t.Fatalf("conn %d: %v", i, err)
-			}
-			conns = append(conns, conn)
-		}
+		conns := append(hold(t, reader, 3), hold(t, writer, 1)...)
 
 		for i, conn := range conns {
-			var mmap, tempStore, timeout int
-			_ = conn.QueryRowContext(ctx, "PRAGMA mmap_size").Scan(&mmap)
-			_ = conn.QueryRowContext(ctx, "PRAGMA temp_store").Scan(&tempStore)
-			_ = conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&timeout)
-			if mmap != 1048576 {
-				t.Errorf("conn %d: mmap_size = %d, want 1048576", i, mmap)
+			timeout, journal, synchronous := pragma(t, conn, "busy_timeout"), pragma(t, conn, "journal_mode"), pragma(t, conn, "synchronous")
+			if timeout != "4321" || journal != "wal" || synchronous != "1" {
+				t.Errorf("conn %d: busy_timeout %s, journal_mode %s, synchronous %s, want 4321, wal, 1", i, timeout, journal, synchronous)
 			}
-			if tempStore != 2 { // MEMORY
-				t.Errorf("conn %d: temp_store = %d, want 2", i, tempStore)
-			}
-			if timeout != 5000 {
-				t.Errorf("conn %d: busy_timeout = %d, want the default 5000", i, timeout)
-			}
-			_ = conn.Close()
 		}
 	})
 
-	t.Run("fails to open with a broken pragma", func(t *testing.T) {
-		m := NewManager(Config{
-			Path:    filepath.Join(t.TempDir(), "broken.db"),
-			Pragmas: []string{"PRAGMA mmap_size = 'oops"},
-		})
+	t.Run("an app pragma runs on the write connection", func(t *testing.T) {
+		m := open(t, sqlite.Config{Pragmas: []string{"PRAGMA foreign_keys = ON"}})
+		_, writer := pools(t, m)
+		schema := `
+			CREATE TABLE parents (id INTEGER PRIMARY KEY);
+			CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parents (id));`
+		if _, err := writer.Exec(schema); err != nil {
+			t.Fatal(err)
+		}
 
-		_, err := m.Connect()
+		_, err := writer.Exec("INSERT INTO children (parent_id) VALUES (99)")
 
 		if err == nil {
-			_ = m.Close()
-			t.Fatal("Connect succeeded, want an error for the broken pragma")
+			t.Error("a child without its parent was saved, want the foreign key to stop it")
 		}
 	})
 
-	t.Run("keeps its pragmas after Close and a new Connect", func(t *testing.T) {
-		m := NewManager(Config{
-			Path:    filepath.Join(t.TempDir(), "reopen.db"),
-			Pragmas: []string{"PRAGMA mmap_size = 1048576"},
+	t.Run("the app pragmas run on every read connection", func(t *testing.T) {
+		m := open(t, sqlite.Config{
+			MaxOpenConns: 3,
+			Pragmas:      []string{"PRAGMA mmap_size = 1048576", "PRAGMA temp_store = MEMORY"},
 		})
-		_, _ = m.Connect()
+		reader, _ := pools(t, m)
+
+		conns := hold(t, reader, 3)
+
+		for i, conn := range conns {
+			mmap, tempStore, timeout := pragma(t, conn, "mmap_size"), pragma(t, conn, "temp_store"), pragma(t, conn, "busy_timeout")
+			if mmap != "1048576" || tempStore != "2" || timeout != "5000" {
+				t.Errorf("conn %d: mmap_size %s, temp_store %s, busy_timeout %s, want 1048576, 2 (MEMORY), and the default 5000", i, mmap, tempStore, timeout)
+			}
+		}
+	})
+
+	t.Run("a broken pragma fails the open", func(t *testing.T) {
+		m := open(t, sqlite.Config{Pragmas: []string{"PRAGMA mmap_size = 'oops"}})
+
+		_, err := m.Writer()
+
+		if err == nil {
+			t.Error("Writer returned nil, want an error for the broken pragma")
+		}
+	})
+
+	t.Run("the pragmas stay after Close and a new open", func(t *testing.T) {
+		m := open(t, sqlite.Config{Pragmas: []string{"PRAGMA mmap_size = 1048576"}})
+		pools(t, m)
 		_ = m.Close()
 
-		db, err := m.Connect()
-		if err != nil {
-			t.Fatalf("Connect failed: %v", err)
-		}
-		defer func() { _ = m.Close() }()
-		var mmap int
-		_ = db.Raw("PRAGMA mmap_size").Scan(&mmap).Error
+		reader, _ := pools(t, m)
 
-		if mmap != 1048576 {
-			t.Errorf("mmap_size = %d, want 1048576", mmap)
+		if got := pragma(t, hold(t, reader, 1)[0], "mmap_size"); got != "1048576" {
+			t.Errorf("mmap_size = %s, want 1048576", got)
 		}
 	})
 }
 
-func TestManager_CheckpointWithReplicaReading(t *testing.T) {
-	// A replica such as Litestream keeps a read transaction open on purpose.
-	dbPath := filepath.Join(t.TempDir(), "replica.db")
-	m := NewManager(Config{Path: dbPath, BusyTimeout: 2000})
-	db, err := m.Connect()
-	if err != nil {
-		t.Fatalf("Connect failed: %v", err)
-	}
-	defer func() { _ = m.Close() }()
-	db.Exec("CREATE TABLE items(id INTEGER PRIMARY KEY)")
-	replica, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		t.Fatalf("open replica: %v", err)
-	}
-	defer func() { _ = replica.Close() }()
-	reading, err := replica.Begin()
-	if err != nil {
-		t.Fatalf("begin read: %v", err)
-	}
-	defer func() { _ = reading.Rollback() }()
-	var n int
-	if err := reading.QueryRow("SELECT count(*) FROM items").Scan(&n); err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	db.Exec("INSERT INTO items DEFAULT VALUES")
+func TestPlannerStatistics(t *testing.T) {
+	t.Run("Close records the statistics that the next open reads", func(t *testing.T) {
+		m := open(t, sqlite.Config{})
+		_, writer := pools(t, m)
+		for _, stmt := range []string{
+			"CREATE TABLE items (id INTEGER PRIMARY KEY, kind TEXT)",
+			"CREATE INDEX idx_items_kind ON items (kind)",
+			"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 500) INSERT INTO items (kind) SELECT 'k' || (i % 5) FROM n",
+		} {
+			if _, err := writer.Exec(stmt); err != nil {
+				t.Fatal(err)
+			}
+		}
 
-	start := time.Now()
-	err = m.CheckpointWAL("PASSIVE")
-	took := time.Since(start)
+		closeErr := m.Close()
+		reader, _ := pools(t, m)
 
-	if err != nil {
-		t.Fatalf("CheckpointWAL: %v", err)
-	}
-	if took > 500*time.Millisecond {
-		t.Errorf("PASSIVE took %v, want no wait for the reader", took)
-	}
+		var rows int
+		err := reader.QueryRow("SELECT COUNT(*) FROM sqlite_stat1 WHERE idx = 'idx_items_kind'").Scan(&rows)
+		if closeErr != nil || err != nil || rows != 1 {
+			t.Errorf("close: %v, read: %v, sqlite_stat1 rows = %d, want 1", closeErr, err, rows)
+		}
+	})
 }
 
-func TestManager_ReadOnly(t *testing.T) {
+func TestCheckpointWAL(t *testing.T) {
+	t.Run("a PASSIVE checkpoint works", func(t *testing.T) {
+		m, _, _ := openNotes(t, sqlite.Config{})
+
+		if err := m.CheckpointWAL("PASSIVE"); err != nil {
+			t.Errorf("CheckpointWAL: %v", err)
+		}
+	})
+
+	t.Run("a PASSIVE checkpoint does not wait for a replica that reads", func(t *testing.T) {
+		// A replica such as Litestream keeps a read transaction open on purpose.
+		path := filepath.Join(t.TempDir(), "replica.db")
+		m, _, writer := openNotes(t, sqlite.Config{Path: path, BusyTimeout: 2000})
+		replica, err := sql.Open("sqlite3", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = replica.Close() }()
+		reading, err := replica.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = reading.Rollback() }()
+		var n int
+		if err := reading.QueryRow("SELECT COUNT(*) FROM notes").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Exec("INSERT INTO notes (body) VALUES ('x')"); err != nil {
+			t.Fatal(err)
+		}
+
+		start := time.Now()
+		err = m.CheckpointWAL("PASSIVE")
+		took := time.Since(start)
+
+		if err != nil || took > 500*time.Millisecond {
+			t.Errorf("CheckpointWAL: %v after %v, want no wait for the reader", err, took)
+		}
+	})
+}
+
+func TestReadOnly(t *testing.T) {
 	seed := func(t *testing.T, path string, wal bool) {
 		t.Helper()
 		db, err := sql.Open("sqlite3", path)
@@ -369,7 +354,7 @@ func TestManager_ReadOnly(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = db.Close() }()
-		statements := []string{"CREATE TABLE notes(body TEXT)", "INSERT INTO notes VALUES ('hello')"}
+		statements := []string{"CREATE TABLE notes (body TEXT)", "INSERT INTO notes VALUES ('hello')"}
 		if wal {
 			statements = append([]string{"PRAGMA journal_mode=WAL"}, statements...)
 		}
@@ -379,22 +364,20 @@ func TestManager_ReadOnly(t *testing.T) {
 			}
 		}
 	}
-	readOnly := func(t *testing.T, path string) (*Manager, *bytes.Buffer) {
+	readOnly := func(t *testing.T, path string) (*sqlite.Manager, *bytes.Buffer) {
 		t.Helper()
 		var logs bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-		m := NewManager(Config{Path: path, ReadOnly: true, Logger: logger})
-		t.Cleanup(func() { _ = m.Close() })
-		return m, &logs
+		return open(t, sqlite.Config{Path: path, ReadOnly: true, Logger: logger}), &logs
 	}
-	readBody := func(t *testing.T, m *Manager) string {
+	readBody := func(t *testing.T, m *sqlite.Manager) string {
 		t.Helper()
-		db, err := m.Connect()
+		reader, err := m.Reader()
 		if err != nil {
-			t.Fatalf("Connect: %v", err)
+			t.Fatalf("Reader: %v", err)
 		}
 		var body string
-		if err := db.Raw("SELECT body FROM notes").Scan(&body).Error; err != nil {
+		if err := reader.QueryRow("SELECT body FROM notes").Scan(&body); err != nil {
 			t.Fatalf("read: %v", err)
 		}
 		return body
@@ -405,9 +388,7 @@ func TestManager_ReadOnly(t *testing.T) {
 		seed(t, path, true)
 		m, _ := readOnly(t, path)
 
-		got := readBody(t, m)
-
-		if got != "hello" {
+		if got := readBody(t, m); got != "hello" {
 			t.Errorf("body = %q, want hello", got)
 		}
 	})
@@ -417,9 +398,7 @@ func TestManager_ReadOnly(t *testing.T) {
 		seed(t, path, false)
 		m, _ := readOnly(t, path)
 
-		got := readBody(t, m)
-
-		if got != "hello" {
+		if got := readBody(t, m); got != "hello" {
 			t.Errorf("body = %q, want hello", got)
 		}
 	})
@@ -433,9 +412,7 @@ func TestManager_ReadOnly(t *testing.T) {
 		seed(t, path, true)
 		m, _ := readOnly(t, path)
 
-		got := readBody(t, m)
-
-		if got != "hello" {
+		if got := readBody(t, m); got != "hello" {
 			t.Errorf("body = %q, want hello", got)
 		}
 	})
@@ -448,43 +425,33 @@ func TestManager_ReadOnly(t *testing.T) {
 		readBody(t, m)
 		err := m.Close()
 
-		if err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-		if strings.Contains(logs.String(), "level=WARN") || strings.Contains(logs.String(), "level=ERROR") {
-			t.Errorf("log:\n%s", logs)
+		if err != nil || strings.Contains(logs.String(), "level=WARN") || strings.Contains(logs.String(), "level=ERROR") {
+			t.Errorf("Close: %v, log:\n%s", err, logs)
 		}
 	})
 
-	t.Run("Write returns ErrReadOnly and does not run fn", func(t *testing.T) {
+	t.Run("Writer returns ErrReadOnly", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "write.db")
 		seed(t, path, true)
 		m, _ := readOnly(t, path)
-		ran := false
 
-		err := m.Write(context.Background(), func(tx *gorm.DB) error {
-			ran = true
-			return nil
-		})
+		_, err := m.Writer()
 
-		if !errors.Is(err, ErrReadOnly) || ran {
-			t.Errorf("err = %v, ran = %v; want ErrReadOnly and no run", err, ran)
+		if !errors.Is(err, sqlite.ErrReadOnly) {
+			t.Errorf("err = %v, want ErrReadOnly", err)
 		}
 	})
 
-	t.Run("SQLite refuses a write through the connection", func(t *testing.T) {
+	t.Run("SQLite refuses a write through the reader", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "raw.db")
 		seed(t, path, true)
 		m, _ := readOnly(t, path)
-		db, _ := m.Connect()
+		reader, _ := m.Reader()
 
-		err := db.Exec("INSERT INTO notes VALUES ('nope')").Error
+		_, err := reader.Exec("INSERT INTO notes VALUES ('nope')")
 
-		if err == nil {
-			t.Error("the insert went through")
-		}
-		if got := readBody(t, m); got != "hello" {
-			t.Errorf("body = %q, want hello", got)
+		if err == nil || readBody(t, m) != "hello" {
+			t.Errorf("err = %v, body = %q, want an error and the old row", err, readBody(t, m))
 		}
 	})
 
@@ -492,13 +459,148 @@ func TestManager_ReadOnly(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "missing.db")
 		m, _ := readOnly(t, path)
 
-		_, err := m.Connect()
+		_, err := m.Reader()
 
-		if err == nil {
-			t.Error("Connect returned no error")
-		}
-		if _, statErr := os.Stat(path); statErr == nil {
-			t.Error("Connect created the file")
+		if _, statErr := os.Stat(path); err == nil || statErr == nil {
+			t.Errorf("Reader error = %v, file exists = %v, want an error and no file", err, statErr == nil)
 		}
 	})
+}
+
+func TestSchemaChanged(t *testing.T) {
+	t.Run("after SchemaChanged, the next read has the new column", func(t *testing.T) {
+		m, reader, writer := openNotes(t, sqlite.Config{MaxOpenConns: 1})
+		columns := func() []string {
+			rows, err := reader.Query("SELECT * FROM notes ORDER BY id")
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			defer func() { _ = rows.Close() }()
+			names, err := rows.Columns()
+			if err != nil {
+				t.Fatalf("columns: %v", err)
+			}
+			return names
+		}
+		if before := columns(); len(before) != 2 {
+			t.Fatalf("before: columns %v", before)
+		}
+
+		_, alterErr := writer.Exec("ALTER TABLE notes ADD COLUMN title TEXT DEFAULT 'none'")
+		m.SchemaChanged()
+		after := columns()
+
+		if alterErr != nil || len(after) != 3 || after[2] != "title" {
+			t.Errorf("alter: %v, columns after = %v, want the new column", alterErr, after)
+		}
+	})
+
+	t.Run("many different read statements all work", func(t *testing.T) {
+		_, reader, writer := openNotes(t, sqlite.Config{})
+		if _, err := writer.Exec("INSERT INTO notes (body) VALUES ('x')"); err != nil {
+			t.Fatal(err)
+		}
+
+		for i := range 300 {
+			// Each length of the IN list is another SQL text.
+			ids := make([]any, i+1)
+			for j := range ids {
+				ids[j] = j
+			}
+			in := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+			var count int
+			if err := reader.QueryRow("SELECT COUNT(*) FROM notes WHERE id IN ("+in+")", ids...).Scan(&count); err != nil {
+				t.Fatalf("query %d: %v", i, err)
+			}
+			if i >= 1 && count != 1 {
+				t.Fatalf("query %d: count = %d, want 1", i, count)
+			}
+		}
+	})
+}
+
+func TestDataVersion(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("stays the same without a write, and changes with one", func(t *testing.T) {
+		m, _, writer := openNotes(t, sqlite.Config{})
+		first, err1 := m.DataVersion(ctx)
+		same, err2 := m.DataVersion(ctx)
+
+		_, writeErr := writer.Exec("INSERT INTO notes (body) VALUES ('x')")
+		changed, err3 := m.DataVersion(ctx)
+
+		if err := errors.Join(err1, err2, err3, writeErr); err != nil {
+			t.Fatal(err)
+		}
+		if first == "" || first != same || changed == first {
+			t.Errorf("tokens %q, %q, then %q: want the same twice, then another", first, same, changed)
+		}
+	})
+
+	t.Run("changes when another process writes the file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "shared.db")
+		m, _, _ := openNotes(t, sqlite.Config{Path: path})
+		_, _, otherWriter := openNotes(t, sqlite.Config{Path: path})
+		before, err := m.DataVersion(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := otherWriter.Exec("INSERT INTO notes (body) VALUES ('from elsewhere')"); err != nil {
+			t.Fatal(err)
+		}
+		after, err := m.DataVersion(ctx)
+
+		if err != nil || after == before {
+			t.Errorf("token %q then %q (%v), want a change", before, after, err)
+		}
+	})
+
+	t.Run("a rolled back write does not change it", func(t *testing.T) {
+		m, _, writer := openNotes(t, sqlite.Config{})
+		before, _ := m.DataVersion(ctx)
+
+		tx, err := writer.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = tx.Exec("INSERT INTO notes (body) VALUES ('lost')")
+		_ = tx.Rollback()
+		after, err := m.DataVersion(ctx)
+
+		if err != nil || after != before {
+			t.Errorf("token %q then %q (%v), want no change", before, after, err)
+		}
+	})
+
+	t.Run("is new after a reopen", func(t *testing.T) {
+		m := open(t, sqlite.Config{})
+		before, err1 := m.DataVersion(ctx)
+
+		_ = m.Close()
+		after, err2 := m.DataVersion(ctx)
+
+		if err1 != nil || err2 != nil || before == "" || after == before {
+			t.Errorf("tokens %q and %q, errors %v %v: want two different tokens", before, after, err1, err2)
+		}
+	})
+}
+
+func TestIsBusyError(t *testing.T) {
+	cases := map[string]bool{
+		"database is locked":             true,
+		"database table is locked":       true,
+		"database schema is locked: x":   true,
+		"no such table: busy":            false,
+		"UNIQUE constraint: busybee.com": false,
+	}
+	for message, want := range cases {
+		if got := sqlite.IsBusyError(fmt.Errorf("%s", message)); got != want {
+			t.Errorf("IsBusyError(%q) = %v, want %v", message, got, want)
+		}
+	}
+	if sqlite.IsBusyError(nil) {
+		t.Error("IsBusyError(nil) = true")
+	}
 }

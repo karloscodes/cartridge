@@ -96,15 +96,11 @@ func newCronManager(t *testing.T) *sqlite.Manager {
 
 func cronSQL(t *testing.T, m DBManager) *sql.DB {
 	t.Helper()
-	db, err := m.Connect()
+	db, err := m.Writer()
 	if err != nil {
 		t.Fatal(err)
 	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return sqlDB
+	return db
 }
 
 func startCron(t *testing.T, m DBManager, name, spec string, fn CronFunc) *CronScheduler {

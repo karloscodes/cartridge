@@ -207,7 +207,7 @@ func TestMemoryStoreMaxEntries(t *testing.T) {
 func TestDatabaseStore(t *testing.T) {
 	db := newDB(t)
 
-	store, err := cache.NewDatabaseStore(db,
+	store, err := cache.NewDatabaseStore(db, db,
 		cache.WithTTL(1*time.Hour),
 		cache.WithCleanupInterval(0),
 	)
@@ -220,7 +220,7 @@ func TestDatabaseStore(t *testing.T) {
 func TestDatabaseStoreExpiration(t *testing.T) {
 	db := newDB(t)
 
-	store, err := cache.NewDatabaseStore(db,
+	store, err := cache.NewDatabaseStore(db, db,
 		cache.WithTTL(100*time.Millisecond),
 		cache.WithCleanupInterval(0),
 	)
@@ -247,7 +247,7 @@ func TestDatabaseStoreExpiration(t *testing.T) {
 func TestDatabaseStoreMaxEntries(t *testing.T) {
 	db := newDB(t)
 
-	store, err := cache.NewDatabaseStore(db,
+	store, err := cache.NewDatabaseStore(db, db,
 		cache.WithTTL(1*time.Hour),
 		cache.WithMaxEntries(3),
 		cache.WithCleanupInterval(0),
@@ -283,7 +283,8 @@ func TestDefaultOptions(t *testing.T) {
 
 func TestDeleteByPrefixTakesWildcardsLiterally(t *testing.T) {
 	stores := map[string]cache.Store{"memory": cache.NewMemoryStore(cache.WithCleanupInterval(0))}
-	database, err := cache.NewDatabaseStore(newDB(t), cache.WithCleanupInterval(0))
+	db := newDB(t)
+	database, err := cache.NewDatabaseStore(db, db, cache.WithCleanupInterval(0))
 	require.NoError(t, err)
 	stores["database"] = database
 	ctx := context.Background()
@@ -313,7 +314,8 @@ type stats struct {
 func TestFetch(t *testing.T) {
 	ctx := context.Background()
 	newStore := func(t *testing.T) cache.Store {
-		store, err := cache.NewDatabaseStore(newDB(t), cache.WithCleanupInterval(0))
+		db := newDB(t)
+		store, err := cache.NewDatabaseStore(db, db, cache.WithCleanupInterval(0))
 		require.NoError(t, err)
 		return store
 	}

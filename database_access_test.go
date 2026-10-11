@@ -3,7 +3,6 @@ package cartridge
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -31,28 +30,35 @@ var plainMigrations = fstest.MapFS{
 // newPlainApp returns an app whose schema comes from SQL files.
 func newPlainApp(t *testing.T, opts ...AppOption) *App {
 	t.Helper()
-	app, err := NewApp(newAppTestConfig(t), opts...)
+	app, err := NewApp(newAppTestConfig(t), append([]AppOption{WithMigrations(plainMigrations)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
-	if err := app.MigrateDatabase(NewSQLMigrator(plainMigrations)); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	return app
 }
 
-func TestPlainSQL(t *testing.T) {
-	t.Run("a handler reads with SQL and writes with WriteSQL, without GORM", func(t *testing.T) {
+// writerOf returns the write connection of the app's main database.
+func writerOf(t *testing.T, app *App) *sql.DB {
+	t.Helper()
+	db, err := app.DBManager.Writer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func TestDatabaseAccess(t *testing.T) {
+	t.Run("a handler reads with DB and writes with WriteTx", func(t *testing.T) {
 		app := newPlainApp(t, WithRoutes(func(s *Server) {
 			s.Get("/add", func(c *Context) error {
-				return c.WriteSQL(func(tx *sql.Tx) error {
-					_, err := tx.ExecContext(c.Context(), "INSERT INTO notes (body) VALUES (?)", c.Query("body"))
+				return c.WriteTx(func(tx *sql.Tx) error {
+					_, err := query.Exec(c.Context(), tx, "INSERT INTO notes (body) VALUES (?)", c.Query("body"))
 					return err
 				})
 			})
 			s.Get("/notes", func(c *Context) error {
-				notes, err := query.All[plainNote](c.Context(), c.SQL(), "SELECT id, body FROM notes ORDER BY id")
+				notes, err := query.All[plainNote](c.Context(), c.DB(), "SELECT id, body FROM notes ORDER BY id")
 				if err != nil {
 					return err
 				}
@@ -68,46 +74,65 @@ func TestPlainSQL(t *testing.T) {
 		}
 	})
 
-	t.Run("WriteSQL rolls back when fn fails", func(t *testing.T) {
-		app := newPlainApp(t)
-		failed := errors.New("stop")
+	t.Run("DB gives read-only connections: a write on it is refused", func(t *testing.T) {
+		app := newPlainApp(t, WithRoutes(func(s *Server) {
+			s.Get("/write", func(c *Context) error {
+				if _, err := c.DB().ExecContext(c.Context(), "INSERT INTO notes (body) VALUES ('x')"); err != nil {
+					return c.SendString("refused")
+				}
+				return c.SendString("written")
+			})
+		}))
 
-		err := WriteSQL(context.Background(), app.DBManager, func(tx *sql.Tx) error {
-			if _, err := tx.Exec("INSERT INTO notes (body) VALUES ('lost')"); err != nil {
-				return err
-			}
-			return failed
-		})
-
-		db, _ := app.DBManager.Connect()
-		sqlDB, _ := db.DB()
-		count, countErr := query.One[int](context.Background(), sqlDB, "SELECT COUNT(*) FROM notes")
-		if !errors.Is(err, failed) || countErr != nil || count != 1 {
-			t.Errorf("count = %d (%v), err = %v, want the seed row only and the error", count, countErr, err)
+		if got := get(t, app, "/write"); got != "refused" {
+			t.Errorf("got %q, want the write on DB() refused", got)
 		}
 	})
 
-	t.Run("a job reads and writes with SQL", func(t *testing.T) {
+	t.Run("DataVersion stays the same between reads, and changes after a write", func(t *testing.T) {
+		app := newPlainApp(t, WithRoutes(func(s *Server) {
+			s.Get("/version", func(c *Context) error {
+				version, err := c.DataVersion()
+				if err != nil {
+					return err
+				}
+				return c.SendString(version)
+			})
+			s.Get("/add", func(c *Context) error {
+				return c.WriteTx(func(tx *sql.Tx) error {
+					_, err := query.Exec(c.Context(), tx, "INSERT INTO notes (body) VALUES ('x')")
+					return err
+				})
+			})
+		}))
+		first, same := get(t, app, "/version"), get(t, app, "/version")
+
+		get(t, app, "/add")
+		changed := get(t, app, "/version")
+
+		if first == "" || same != first || changed == first {
+			t.Errorf("tokens %q, %q, then %q: want the same twice, then another", first, same, changed)
+		}
+	})
+
+	t.Run("a job reads with DB and writes with WriteTx", func(t *testing.T) {
 		result := make(chan error, 1)
 		var count int
-		job := processorFunc(func(ctx *JobContext) error {
-			err := ctx.WriteSQL(func(tx *sql.Tx) error {
-				_, err := tx.Exec("INSERT INTO notes (body) VALUES ('from a job')")
+		job := func(ctx *JobContext) error {
+			err := ctx.WriteTx(func(tx *sql.Tx) error {
+				_, err := query.Exec(ctx, tx, "INSERT INTO notes (body) VALUES ('from a job')")
 				return err
 			})
 			if err == nil {
-				var db *sql.DB
-				if db, err = ctx.SQL(); err == nil {
-					count, err = query.One[int](ctx, db, "SELECT COUNT(*) FROM notes")
-				}
+				count, err = query.One[int](ctx, ctx.DB, "SELECT COUNT(*) FROM notes")
 			}
 			select {
 			case result <- err:
 			default:
 			}
 			return nil
-		})
-		app := newPlainApp(t, WithJobs(time.Hour, job))
+		}
+		app := newPlainApp(t, WithCron("job", "@every 20ms", job))
 
 		if err := app.startWorkers(); err != nil {
 			t.Fatal(err)
@@ -119,28 +144,16 @@ func TestPlainSQL(t *testing.T) {
 	})
 }
 
-func TestSQLMigrator(t *testing.T) {
-	sqlDB := func(t *testing.T, app *App) *sql.DB {
-		t.Helper()
-		db, err := app.DBManager.Connect()
-		if err != nil {
-			t.Fatal(err)
-		}
-		s, err := db.DB()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return s
-	}
+func TestMigrate(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("runs each file once, in the order of the names", func(t *testing.T) {
 		app := newPlainApp(t)
 
-		again := app.MigrateDatabase(NewSQLMigrator(plainMigrations))
+		again := Migrate(writerOf(t, app), plainMigrations)
 
-		versions, err := query.All[string](ctx, sqlDB(t, app), "SELECT version FROM schema_migrations ORDER BY version")
-		seeds, seedErr := query.One[int](ctx, sqlDB(t, app), "SELECT COUNT(*) FROM notes WHERE pinned = 0")
+		versions, err := query.All[string](ctx, writerOf(t, app), "SELECT version FROM schema_migrations ORDER BY version")
+		seeds, seedErr := query.One[int](ctx, writerOf(t, app), "SELECT COUNT(*) FROM notes WHERE pinned = 0")
 		if again != nil || err != nil || len(versions) != 2 || versions[0] != "0001_create_notes.sql" {
 			t.Errorf("versions = %v, errors %v %v", versions, again, err)
 		}
@@ -150,17 +163,33 @@ func TestSQLMigrator(t *testing.T) {
 	})
 
 	t.Run("a new file runs on the next start", func(t *testing.T) {
-		app := newPlainApp(t)
-		more := fstest.MapFS{"0003_add_title.sql": {Data: []byte("ALTER TABLE notes ADD COLUMN title TEXT;")}}
+		cfg := newAppTestConfig(t)
+		first, err := NewApp(cfg, WithMigrations(plainMigrations))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = first.Shutdown(ctx)
+		more := fstest.MapFS{"0003_add_title.sql": {Data: []byte("ALTER TABLE notes ADD COLUMN title TEXT DEFAULT 'none';")}}
 		for name, file := range plainMigrations {
 			more[name] = file
 		}
 
-		err := app.MigrateDatabase(NewSQLMigrator(more))
+		second, err := NewApp(cfg, WithMigrations(more), WithRoutes(func(s *Server) {
+			s.Get("/titles", func(c *Context) error {
+				titles, err := query.All[string](c.Context(), c.DB(), "SELECT title FROM notes")
+				if err != nil {
+					return err
+				}
+				return c.JSON(titles)
+			})
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = second.Shutdown(ctx) })
 
-		_, queryErr := sqlDB(t, app).Exec("UPDATE notes SET title = 'x'")
-		if err != nil || queryErr != nil {
-			t.Errorf("migrate: %v, use the new column: %v", err, queryErr)
+		if got := get(t, second, "/titles"); got != `["none"]` {
+			t.Errorf("got %s, want the seed row with the new column", got)
 		}
 	})
 
@@ -168,19 +197,30 @@ func TestSQLMigrator(t *testing.T) {
 		app := newPlainApp(t)
 		broken := fstest.MapFS{"0003_broken.sql": {Data: []byte("CREATE TABLE half (id INTEGER); THIS IS NOT SQL;")}}
 
-		err := app.MigrateDatabase(NewSQLMigrator(broken))
+		err := Migrate(writerOf(t, app), broken)
 
-		_, tableErr := sqlDB(t, app).Exec("SELECT 1 FROM half")
-		recorded, _ := query.One[int](ctx, sqlDB(t, app), "SELECT COUNT(*) FROM schema_migrations WHERE version = '0003_broken.sql'")
+		_, tableErr := writerOf(t, app).Exec("SELECT 1 FROM half")
+		recorded, _ := query.One[int](ctx, writerOf(t, app), "SELECT COUNT(*) FROM schema_migrations WHERE version = '0003_broken.sql'")
 		if err == nil || tableErr == nil || recorded != 0 {
 			t.Errorf("err = %v, table exists = %v, recorded = %d", err, tableErr == nil, recorded)
+		}
+	})
+
+	t.Run("a migration that fails stops NewApp", func(t *testing.T) {
+		broken := fstest.MapFS{"0001_broken.sql": {Data: []byte("THIS IS NOT SQL;")}}
+
+		app, err := NewApp(newAppTestConfig(t), WithMigrations(broken))
+
+		if err == nil {
+			_ = app.Shutdown(ctx)
+			t.Error("NewApp returned nil, want the migration error")
 		}
 	})
 
 	t.Run("a folder without .sql files is an error", func(t *testing.T) {
 		app := newPlainApp(t)
 
-		if err := app.MigrateDatabase(NewSQLMigrator(fstest.MapFS{"readme.txt": {Data: []byte("x")}})); err == nil {
+		if err := Migrate(writerOf(t, app), fstest.MapFS{"readme.txt": {Data: []byte("x")}}); err == nil {
 			t.Error("Migrate returned nil, want an error")
 		}
 	})
@@ -188,71 +228,8 @@ func TestSQLMigrator(t *testing.T) {
 	t.Run("a file name with a quote is an error", func(t *testing.T) {
 		app := newPlainApp(t)
 
-		if err := app.MigrateDatabase(NewSQLMigrator(fstest.MapFS{"0003_it's.sql": {Data: []byte("SELECT 1;")}})); err == nil {
+		if err := Migrate(writerOf(t, app), fstest.MapFS{"0003_it's.sql": {Data: []byte("SELECT 1;")}}); err == nil {
 			t.Error("Migrate returned nil, want an error")
-		}
-	})
-}
-
-func TestWithReadPool(t *testing.T) {
-	newApp := func(t *testing.T, routes func(s *Server)) *App {
-		t.Helper()
-		app, err := NewApp(newAppTestConfig(t), WithReadPool(), WithRoutes(routes))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
-		if err := app.MigrateDatabase(NewSQLMigrator(plainMigrations)); err != nil {
-			t.Fatalf("migrate: %v", err)
-		}
-		return app
-	}
-
-	t.Run("handlers read and write as before, with GORM and with SQL", func(t *testing.T) {
-		app := newApp(t, func(s *Server) {
-			s.Get("/add", func(c *Context) error {
-				if err := c.DB().Exec("INSERT INTO notes (body) VALUES (?)", "gorm").Error; err != nil {
-					return err
-				}
-				return c.WriteSQL(func(tx *sql.Tx) error {
-					_, err := tx.ExecContext(c.Context(), "INSERT INTO notes (body) VALUES (?)", "sql")
-					return err
-				})
-			})
-			s.Get("/count", func(c *Context) error {
-				var viaGORM int64
-				if err := c.DB().Table("notes").Count(&viaGORM).Error; err != nil {
-					return err
-				}
-				viaSQL, err := query.One[int64](c.Context(), c.SQL(), "SELECT COUNT(*) FROM notes")
-				if err != nil {
-					return err
-				}
-				return c.JSON([]int64{viaGORM, viaSQL})
-			})
-		})
-		get(t, app, "/add")
-
-		got := get(t, app, "/count")
-
-		if got != "[3,3]" {
-			t.Errorf("got %s, want [3,3]: the seed row and two new rows", got)
-		}
-	})
-
-	t.Run("SQL returns read-only connections", func(t *testing.T) {
-		app := newApp(t, func(s *Server) {
-			s.Get("/write", func(c *Context) error {
-				_, err := c.SQL().ExecContext(c.Context(), "INSERT INTO notes (body) VALUES ('x')")
-				if err != nil {
-					return c.SendString("refused")
-				}
-				return c.SendString("written")
-			})
-		})
-
-		if got := get(t, app, "/write"); got != "refused" {
-			t.Errorf("got %q, want the write on SQL() refused", got)
 		}
 	})
 }

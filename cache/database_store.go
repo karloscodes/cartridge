@@ -17,19 +17,23 @@ const table = "cartridge_cache"
 // database shares it, and it survives a restart. When MaxEntries is
 // exceeded, the oldest entries go first.
 type DatabaseStore struct {
-	db      *sql.DB
+	read    *sql.DB
+	write   *sql.DB
 	dialect dialect.Dialect
 	opts    Options
 	stopCh  chan struct{}
 }
 
-// NewDatabaseStore creates a cache store in db. It creates the table
+// NewDatabaseStore creates a cache store. It reads through read and writes
+// through write: the Reader and the Writer of a cartridge.DBManager. For a
+// database with one pool, pass it twice. It creates the table
 // cartridge_cache when it does not exist. The database can be the app's
 // main database or another one.
-func NewDatabaseStore(db *sql.DB, opts ...Option) (*DatabaseStore, error) {
+func NewDatabaseStore(read, write *sql.DB, opts ...Option) (*DatabaseStore, error) {
 	s := &DatabaseStore{
-		db:      db,
-		dialect: dialect.Of(db),
+		read:    read,
+		write:   write,
+		dialect: dialect.Of(write),
 		opts:    applyOptions(opts...),
 		stopCh:  make(chan struct{}),
 	}
@@ -39,7 +43,7 @@ func NewDatabaseStore(db *sql.DB, opts ...Option) (*DatabaseStore, error) {
 		"value " + s.dialect.Blob() + " NOT NULL, " +
 		"expires_at BIGINT NOT NULL, " + // Unix milliseconds
 		"created_at BIGINT NOT NULL)" // Unix milliseconds, for the oldest-first limit
-	if _, err := db.Exec(create); err != nil {
+	if _, err := write.Exec(create); err != nil {
 		return nil, err
 	}
 
@@ -50,14 +54,14 @@ func NewDatabaseStore(db *sql.DB, opts ...Option) (*DatabaseStore, error) {
 }
 
 func (s *DatabaseStore) exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return s.db.ExecContext(ctx, s.dialect.Rebind(query), args...)
+	return s.write.ExecContext(ctx, s.dialect.Rebind(query), args...)
 }
 
 // Read retrieves a value from the cache.
 func (s *DatabaseStore) Read(ctx context.Context, key string) ([]byte, bool) {
 	var value []byte
 	query := "SELECT value FROM " + table + " WHERE cache_key = ? AND expires_at > ?"
-	err := s.db.QueryRowContext(ctx, s.dialect.Rebind(query), key, time.Now().UnixMilli()).Scan(&value)
+	err := s.read.QueryRowContext(ctx, s.dialect.Rebind(query), key, time.Now().UnixMilli()).Scan(&value)
 	if err != nil {
 		return nil, false
 	}
@@ -127,7 +131,7 @@ func (s *DatabaseStore) Stats(ctx context.Context) Stats {
 func (s *DatabaseStore) count(ctx context.Context, where string, args ...any) int64 {
 	var n int64
 	query := "SELECT COUNT(*) FROM " + table + " " + where
-	_ = s.db.QueryRowContext(ctx, s.dialect.Rebind(query), args...).Scan(&n)
+	_ = s.read.QueryRowContext(ctx, s.dialect.Rebind(query), args...).Scan(&n)
 	return n
 }
 
@@ -149,7 +153,7 @@ func (s *DatabaseStore) enforceLimit(ctx context.Context) {
 
 	// Two queries, because MySQL does not take a LIMIT in an IN subquery.
 	query := "SELECT cache_key FROM " + table + " ORDER BY created_at ASC, cache_key ASC LIMIT ?"
-	rows, err := s.db.QueryContext(ctx, s.dialect.Rebind(query), excess)
+	rows, err := s.read.QueryContext(ctx, s.dialect.Rebind(query), excess)
 	if err != nil {
 		return
 	}

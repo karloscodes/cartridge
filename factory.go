@@ -49,30 +49,6 @@ type App struct {
 	Databases map[string]*sqlite.Manager // from WithDatabase, by name
 }
 
-// MigrateDatabase runs the migrator, then checkpoints the WAL.
-func (a *App) MigrateDatabase(migrator Migrator) error {
-	db, err := a.DBManager.Connect()
-	if err != nil {
-		return fmt.Errorf("connect database: %w", err)
-	}
-
-	if err := migrator.Migrate(db); err != nil {
-		return fmt.Errorf("run migrations: %w", err)
-	}
-	// Read connections that were open during the migration would still
-	// plan with the old schema once.
-	a.DBManager.SchemaChanged()
-
-	// PASSIVE never waits. A FULL checkpoint waits for every reader, and the
-	// live replica keeps a read open on purpose, so FULL always ran into
-	// busy_timeout (5s) and gave up.
-	if err := a.DBManager.CheckpointWAL("PASSIVE"); err != nil {
-		a.Logger.Warn("failed to checkpoint WAL after migration", slog.Any("error", err))
-	}
-
-	return nil
-}
-
 // AppOption configures NewApp.
 type AppOption func(*appOptions)
 
@@ -83,11 +59,10 @@ type appOptions struct {
 	errorHandler  ErrorHandler
 	routes        func(*Server)
 	workers       []BackgroundWorker
-	jobGroups     []jobGroup
+	migrations    fs.FS
 	serverConfig  func(*ServerConfig)
 	defaults      string
 	sessionPath   string
-	readPool      bool
 	pragmas       []string
 	sessionValid  func(userID uint, issuedAt time.Time) bool
 	inertia       bool
@@ -103,11 +78,6 @@ type appOptions struct {
 type cronSpec struct {
 	name, spec string
 	fn         CronFunc
-}
-
-type jobGroup struct {
-	interval   time.Duration
-	processors []Processor
 }
 
 // WithAssets sets the embedded templates and static files. Either can be
@@ -147,11 +117,17 @@ func WithRoutes(fn func(*Server)) AppOption {
 	}
 }
 
-// WithJobs runs the processors in one dispatcher at the interval. Call it
-// again for another interval.
-func WithJobs(interval time.Duration, processors ...Processor) AppOption {
+// WithMigrations runs the .sql files of fsys on the main database when
+// NewApp builds the app, before the server starts. See Migrate.
+//
+//	//go:embed migrations/*.sql
+//	var files embed.FS
+//
+//	migrations, _ := fs.Sub(files, "migrations")
+//	cartridge.WithMigrations(migrations)
+func WithMigrations(fsys fs.FS) AppOption {
 	return func(o *appOptions) {
-		o.jobGroups = append(o.jobGroups, jobGroup{interval: interval, processors: processors})
+		o.migrations = fsys
 	}
 }
 
@@ -205,20 +181,10 @@ func WithSessionCheck(valid func(userID uint, issuedAt time.Time) bool) AppOptio
 	}
 }
 
-// WithReadPool opens each SQLite database of the app with two pools: one
-// write connection, and a pool of read-only connections. See
-// sqlite.Config.ReadPool. App code does not change: a SELECT runs on a read
-// connection, and every write and transaction runs on the write
-// connection, one at a time.
-func WithReadPool() AppOption {
-	return func(o *appOptions) {
-		o.readPool = true
-	}
-}
-
-// WithPragmas runs the pragmas on every connection of the main database.
-// Cartridge sets WAL, synchronous=NORMAL, busy_timeout, and immediate
-// transactions. Each app adds what it needs. See sqlite.Config.Pragmas.
+// WithPragmas runs the pragmas on every connection of the main database:
+// the write connection and each read connection. Cartridge sets WAL,
+// synchronous=NORMAL, busy_timeout, and immediate transactions. Each app
+// adds what it needs. See sqlite.Config.Pragmas.
 //
 //	cartridge.WithPragmas("PRAGMA foreign_keys = ON", "PRAGMA mmap_size = 268435456")
 func WithPragmas(pragmas ...string) AppOption {
@@ -342,13 +308,31 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 	slog.SetDefault(logger)
 
 	dbManager := sqlite.NewManager(sqlite.Config{
-		ReadPool:     o.readPool,
 		Pragmas:      o.pragmas,
 		Path:         cfg.DatabaseDSN(),
 		MaxOpenConns: cfg.GetMaxOpenConns(),
 		MaxIdleConns: cfg.GetMaxIdleConns(),
 		Logger:       logger,
 	})
+
+	if o.migrations != nil {
+		writer, err := dbManager.Writer()
+		if err != nil {
+			return nil, fmt.Errorf("cartridge: connect database: %w", err)
+		}
+		if err := Migrate(writer, o.migrations); err != nil {
+			return nil, err
+		}
+		// A read connection that was open during the migration would plan
+		// its next query with the old schema once.
+		dbManager.SchemaChanged()
+		// PASSIVE never waits. A FULL checkpoint waits for every reader, and
+		// a live replica keeps a read open on purpose, so FULL ran into
+		// busy_timeout and gave up.
+		if err := dbManager.CheckpointWAL("PASSIVE"); err != nil {
+			logger.Warn("failed to checkpoint WAL after migration", slog.Any("error", err))
+		}
+	}
 
 	// The template functions call the server, which exists before the first render.
 	var server *Server
@@ -370,9 +354,6 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 		}
 		if dbCfg.Logger == nil {
 			dbCfg.Logger = logger
-		}
-		if o.readPool {
-			dbCfg.ReadPool = true
 		}
 
 		if dbCfg.MaxOpenConns == 0 {
@@ -419,15 +400,15 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 			}
 			m = named
 		}
-		db, err := m.Connect()
+		reader, err := m.Reader()
 		if err != nil {
 			return nil, fmt.Errorf("cartridge: cache: %w", err)
 		}
-		sqlDB, err := db.DB()
+		writer, err := m.Writer()
 		if err != nil {
 			return nil, fmt.Errorf("cartridge: cache: %w", err)
 		}
-		if store, err = cache.NewDatabaseStore(sqlDB, o.cacheOptions...); err != nil {
+		if store, err = cache.NewDatabaseStore(reader, writer, o.cacheOptions...); err != nil {
 			return nil, fmt.Errorf("cartridge: cache: %w", err)
 		}
 		serverCfg.Cache = store
@@ -461,11 +442,6 @@ func NewApp(cfg AppConfig, opts ...AppOption) (*App, error) {
 	}
 
 	workers := o.workers
-	for _, group := range o.jobGroups {
-		dispatcher := NewJobDispatcher(logger, dbManager, group.interval, group.processors...)
-		dispatcher.Databases = serverCfg.Databases
-		workers = append(workers, dispatcher)
-	}
 
 	if len(o.crons) > 0 {
 		scheduler := NewCronScheduler(logger, dbManager)

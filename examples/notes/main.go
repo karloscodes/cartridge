@@ -47,29 +47,22 @@ func newApp(cfg *config.Config) (*cartridge.App, error) {
 	var app *cartridge.App
 	app, err := cartridge.NewApp(cfg,
 		cartridge.WithDefaults("1.7"),
-		cartridge.WithReadPool(),
+		cartridge.WithMigrations(db.Migrations()),
 		cartridge.WithAssets(web.Templates(), web.Static()),
 		cartridge.WithSession("/login"),
 		// A session ends when its user is gone. The check runs on requests,
 		// after NewApp has set app.
 		cartridge.WithSessionCheck(func(userID uint, issuedAt time.Time) bool {
-			conn, err := app.DBManager.Connect()
+			reader, err := app.DBManager.Reader()
 			if err != nil {
 				return false
 			}
-			sqlDB, err := conn.DB()
-			if err != nil {
-				return false
-			}
-			count, err := db.New(sqlDB).CountUsersByID(context.Background(), int64(userID))
+			count, err := db.New(reader).CountUsersByID(context.Background(), int64(userID))
 			return err == nil && count == 1
 		}),
 		cartridge.WithRoutes(routes),
 	)
-	if err != nil {
-		return nil, err
-	}
-	return app, app.MigrateDatabase(cartridge.NewSQLMigrator(db.Migrations()))
+	return app, err
 }
 
 func routes(s *cartridge.Server) {
