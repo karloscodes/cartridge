@@ -1,6 +1,6 @@
 # Cartridge
 
-An opinionated Go web framework on top of `net/http` and [GORM](https://gorm.io). It targets monolithic apps that ship as one binary with SQLite: config, logging, sessions, CSRF protection, background jobs, and embedded assets come wired in.
+An opinionated Go web framework on top of `net/http` and `database/sql`. It targets monolithic apps that ship as one binary with SQLite: config, logging, sessions, CSRF protection, cron jobs, and embedded assets come wired in.
 
 > **Note:** Cartridge is pre-1.0. APIs can change between minor versions.
 
@@ -24,10 +24,43 @@ Layout that `NewApp` expects:
 ```
 myapp/
 ├── main.go
+├── db/
+│   ├── migrations.go
+│   └── migrations/
+│       └── 0001_create_notes.sql
 └── web/
     ├── embed.go
     ├── templates/home.html
     └── static/app.css      # served at /assets/app.css
+```
+
+`db/migrations.go`:
+
+```go
+package db
+
+import (
+	"embed"
+	"io/fs"
+)
+
+//go:embed migrations/*.sql
+var migrations embed.FS
+
+func Migrations() fs.FS {
+	sub, _ := fs.Sub(migrations, "migrations")
+	return sub
+}
+```
+
+`db/migrations/0001_create_notes.sql`:
+
+```sql
+CREATE TABLE notes (
+	id INTEGER PRIMARY KEY,
+	body TEXT NOT NULL,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
 `web/embed.go`:
@@ -46,7 +79,6 @@ var templatesFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
-// Template names are relative to templates/, so "home" resolves to templates/home.html.
 func Templates() fs.FS { sub, _ := fs.Sub(templatesFS, "templates"); return sub }
 func Static() fs.FS    { sub, _ := fs.Sub(staticFS, "static"); return sub }
 ```
@@ -57,18 +89,17 @@ func Static() fs.FS    { sub, _ := fs.Sub(staticFS, "static"); return sub }
 package main
 
 import (
+	"database/sql"
 	"log"
+	"net/http"
 
 	"github.com/karloscodes/cartridge"
 	"github.com/karloscodes/cartridge/config"
+	"github.com/karloscodes/cartridge/query"
 
+	"myapp/db"
 	"myapp/web"
 )
-
-type Note struct {
-	ID   uint
-	Body string
-}
 
 func main() {
 	cfg, err := config.Load("myapp")
@@ -77,41 +108,44 @@ func main() {
 	}
 
 	app, err := cartridge.NewApp(cfg,
+		cartridge.WithMigrations(db.Migrations()),
 		cartridge.WithAssets(web.Templates(), web.Static()),
 		cartridge.WithRoutes(func(s *cartridge.Server) {
 			s.Get("/", home)
-			s.Post("/notes", createNote, &cartridge.RouteConfig{WriteConcurrency: true})
+			s.Post("/notes", createNote)
 		}),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if err := app.MigrateDatabase(cartridge.NewAutoMigrator(&Note{})); err != nil {
-		log.Fatal(err)
-	}
-
-	// Run blocks. It returns nil after a graceful shutdown on SIGINT or
-	// SIGTERM, so log.Fatal(app.Run()) would exit 1 after a clean stop.
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
 }
 
 func home(ctx *cartridge.Context) error {
-	var notes []Note
-	if err := ctx.DB().Find(&notes).Error; err != nil {
+	type Note struct {
+		ID   int64
+		Body string
+	}
+	notes, err := query.All[Note](ctx.Context(), ctx.DB(),
+		"SELECT id, body FROM notes ORDER BY created_at DESC")
+	if err != nil {
 		return err
 	}
 	return ctx.Render("home", cartridge.Map{"Notes": notes})
 }
 
 func createNote(ctx *cartridge.Context) error {
-	note := Note{Body: ctx.Input("body")}
-	if err := ctx.DB().Create(&note).Error; err != nil {
+	err := ctx.WriteTx(func(tx *sql.Tx) error {
+		_, err := query.Exec(ctx.Context(), tx, "INSERT INTO notes (body) VALUES (?)", ctx.Input("body"))
+		return err
+	})
+	if err != nil {
 		return err
 	}
-	return ctx.FlashSuccess("Saved").RedirectBack("/")
+	return ctx.Redirect("/", http.StatusSeeOther)
 }
 ```
 
@@ -162,8 +196,9 @@ Every handler and middleware has one signature: `func(*cartridge.Context) error`
 
 | Member | What it does |
 |---|---|
-| `ctx.DB()` | GORM session bound to the request context |
-| `ctx.Database("name")`, `ctx.DatabaseWriteTx("name", fn)` | Read and write a database from `WithDatabase`. See [More databases](#more-databases) |
+| `ctx.DB()` | Pool of read-only connections. Use `query.All` and `query.One` to read rows, or pass it to sqlc queries. Write through `WriteTx` |
+| `ctx.WriteTx(fn)` | One write transaction with a `*sql.Tx`. See [Writes under load](#writes-under-load) |
+| `ctx.Database("name")`, `ctx.DatabaseWriteTx("name", fn)` | Read and write a named database from `WithDatabase`. See [More databases](#more-databases) |
 | `ctx.Input("key")` | One value from form, JSON body, route param, or query, in that order |
 | `ctx.Bind(&dst)` | Decodes the body only (JSON, form, multipart). Form fields need a `form` tag. Returns a 400, 413, or 415 `*Error` |
 | `ctx.QueryParser(&dst)`, `ctx.ParamsParser(&dst)` | Decode the query or route params. Fields need a `query` or `params` tag |
@@ -333,26 +368,6 @@ The middleware redirects anonymous users to the login path. Pages behind it send
 
 ## Background jobs
 
-A processor runs on a fixed interval. `JobContext` gives it a logger and a `*gorm.DB`:
-
-```go
-type SendEmails struct{}
-
-func (SendEmails) ProcessBatch(ctx *cartridge.JobContext) error {
-	var pending []Email
-	if err := ctx.DB.Where("sent_at IS NULL").Limit(50).Find(&pending).Error; err != nil {
-		return err
-	}
-	// send, then mark sent...
-	return nil
-}
-
-cartridge.WithJobs(time.Minute, SendEmails{}),
-cartridge.WithJobs(time.Hour, PruneSessions{}), // each call gets its own schedule
-```
-
-`WithWorker(w)` runs any `BackgroundWorker` (`Start() error`, `Stop()`). Jobs and workers start with `app.Run()` and stop during graceful shutdown.
-
 ### Cron jobs
 
 `WithCron` runs a function on a schedule:
@@ -362,7 +377,9 @@ cartridge.WithCron("send-digest", "TZ=Europe/Madrid 0 8 * * *", sendDigest),
 cartridge.WithCron("sweep-events", "@every 30s", sweepEvents),
 
 func sendDigest(ctx *cartridge.JobContext) error {
-	// ctx.DB, ctx.SQL(), ctx.WriteTx, ctx.WriteSQL, ctx.Logger
+	// ctx.DB is *sql.DB, pass ctx as the context argument to queries
+	// ctx.WriteTx(fn) for writes
+	// ctx.Logger for logging
 	return nil
 }
 ```
@@ -410,65 +427,19 @@ func stats(ctx *cartridge.Context) error {
 
 ### Migrations
 
-`NewAutoMigrator` wraps GORM's `AutoMigrate`. For anything else, implement `Migrator`:
+The schema is SQL files. `WithMigrations` runs them in `NewApp`, before the server starts:
 
 ```go
-type Migrator interface {
-	Migrate(db *gorm.DB) error
-}
+cartridge.WithMigrations(db.Migrations()), // see db/migrations.go in the Quick start
 ```
 
-`app.MigrateDatabase` runs the migrator, then checkpoints the SQLite WAL.
+- Name the files so that they sort in order: `0001_create_notes.sql`, `0002_add_pinned.sql`.
+- Each file runs once, in one transaction. The table `schema_migrations` records it.
+- Never change a file that ran. Add a new one. There are no down migrations.
+- A migration that fails stops `NewApp` with its error.
+- A file can hold several statements on SQLite and PostgreSQL. MySQL takes one statement per file, and it cannot undo a `CREATE` or `ALTER` when a later statement fails.
 
-### SQL without GORM
-
-An app can use `database/sql` in place of GORM, for all of its queries or for some. This path adds no dependency.
-
-```go
-//go:embed migrations/*.sql
-var migrations embed.FS
-
-sub, _ := fs.Sub(migrations, "migrations")
-err := app.MigrateDatabase(cartridge.NewSQLMigrator(sub))
-```
-
-`NewSQLMigrator` runs the `.sql` files in the order of their names (`0001_create_notes.sql`, `0002_add_pinned.sql`), each one once and in one transaction. The table `schema_migrations` records them. Never change a file that ran: add a new one. There are no down migrations. A file can hold several statements on SQLite and PostgreSQL; MySQL takes one statement per file.
-
-```go
-type Note struct {
-	ID        int64
-	Body      string
-	CreatedAt time.Time
-}
-
-func listNotes(ctx *cartridge.Context) error {
-	notes, err := query.All[Note](ctx.Context(), ctx.SQL(),
-		"SELECT id, body, created_at FROM notes WHERE user_id = ? ORDER BY id", userID)
-	if err != nil {
-		return err
-	}
-	return ctx.JSON(notes)
-}
-
-func createNote(ctx *cartridge.Context) error {
-	return ctx.WriteSQL(func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx.Context(), "INSERT INTO notes (user_id, body) VALUES (?, ?)", userID, body)
-		return err
-	})
-}
-```
-
-| Member | What it does |
-|---|---|
-| `ctx.SQL()` | The `*sql.DB` of the main database: the same pool that `ctx.DB()` uses |
-| `ctx.WriteSQL(fn)` | One write transaction with a `*sql.Tx`, through the same write queue as `WriteTx` |
-| `jobCtx.SQL()`, `jobCtx.WriteSQL(fn)` | The same in a job |
-| `query.All[T]`, `query.One[T]` | Read rows into structs, or one column into values. `One` returns `sql.ErrNoRows` without a row |
-| `query.Exec` | Runs an `INSERT`, `UPDATE`, or `DELETE` |
-
-**SQL injection.** `query.All`, `query.One`, and `query.Exec` take the SQL text only as a constant of the source code. A text built at run time, with `fmt.Sprintf` or with `+` and a variable, does not compile. So a request value can only be an argument, and the driver never reads an argument as SQL. For a part that cannot be an argument, such as a sort column, choose between constant queries in code.
-
-A column fills the field with its name: the `db` tag, or the field name in snake case (`CreatedAt` reads `created_at`). A column without a field is an error. A column that can be `NULL` needs a pointer field or a `sql.Null` type. The placeholder is the one of the database: `?` for SQLite and MySQL, `$1` for PostgreSQL.
+`cartridge.Migrate(db, files)` is the function behind the option, for a database that `NewApp` does not open.
 
 ### Typed queries with sqlc
 
@@ -485,9 +456,9 @@ INSERT INTO notes (user_id, body) VALUES (?, ?);
 ```
 
 ```go
-notes, err := db.New(ctx.SQL()).NotesOfUser(ctx.Context(), userID)
+notes, err := db.New(ctx.DB()).NotesOfUser(ctx.Context(), userID)
 
-err := ctx.WriteSQL(func(tx *sql.Tx) error {
+err := ctx.WriteTx(func(tx *sql.Tx) error {
 	return db.New(tx).CreateNote(ctx.Context(), db.CreateNoteParams{UserID: userID, Body: body})
 })
 ```
@@ -496,42 +467,55 @@ err := ctx.WriteSQL(func(tx *sql.Tx) error {
 
 | File | What it holds |
 |---|---|
-| `db/migrations/*.sql` | The schema. `cartridge.NewSQLMigrator(db.Migrations())` runs it, and sqlc reads it |
+| `db/migrations/*.sql` | The schema. `WithMigrations(db.Migrations())` runs it, and sqlc reads it |
 | `db/queries.sql` | Every query of the app |
 | `sqlc.yaml` | Tells sqlc where the two are |
 | `db/models.go`, `db/queries.sql.go`, `db/db.go` | Written by sqlc. Do not edit them. `models.go` shows the current schema as Go structs |
 
 After a change to a migration or a query, run `sqlc generate` and commit the result. Pin the sqlc version (`mise.toml`), and let CI run `sqlc diff`, which fails when the generated code is old.
 
-The `query` package below is for a query outside sqlc, such as a one-off in a test or a script.
+### One-off queries with the query package
+
+The `query` package reads `database/sql` rows into structs, without an ORM. Use it for a query outside sqlc, such as a one-off in a test or a script. The SQL text must be a constant: a text built at run time does not compile, so a request value can only be an argument.
+
+```go
+type Note struct {
+	ID        int64
+	Body      string
+	CreatedAt time.Time
+}
+
+func listNotes(ctx *cartridge.Context) error {
+	notes, err := query.All[Note](ctx.Context(), ctx.DB(),
+		"SELECT id, body, created_at FROM notes WHERE pinned = ? ORDER BY id", true)
+	if err != nil {
+		return err
+	}
+	return ctx.JSON(notes)
+}
+```
+
+| Function | What it does |
+|---|---|
+| `query.All[T]` | Reads every row into a struct, or one column into a value |
+| `query.One[T]` | Reads the first row. Returns `sql.ErrNoRows` without a row |
+| `query.Exec` | Runs an `INSERT`, `UPDATE`, or `DELETE` |
+
+A column fills the field with its name: the `db` tag, or the field name in snake case (`CreatedAt` reads `created_at`). A column without a field is an error. A column that can be `NULL` needs a pointer field or a `sql.Null` type. The placeholder is the one of the database: `?` for SQLite and MySQL, `$1` for PostgreSQL.
 
 ### Two pools: one writer, many readers
 
-`WithReadPool()` opens each SQLite database with two connection pools: one write connection, and a pool of read-only connections.
+Cartridge opens each SQLite file with two connection pools:
 
-```go
-app, err := cartridge.NewApp(cfg,
-	cartridge.WithReadPool(),
-	// ...
-)
-```
+- One write connection. SQLite allows one writer, so writes run one at a time, in arrival order. They wait in Go, so two writes of the app cannot fail with `database is locked` against each other.
+- A pool of read-only connections. A read never waits for a write. A statement that writes fails on it at once.
 
-With `NewApplication`, set `sqlite.Config{ReadPool: true}`. App code does not change:
+`ctx.DB()` is the read pool, and `ctx.WriteTx` uses the write connection. There is no option for this.
 
-- GORM's read methods (`Find`, `First`, `Take`, `Scan`, `Count`, `Pluck`, `Rows`, `Row`) run on a read connection. Reads never wait for a write.
-- `Create`, `Update`, `Delete`, `Exec`, and every transaction run on the one write connection, one at a time. Writes wait for each other in Go, so two of them cannot fail with `database is locked` against each other.
-- The method decides the pool, not the SQL text. A statement that writes through a read method, such as `Raw("UPDATE ... RETURNING id").Scan(&id)`, is refused outside a transaction.
 - `MaxOpenConns` is the number of read connections.
-- `ctx.SQL()` returns the read-only pool. A statement that writes fails on it: write through `ctx.WriteSQL`.
-- `ctx.WriteTx` has no queue of its own: the one write connection is the queue. It waits for that connection at most `WriteWait` (5 seconds), and then returns `sqlite.ErrBusy`, as before.
-- A write outside `WriteTx` waits for the connection as long as its request lives.
-
-Three things to check before you turn it on:
-
-- Inside a transaction, use the transaction handle (`tx`) for every query. A write on `ctx.DB()` inside `WriteTx` waits for the connection that the transaction holds.
-- Code that takes `db.DB()` gets the write connection, and holding it stops every write. Code that needs its own connection for a read takes it from `sqlite.ReadPoolOf(db)` or `Manager.Reader()`.
-- A database in memory keeps one pool.
-- Change the schema at startup, before the app serves requests, and call `Manager.SchemaChanged()` after it. A read connection that was open during the change can still return the old columns for its next `SELECT *`. `app.MigrateDatabase` makes the call for you.
+- Inside `WriteTx`, use `tx` for every query, also for a read. `ctx.DB()` there does not see the writes of the transaction.
+- A database in memory (`:memory:`) does not open, because each pool would get its own database. Use a file.
+- After a schema change, a read connection that was open can return the old columns for its next `SELECT *`. `WithMigrations` handles that. Code that changes the schema by itself calls `Manager.SchemaChanged()` after it.
 
 `ctx.DataVersion()` returns a token that changes after every commit to the database file, by this process or another one. Put it in a cache key or an `ETag` to keep a value until the data changes, with no code that invalidates it:
 
@@ -543,17 +527,15 @@ if err != nil {
 stats, err := cache.Fetch(ctx.Context(), memoryStore, "stats:"+siteID+":"+version, time.Hour, loadStats)
 ```
 
-The token is good for the life of the process, so use it with a cache in memory. It works with or without the read pool.
-
-It is off by default in 1.x. In 2.0 it is the only way.
+The token is good for the life of the process, so use it with a cache in memory.
 
 ### Writes under load
 
-SQLite allows one writer. `WriteTx` runs a write transaction when its turn comes. Writers wait in arrival order and hold no pool connection while they wait, so reads go on:
+`WriteTx` runs one write transaction on the write connection. Writes wait for that connection in arrival order. Reads have their own connections, so they go on:
 
 ```go
-err := ctx.WriteTx(func(tx *gorm.DB) error {
-	return tx.Create(&event).Error
+err := ctx.WriteTx(func(tx *sql.Tx) error {
+	return db.New(tx).CreateEvent(ctx.Context(), params)
 })
 if errors.Is(err, sqlite.ErrBusy) {
 	ctx.Set("Retry-After", "5")
@@ -562,16 +544,14 @@ if errors.Is(err, sqlite.ErrBusy) {
 ```
 
 - A write that waits longer than `sqlite.Config.WriteWait` (default 5s) gets `sqlite.ErrBusy`. Answer it with 503 and `Retry-After`, so clients slow down. The server does not retry.
-- The wait has a deadline. The transaction does not: once it starts, it commits or rolls back, even if the client leaves.
+- A write is all or nothing. When the client goes away, the request context is canceled: a statement that runs with it fails, and the whole write rolls back. After `fn` returns nil, the commit runs to the end.
 - Inside `fn`, use `tx` for every query, and run nothing slow (no HTTP calls, no email). Do not nest `WriteTx`.
-- In a job, use `jobCtx.WriteTx`. Outside a request, use `cartridge.Write(ctx, dbManager, fn)`.
-- Batch many small writes into one `WriteTx`. Use `tx.Transaction(...)` inside it for a savepoint per item, so one bad item does not roll back the batch.
-
-`sqlite.PerformWrite` is deprecated. It waits inside SQLite while it holds a pool connection, so a write burst can block every reader.
+- In a job, use `jobCtx.WriteTx`. Outside a request and a job, use `cartridge.Write(ctx, app.DBManager, fn)`.
+- Batch many small writes into one `WriteTx`. Use savepoints inside it for a write per item, so one bad item does not roll back the batch.
 
 ### Pragmas
 
-Every connection gets WAL, `synchronous=NORMAL`, `busy_timeout`, and immediate transactions. The manager runs `PRAGMA optimize` at open and close, so the query planner has statistics. Add app-specific pragmas with `Pragmas`. They run on every connection:
+The write connection gets WAL, `synchronous=NORMAL`, `busy_timeout`, and immediate transactions. The read connections are read-only, with the same `busy_timeout`. The manager runs `PRAGMA optimize` at open and close, so the query planner has statistics. Add app-specific pragmas with `Pragmas`. They run on every new connection:
 
 ```go
 sqlite.NewManager(sqlite.Config{
@@ -582,9 +562,9 @@ sqlite.NewManager(sqlite.Config{
 
 With `NewApp`, pass them with `cartridge.WithPragmas("PRAGMA foreign_keys = ON", ...)`.
 
-Cartridge adds no other pragma: each app sets its own. Measure a pragma on real data before you add it. SQLite ignores an unknown pragma name without an error. With the read pool, a pragma runs on the write connection and on every read connection, and a read connection refuses a pragma that writes.
+Cartridge adds no other pragma: each app sets its own. Measure a pragma on real data before you add it. SQLite ignores an unknown pragma name without an error. A pragma runs on the write connection and on every read connection. A read connection refuses a pragma that writes.
 
-`foreign_keys = ON` needs a check of the app first. SQLite does not enforce foreign keys by default. With it on, a write that leaves a row without its parent fails, and a migration that rebuilds a table, as GORM's `AutoMigrate` does to change or drop a column, drops the old table with the rows that refer to it.
+`foreign_keys = ON` needs a check of the app first. SQLite does not enforce foreign keys by default. With it on, a write that leaves a row without its parent fails.
 
 ### More databases
 
@@ -595,17 +575,25 @@ cartridge.WithDatabase("shared", sqlite.Config{Path: filepath.Join(cfg.DataDirec
 ```
 
 ```go
+type Account struct {
+	ID   int64
+	Slug string
+	Name string
+}
+
 func showAccount(ctx *cartridge.Context) error {
-	var account Account
-	if err := ctx.Database("shared").First(&account, "slug = ?", ctx.Params("slug")).Error; err != nil {
+	account, err := query.One[Account](ctx.Context(), ctx.Database("shared"),
+		"SELECT id, slug, name FROM accounts WHERE slug = ?", ctx.Params("slug"))
+	if err != nil {
 		return err
 	}
 	return ctx.Render("accounts/show", account)
 }
 
 func renameAccount(ctx *cartridge.Context) error {
-	err := ctx.DatabaseWriteTx("shared", func(tx *gorm.DB) error {
-		return tx.Model(&Account{}).Where("slug = ?", ctx.Params("slug")).Update("name", ctx.Input("name")).Error
+	err := ctx.DatabaseWriteTx("shared", func(tx *sql.Tx) error {
+		_, err := query.Exec(ctx.Context(), tx, "UPDATE accounts SET name = ? WHERE slug = ?", ctx.Input("name"), ctx.Params("slug"))
+		return err
 	})
 	if err != nil {
 		return err
@@ -614,8 +602,8 @@ func renameAccount(ctx *cartridge.Context) error {
 }
 ```
 
-- `ctx.Database(name)` is a GORM session bound to the request, like `ctx.DB()`. An unknown name panics, and the client gets a 500.
-- `ctx.DatabaseWriteTx(name, fn)` writes through the write queue of that database. See [Writes under load](#writes-under-load).
+- `ctx.Database(name)` is the read pool of that database, like `ctx.DB()`. An unknown name panics, and the client gets a 500.
+- `ctx.DatabaseWriteTx(name, fn)` writes through the write connection of that database. See [Writes under load](#writes-under-load).
 - `Logger`, `MaxOpenConns`, and `MaxIdleConns` default to those of the main database.
 - The managers are in `app.Databases`. With `NewApplication`, set `ServerConfig.Databases`.
 - A job reads one with `db, err := jobCtx.Database("shared")` and writes it with `jobCtx.DatabaseWriteTx("shared", fn)`.
@@ -629,11 +617,11 @@ Set `ReadOnly` for a file that the app must not change, such as a copy of anothe
 cartridge.WithDatabase("tenant", sqlite.Config{Path: "data/main.sqlite3", ReadOnly: true}),
 ```
 
-The manager opens the file with `mode=ro` and keeps its journal mode. It does not run `PRAGMA optimize`, because that writes statistics. `Write` and `ctx.DatabaseWriteTx` return `sqlite.ErrReadOnly`. The file must exist. For a WAL file, SQLite creates the `-shm` file, so the directory must be writable.
+The manager opens the file read-only and keeps its journal mode. It does not run `PRAGMA optimize`, because that writes statistics. `WriteTx` and `ctx.DatabaseWriteTx` return `sqlite.ErrReadOnly`. The file must exist. For a WAL file, SQLite creates the `-shm` file, so the directory must be writable.
 
 ### PostgreSQL
 
-Use `NewApplication` with the generic manager and the Postgres driver:
+Use `NewApplication` with the Postgres driver:
 
 ```go
 dbManager := database.NewManager(postgres.NewDriver(), &database.Config{
@@ -651,13 +639,15 @@ app, err := cartridge.NewApplication(cartridge.ApplicationOptions{
 })
 ```
 
-To support another database, implement `database.Driver`.
-
 `SSLMode`, `Timezone`, and `SearchPath` go into the DSN, so every connection of the pool has them. A URL and a keyword DSN (`host=... dbname=...`) both work, and an option that the DSN sets itself wins.
+
+PostgreSQL's Reader and Writer both return the same pool, because PostgreSQL allows many writers.
 
 ### MySQL
 
-The `mysql` package is the driver for MySQL, used like the PostgreSQL one: `database.NewManager(mysql.NewDriver(), database.DefaultConfig(dsn), logger)`. It turns `parseTime` on in the DSN, so `time.Time` fields read `DATETIME` columns.
+The `mysql` package is the driver for MySQL, used like the PostgreSQL one: `database.NewManager(mysql.NewDriver(), &database.Config{DSN: dsn}, logger)`. It turns `parseTime` on in the DSN, so `time.Time` fields read `DATETIME` columns.
+
+MySQL's Reader and Writer both return the same pool, because MySQL allows many writers.
 
 ### Database tests
 
@@ -705,7 +695,7 @@ To redirect unknown paths, call `s.SetCatchAllRedirect("/")` in your routes func
 | `flash` | Low-level flash cookie helpers behind `ctx.Flash*` |
 | `inertia` | Inertia rendering, deferred props, Vite manifest |
 | `sqlite`, `postgres`, `mysql`, `database` | Connection managers and drivers |
-| `query` | Reads `database/sql` rows into structs, without GORM |
+| `query` | Reads `database/sql` rows into structs, without an ORM |
 | `testsupport` | `NewTestApp` for the app's own App on a temporary database file, `NewTestServer` for handlers alone |
 
 ## Testing your app
@@ -715,11 +705,11 @@ To redirect unknown paths, call `s.SetCatchAllRedirect("/")` in your routes func
 ```go
 // main.go
 func newApp(cfg *config.Config) (*cartridge.App, error) {
-	app, err := cartridge.NewApp(cfg, cartridge.WithAssets(web.Templates(), web.Static()), cartridge.WithRoutes(routes))
+	app, err := cartridge.NewApp(cfg, cartridge.WithMigrations(db.Migrations()), cartridge.WithAssets(web.Templates(), web.Static()), cartridge.WithRoutes(routes))
 	if err != nil {
 		return nil, err
 	}
-	return app, app.MigrateDatabase(cartridge.NewAutoMigrator(&Note{}))
+	return app, nil
 }
 
 // main_test.go
@@ -737,17 +727,17 @@ func TestNotes(t *testing.T) {
 - The config is for the test environment. `NewTestApp` reads no env var and no `.env` file. To start from a copy of a database, copy it into `cfg.DataDirectory` in your build function, before `NewApp`.
 - Requests send `Sec-Fetch-Site: same-origin`, as a browser does, so they pass CSRF protection.
 - `ta.Client()` keeps the cookies the app sets, like one browser. Sign in once, and the next requests have the session and the flash message. `ta.Get` and the other `ta` methods send no cookies.
-- `ta.DB()` is the main database, to add or count rows.
+- `ta.DB()` is the write connection of the main database, to set up or check rows.
 - At cleanup, `NewTestApp` closes the databases.
 
 [examples/notes/main_test.go](examples/notes/main_test.go) tests sign-in, validation errors, and flash messages this way.
 
-`testsupport.NewTestServer` tests handlers alone, on an in-memory SQLite database with `AutoMigrate`. It has no views engine, so use it for handlers that do not call `ctx.Render`:
+`testsupport.NewTestServer` tests handlers alone, on a new SQLite file with migrations. It has no views engine, so use it for handlers that do not call `ctx.Render`:
 
 ```go
 func TestCreateNote(t *testing.T) {
 	ts := testsupport.NewTestServer(t, testsupport.TestServerOptions{
-		Models:         []any{&Note{}},
+		Migrations:     db.Migrations(),
 		RouteMountFunc: func(s *cartridge.Server) { s.Post("/notes", createNote) },
 	})
 
@@ -767,7 +757,8 @@ func TestCreateNote(t *testing.T) {
 | `NewSSRApp("myapp", ...)` without `WithConfig` | `cfg, err := config.Load("myapp")`, then `NewApp(cfg, ...)` |
 | `NewInertiaApp(InertiaWithConfig(cfg), ...)` | `NewApp(cfg, WithInertia(), ...)` |
 | `InertiaWithStaticAssets(fs)` | `WithAssets(nil, fs)` |
-| `InertiaWithRoutes`, `InertiaWithJobs`, `InertiaWithSession` | `WithRoutes`, `WithJobs`, `WithSession` |
+| `InertiaWithRoutes`, `InertiaWithSession` | `WithRoutes`, `WithSession` |
+| `InertiaWithJobs` | `WithCron`. See the 2.0 table below |
 | `InertiaWithWorker(w)` | `WithWorker(w)` |
 | `InertiaWithPageTitle("X")` | `inertia.SetTitle("X")` |
 | `InertiaWithCatchAllRedirect("/")` | `s.SetCatchAllRedirect("/")` in your routes function |
@@ -777,7 +768,7 @@ func TestCreateNote(t *testing.T) {
 | `FactoryConfig` | `AppConfig` |
 | `*InertiaApp` | `*App` |
 | `app.Config` (`*config.Config`) | Keep your own `cfg`. `app.Config` is now the `cartridge.Config` interface |
-| `app.GetDB()` | `app.DBManager.Connect()` |
+| `app.GetDB()` | `app.DBManager.Reader()` and `app.DBManager.Writer()` |
 
 Other changes:
 
@@ -785,6 +776,38 @@ Other changes:
 - `Context.IP()` skips proxy header entries it cannot read, and reads entries with a port or quotes. When no entry qualifies, it returns the peer.
 - `Run` returns the error when the server fails after it binds the port, and stops the workers.
 - `config.Load` no longer uses viper. The env vars, the `.env` format, and the defaults stay the same. Cartridge now has 31 modules in `go list -m all` instead of 42.
+
+## Upgrading from 1.9 to 2.0
+
+2.0 has no GORM. An app reads and writes through `database/sql`, with sqlc or the `query` package, and keeps its schema in SQL files.
+
+| 1.9 | 2.0 |
+|---|---|
+| `ctx.DB()` is a `*gorm.DB` | `ctx.DB()` is a `*sql.DB` with read-only connections |
+| `ctx.SQL()` | `ctx.DB()` |
+| `ctx.WriteTx(func(tx *gorm.DB) error)`, `ctx.WriteSQL(fn)` | `ctx.WriteTx(func(tx *sql.Tx) error)` |
+| `cartridge.WriteSQL(ctx, m, fn)` | `cartridge.Write(ctx, m, fn)` |
+| `app.MigrateDatabase(cartridge.NewSQLMigrator(files))` | `cartridge.WithMigrations(files)` in `NewApp` |
+| `cartridge.NewAutoMigrator(&Note{})` | A SQL file for each schema change |
+| GORM models and queries | sqlc, or the `query` package |
+| `cartridge.WithReadPool()`, `sqlite.Config{ReadPool: true}` | Remove it. The two pools are always on |
+| `sqlite.ReadPoolOf(db)` | `app.DBManager.Reader()` |
+| `manager.Connect()`, `manager.GetConnection()` | `manager.Reader()` and `manager.Writer()` |
+| `cartridge.WithJobs(interval, processor)` | `cartridge.WithCron(name, spec, fn)` |
+| `jobCtx.DB` is a `*gorm.DB`, `jobCtx.SQL()` | `jobCtx.DB` is a `*sql.DB` |
+| A database in memory (`:memory:`) | A file, such as one in `t.TempDir()` |
+| `testsupport.SetupTestDB`, `testsupport.NewTestDBManager` | `testsupport.NewTestDB(t, migrations)` |
+| `ta.DB()` is a `*gorm.DB`, `ta.SQL()` | `ta.DB()` is the write connection, a `*sql.DB` |
+| `TestServerOptions.Models` | `TestServerOptions.Migrations` |
+
+Behaviour that changes:
+
+- A write on `ctx.DB()` fails at once. In 1.9 without the read pool, it worked.
+- When the client goes away during a write, a statement that runs with the request context fails, and the write rolls back. In 1.9 the write committed.
+- `sqlite.Config.MaxOpenConns` is the number of read connections. `sqlite.NewManager` alone opens 4.
+- `sqlite.Config.EnableWAL` and `sqlite.Config.TxImmediate` are gone. WAL and immediate transactions are always on.
+- PostgreSQL uses the pgx driver through `database/sql`.
+- Cartridge now has 29 modules in `go list -m all` instead of 34.
 
 ## AI agents
 
