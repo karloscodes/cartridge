@@ -1,6 +1,6 @@
 module github.com/karloscodes/cartridge
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/go-sql-driver/mysql v1.8.1
@@ -8,7 +8,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/crypto v0.52.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.24.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.0
