@@ -60,34 +60,13 @@ example:
 # Install development tools
 dev-tools:
 	@echo "Installing development tools..."
-	go install golang.org/x/tools/cmd/goimports@latest
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install golang.org/x/tools/cmd/goimports@v0.52.0
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
 
 # Run comprehensive linting
 lint-full: dev-tools
 	@echo "Running comprehensive linting..."
 	golangci-lint run
-
-# Setup project for development
-setup: deps dev-tools
-	@echo "Setting up project for development..."
-	mkdir -p data logs static templates
-	@echo "Project setup complete!"
-
-# Build for production
-build-prod:
-	@echo "Building for production..."
-	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o cartridge-linux ./examples/notes
-
-# Run security scan
-security:
-	@echo "Running security scan..."
-	go list -json -m all | nancy sleuth
-
-# Generate documentation
-docs:
-	@echo "Generating documentation..."
-	go doc -all ./... > API.md
 
 # Benchmark tests
 benchmark:
@@ -99,18 +78,7 @@ race:
 	@echo "Running race condition detection..."
 	go test -race ./...
 
-# Initialize new project with Cartridge
-init-project:
-	@echo "Initializing new Cartridge project..."
-	@read -p "Enter project name: " name; \
-	mkdir -p $$name; \
-	cd $$name; \
-	go mod init $$name; \
-	echo "module $$name\n\ngo 1.21\n\nrequire github.com/karloscodes/cartridge v0.1.0" > go.mod; \
-	mkdir -p cmd static templates data logs; \
-	echo "Project $$name initialized!"
-
 # Scan for known reachable vulnerabilities (CVEs)
 .PHONY: vuln
 vuln:
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
