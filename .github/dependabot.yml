@@ -1,0 +1,35 @@
+# Monthly, grouped version updates, each a week old at least.
+# Security updates come as soon as an advisory is out, in the "security" group.
+# Security and patch updates merge by themselves when CI passes:
+# .github/workflows/merge-security-updates.yml.
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    # A new version waits a week: a compromised release is usually pulled by then.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    groups:
+      go:
+        patterns: ["*"]
+      # merge-security-updates.yml knows a security update by this group name.
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+    ignore:
+      # First-party modules: bumped by hand when a new version is cut.
+      - dependency-name: "github.com/karloscodes/*"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    # A new version waits a week: a compromised release is usually pulled by then.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]
