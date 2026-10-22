@@ -8,7 +8,7 @@ An opinionated Go web framework on top of `net/http` and [GORM](https://gorm.io)
 go get github.com/karloscodes/cartridge
 ```
 
-Requires Go 1.26+.
+Requires Go 1.26.10+.
 
 ## Pick a constructor
 
