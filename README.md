@@ -1,21 +1,18 @@
 # Cartridge
 
+[![CI](https://github.com/karloscodes/cartridge/actions/workflows/ci.yml/badge.svg)](https://github.com/karloscodes/cartridge/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/karloscodes/cartridge.svg)](https://pkg.go.dev/github.com/karloscodes/cartridge) [![Release](https://img.shields.io/github/v/release/karloscodes/cartridge)](https://github.com/karloscodes/cartridge/releases) [![License](https://img.shields.io/github/license/karloscodes/cartridge)](LICENSE)
+
 An opinionated Go web framework on top of `net/http` and [GORM](https://gorm.io). It targets monolithic apps that ship as one binary with SQLite: config, logging, sessions, CSRF protection, background jobs, and embedded assets come wired in.
 
 > **Note:** Cartridge is pre-1.0. APIs can change between minor versions.
+
+## Install
 
 ```bash
 go get github.com/karloscodes/cartridge
 ```
 
 Requires Go 1.26+.
-
-## Pick a constructor
-
-| Constructor | Use it for | Database |
-|---|---|---|
-| `NewApp` | Go `html/template` apps (with or without HTMX), and React/Vue through Inertia.js with `WithInertia()` | SQLite, managed for you |
-| `NewApplication` | Full control: PostgreSQL, custom server | Anything that implements `DBManager` |
 
 ## Quick start
 
@@ -47,8 +44,21 @@ var templatesFS embed.FS
 var staticFS embed.FS
 
 // Template names are relative to templates/, so "home" resolves to templates/home.html.
-func Templates() fs.FS { sub, _ := fs.Sub(templatesFS, "templates"); return sub }
-func Static() fs.FS    { sub, _ := fs.Sub(staticFS, "static"); return sub }
+func Templates() fs.FS {
+	sub, err := fs.Sub(templatesFS, "templates")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}
+
+func Static() fs.FS {
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}
 ```
 
 `main.go`:
@@ -125,6 +135,15 @@ MYAPP_ENV=development go run .
 
 [examples/notes](examples/notes) is a complete small app: sign-in, a list, a form with validation errors, flash messages, and HTTP tests. Run it with `make example`.
 
+## Reference
+
+### Pick a constructor
+
+| Constructor | Use it for | Database |
+|---|---|---|
+| `NewApp` | Go `html/template` apps (with or without HTMX), and React/Vue through Inertia.js with `WithInertia()` | SQLite, managed for you |
+| `NewApplication` | Full control: PostgreSQL, custom server | Anything that implements `DBManager` |
+
 ### What you get by default
 
 - `WithDefaults("1.7")` loads the stricter defaults that cartridge added since 1.6, like `load_defaults` in Rails. A new app uses the newest version; an older app raises it when it is ready. Today it turns on `BlockExternalRedirects`: `ctx.Redirect` returns an error for another host, and `ctx.RedirectExternal` is the way out. `WithServerConfig` runs after it and can turn one default off.
@@ -137,7 +156,7 @@ MYAPP_ENV=development go run .
 - SQLite in WAL mode with `busy_timeout` and immediate transactions.
 - Development reads templates and static files from `web/` on disk and reloads templates on each request. Static files from disk get `Cache-Control: no-cache`, so the browser never uses a stale file. Other environments use the embedded files.
 
-## Configuration
+### Configuration
 
 `config.Load("myapp")` reads env vars with the upper-cased app name as the prefix. It also reads a `.env` file in the working directory. In `.env`, use the field keys without the prefix, in any case: `ENVIRONMENT=development`, `PORT=3000`, `SESSIONTIMEOUTSECONDS=60`. An env var wins over `.env`.
 
@@ -156,7 +175,7 @@ The SQLite file is `<data dir>/<app>.<env>.db`, for example `storage/myapp.produ
 
 `NewApp` accepts any `cartridge.AppConfig`. To add your own settings, embed `*config.Config` in your own struct and pass that struct.
 
-## Handlers
+### Handlers
 
 Every handler and middleware has one signature: `func(*cartridge.Context) error`. Middleware calls `ctx.Next()`. `Context` wraps the `http.ResponseWriter` and `*http.Request` (`ctx.Response()`, `ctx.Request()`), and keeps the Fiber-style methods from cartridge v0: `Params`, `Query`, `Get`, `Set`, `Cookies`, `Cookie`, `Locals`, `Status(...).JSON(...)`, `SendString`, `Redirect`, and more. It adds:
 
@@ -185,7 +204,7 @@ Post/Redirect/Get in one line:
 return ctx.FlashError("Invalid domain").RedirectBack("/websites")
 ```
 
-## Routes
+### Routes
 
 `s.Get`, `Post`, `Put`, `Patch`, `Delete`, `Head`, and `Options` take an optional `*RouteConfig`:
 
@@ -200,18 +219,20 @@ s.Post("/api/events", ingest, &cartridge.RouteConfig{
 
 `Server` is an `http.Handler`. `s.Use(mw)` adds middleware to every route. A CORS route without its own OPTIONS route gets one that answers browser preflight requests. Route paths use `:param` and a trailing `*`, as in v0.
 
-### Behind a proxy
+#### Behind a proxy
 
-`ctx.IP()` and `ctx.Protocol()` ignore proxy headers unless the direct peer is a trusted proxy. Name your proxies:
+`ctx.IP()` and `ctx.Protocol()` ignore proxy headers unless the direct peer is a trusted proxy. Name your proxies with `WithServerConfig`:
 
 ```go
-cfg.ProxyHeader = "X-Forwarded-For"
-cfg.TrustedProxies = []string{"10.0.0.0/8", "127.0.0.1"}
+cartridge.WithServerConfig(func(c *cartridge.ServerConfig) {
+	c.ProxyHeader = "X-Forwarded-For"
+	c.TrustedProxies = []string{"10.0.0.0/8", "127.0.0.1"}
+}),
 ```
 
 `ctx.IP()` reads the header from right to left and returns the first address that is not a trusted proxy. It skips entries it cannot read and accepts entries with a port or quotes. When no entry qualifies, it returns the peer. Without `TrustedProxies`, every client behind the proxy shares the proxy's IP, and `ctx.BaseURL()` says `http`.
 
-### Streams and WriteTimeout
+#### Streams and WriteTimeout
 
 `ServerConfig.WriteTimeout` (30s by default) cuts off long responses. A stream (server-sent events, a large download) lifts it per request:
 
@@ -219,7 +240,7 @@ cfg.TrustedProxies = []string{"10.0.0.0/8", "127.0.0.1"}
 http.NewResponseController(ctx.Response()).SetWriteDeadline(time.Time{})
 ```
 
-## Templates
+### Templates
 
 `WithAssets(templates, static)` gives the app its templates and static files. A template's name is its path without `.html`, so `templates/notes/index.html` is `notes/index`:
 
@@ -257,7 +278,7 @@ if strings.Contains(ctx.Get("Accept"), "text/vnd.turbo-stream.html") {
 return ctx.Render("notes/index", data, "layouts/app")
 ```
 
-### Static files
+#### Static files
 
 The files in `web/static` are served under `/assets`. Link them with `{{asset}}`. The URL holds a hash of the file's content, so it changes when the file changes:
 
@@ -285,7 +306,7 @@ A file from a glob is a module named by its path without the extension: `control
 
 Outside a template, `app.Server.Asset("app.js")` and `app.Server.Importmap(...)` return the same values. An app from `NewApplication` adds them to its own template functions.
 
-## Sessions
+### Sessions
 
 `WithSession(loginPath)` turns on signed cookie sessions (HMAC-SHA256). The cookie is `<app>_session`, and it is `Secure` in production. The secret must be at least 32 bytes.
 
@@ -331,7 +352,7 @@ cartridge.WithSessionCheck(func(userID uint, issuedAt time.Time) bool {
 
 The middleware redirects anonymous users to the login path. Pages behind it send `Cache-Control: private, no-store`, unless the handler sets its own. HTMX requests get a `401` with `HX-Redirect` to the login path, so htmx loads the login page. Call `ctx.Session.ClearSession(ctx)` to log out. After a login, `ctx.RedirectLocal(ctx.Query("next"), "/")` follows the target only on this host. Use `crypto.GeneratePasswordHash` and `crypto.VerifyPassword` (bcrypt) for passwords.
 
-## Background jobs
+### Background jobs
 
 A processor runs on a fixed interval. `JobContext` gives it a logger and a `*gorm.DB`:
 
@@ -353,9 +374,9 @@ cartridge.WithJobs(time.Hour, PruneSessions{}), // each call gets its own schedu
 
 `WithWorker(w)` runs any `BackgroundWorker` (`Start() error`, `Stop()`). Jobs and workers start with `app.Run()` and stop during graceful shutdown.
 
-## Database
+### Database
 
-### Migrations
+#### Migrations
 
 `NewAutoMigrator` wraps GORM's `AutoMigrate`. For anything else, implement `Migrator`:
 
@@ -367,7 +388,7 @@ type Migrator interface {
 
 `app.MigrateDatabase` runs the migrator, then checkpoints the SQLite WAL.
 
-### SQL without GORM
+#### SQL without GORM
 
 An app can use `database/sql` in place of GORM, for all of its queries or for some. This path adds no dependency.
 
@@ -416,7 +437,7 @@ A column fills the field with its name: the `db` tag, or the field name in snake
 
 For queries that the compiler checks, run [sqlc](https://sqlc.dev) on the same migration files: its generated code takes `ctx.SQL()` and the `*sql.Tx` of `WriteSQL`.
 
-### Two pools: one writer, many readers
+#### Two pools: one writer, many readers
 
 `WithReadPool()` opens each SQLite database with two connection pools: one write connection, and a pool of read-only connections.
 
@@ -456,9 +477,9 @@ stats, err := cache.Fetch(ctx.Context(), memoryStore, "stats:"+siteID+":"+versio
 
 The token is good for the life of the process, so use it with a cache in memory. It works with or without the read pool.
 
-It is off by default in 1.x. In 2.0 it is the only way.
+The read pool is off by default in 1.x. In 2.0 it is the only way.
 
-### Writes under load
+#### Writes under load
 
 SQLite allows one writer. `WriteTx` runs a write transaction when its turn comes. Writers wait in arrival order and hold no pool connection while they wait, so reads go on:
 
@@ -480,7 +501,7 @@ if errors.Is(err, sqlite.ErrBusy) {
 
 `sqlite.PerformWrite` is deprecated. It waits inside SQLite while it holds a pool connection, so a write burst can block every reader.
 
-### Pragmas
+#### Pragmas
 
 Every connection gets WAL, `synchronous=NORMAL`, `busy_timeout`, and immediate transactions. The manager runs `PRAGMA optimize` at open and close, so the query planner has statistics. Add app-specific pragmas with `Pragmas`. They run on every connection:
 
@@ -497,7 +518,7 @@ Cartridge adds no other pragma: each app sets its own. Measure a pragma on real 
 
 `foreign_keys = ON` needs a check of the app first. SQLite does not enforce foreign keys by default. With it on, a write that leaves a row without its parent fails, and a migration that rebuilds a table, as GORM's `AutoMigrate` does to change or drop a column, drops the old table with the rows that refer to it.
 
-### More databases
+#### More databases
 
 `WithDatabase` opens another SQLite file next to the main one:
 
@@ -532,7 +553,7 @@ func renameAccount(ctx *cartridge.Context) error {
 - A job reads one with `db, err := jobCtx.Database("shared")` and writes it with `jobCtx.DatabaseWriteTx("shared", fn)`.
 - `Run` and `Shutdown` close the main database and the named ones.
 
-### Read-only files
+#### Read-only files
 
 Set `ReadOnly` for a file that the app must not change, such as a copy of another app's data:
 
@@ -542,7 +563,7 @@ cartridge.WithDatabase("tenant", sqlite.Config{Path: "data/main.sqlite3", ReadOn
 
 The manager opens the file with `mode=ro` and keeps its journal mode. It does not run `PRAGMA optimize`, because that writes statistics. `Write` and `ctx.DatabaseWriteTx` return `sqlite.ErrReadOnly`. The file must exist. For a WAL file, SQLite creates the `-shm` file, so the directory must be writable.
 
-### PostgreSQL
+#### PostgreSQL
 
 Use `NewApplication` with the generic manager and the Postgres driver:
 
@@ -566,11 +587,11 @@ To support another database, implement `database.Driver`.
 
 `SSLMode`, `Timezone`, and `SearchPath` go into the DSN, so every connection of the pool has them. A URL and a keyword DSN (`host=... dbname=...`) both work, and an option that the DSN sets itself wins.
 
-### MySQL
+#### MySQL
 
 The `mysql` package is the driver for MySQL, used like the PostgreSQL one: `database.NewManager(mysql.NewDriver(), database.DefaultConfig(dsn), logger)`. It turns `parseTime` on in the DSN, so `time.Time` fields read `DATETIME` columns.
 
-### Database tests
+#### Database tests
 
 The PostgreSQL and MySQL tests need a server. They skip themselves without their DSN, and CI runs each in its own job:
 
@@ -579,7 +600,7 @@ CARTRIDGE_POSTGRES_DSN=postgres://postgres:test@127.0.0.1:5432/cartridge_test go
 CARTRIDGE_MYSQL_DSN='root:test@tcp(127.0.0.1:3306)/cartridge_test' go test ./mysql
 ```
 
-## Inertia.js
+### Inertia.js
 
 Add `WithInertia()`. In development, Cartridge then re-reads the Vite manifest on each request:
 
@@ -604,7 +625,7 @@ func dashboard(ctx *cartridge.Context) error {
 
 To redirect unknown paths, call `s.SetCatchAllRedirect("/")` in your routes function.
 
-## Other packages
+### Other packages
 
 | Package | Contents |
 |---|---|
@@ -619,7 +640,7 @@ To redirect unknown paths, call `s.SetCatchAllRedirect("/")` in your routes func
 | `query` | Reads `database/sql` rows into structs, without GORM |
 | `testsupport` | `NewTestApp` for the app's own App on a temporary database file, `NewTestServer` for handlers alone |
 
-## Testing your app
+### Testing your app
 
 `testsupport.NewTestApp` builds your app with the function that `main` uses, on a new SQLite file in `t.TempDir()`. The test runs your real migrations and renders your real views, with no mocks:
 
@@ -668,7 +689,7 @@ func TestCreateNote(t *testing.T) {
 }
 ```
 
-## Upgrading from 1.2
+### Upgrading from 1.2
 
 `NewSSRApp` and `NewInertiaApp` are now one constructor, `NewApp`, with one set of options. `NewApp` takes the config as its first argument and does not load it for you.
 
@@ -695,18 +716,25 @@ Other changes:
 - Without templates in `WithAssets`, `NewApp` sets no views engine. Before, it read `web/templates` from disk.
 - `Context.IP()` skips proxy header entries it cannot read, and reads entries with a port or quotes. When no entry qualifies, it returns the peer.
 - `Run` returns the error when the server fails after it binds the port, and stops the workers.
-- `config.Load` no longer uses viper. The env vars, the `.env` format, and the defaults stay the same. Cartridge now has 31 modules in `go list -m all` instead of 42.
+- `config.Load` no longer uses viper. The env vars, the `.env` format, and the defaults stay the same.
 
-## AI agents
+### AI agents
 
 [AGENTS.md](AGENTS.md) holds the rules for an AI agent that builds an app on cartridge. Point your app's `CLAUDE.md` or `AGENTS.md` at it.
 
-## Contributing
+## Development
 
 ```bash
 make test   # go test ./...
-make lint
+make lint   # go vet ./...
+make race   # race detector
+make vuln   # govulncheck
+make example
 ```
+
+Run `make test` and `make lint` before you push. CI runs both.
+
+The PostgreSQL and MySQL tests need a server. See [Database tests](#database-tests).
 
 ## License
 
