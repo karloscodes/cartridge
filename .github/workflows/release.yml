@@ -1,6 +1,7 @@
 # A tag v* makes a release of the module: notes on GitHub, and the Go proxy
-# serves the tag itself. A tag with a hyphen (v1.9.0-rc.1) is a pre-release.
-# A pre-release can come from a branch other than main, such as 2.0-pre.
+# serves the tag itself. A tag with a hyphen (v1.9.0-rc.1) is a pre-release,
+# and it can come from a branch other than main, such as a next major.
+# This file is the same in cartridge and lognorth-sdk-go.
 name: Release
 
 on:
